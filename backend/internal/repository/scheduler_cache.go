@@ -236,45 +236,7 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
 }
 
 func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
-	if len(updates) == 0 {
-		return nil
-	}
-
-	keys := make([]string, 0, len(updates))
-	ids := make([]int64, 0, len(updates))
-	for id := range updates {
-		keys = append(keys, schedulerAccountKey(strconv.FormatInt(id, 10)))
-		ids = append(ids, id)
-	}
-
-	values, err := c.mgetChunked(ctx, keys)
-	if err != nil {
-		return err
-	}
-
-	pipe := c.rdb.Pipeline()
-	for i, val := range values {
-		if val == nil {
-			continue
-		}
-		account, err := decodeCachedAccount(val)
-		if err != nil {
-			return err
-		}
-		account.LastUsedAt = ptrTime(updates[ids[i]])
-		updated, err := json.Marshal(account)
-		if err != nil {
-			return err
-		}
-		metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(*account))
-		if err != nil {
-			return err
-		}
-		pipe.Set(ctx, keys[i], updated, 0)
-		pipe.Set(ctx, schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)), metaPayload, 0)
-	}
-	_, err = pipe.Exec(ctx)
-	return err
+	return nil
 }
 
 func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {

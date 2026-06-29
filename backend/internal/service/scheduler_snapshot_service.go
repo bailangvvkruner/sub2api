@@ -339,29 +339,7 @@ func (s *SchedulerSnapshotService) handleOutboxEvent(ctx context.Context, event 
 }
 
 func (s *SchedulerSnapshotService) handleLastUsedEvent(ctx context.Context, payload map[string]any) error {
-	if s.cache == nil || payload == nil {
-		return nil
-	}
-	raw, ok := payload["last_used"].(map[string]any)
-	if !ok || len(raw) == 0 {
-		return nil
-	}
-	updates := make(map[int64]time.Time, len(raw))
-	for key, value := range raw {
-		id, err := strconv.ParseInt(key, 10, 64)
-		if err != nil || id <= 0 {
-			continue
-		}
-		sec, ok := toInt64(value)
-		if !ok || sec <= 0 {
-			continue
-		}
-		updates[id] = time.Unix(sec, 0)
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-	return s.cache.UpdateLastUsed(ctx, updates)
+	return nil
 }
 
 func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, payload map[string]any, seen map[batchSeenKey]struct{}) error {

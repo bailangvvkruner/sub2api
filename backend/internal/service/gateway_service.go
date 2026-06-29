@@ -1959,7 +1959,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 
 			if len(routingAvailable) > 0 {
-				// 排序：优先级 > 负载率 > 最后使用时间
+				// 排序：优先级 > 负载率；同层随机避免依赖请求热路径的 LastUsedAt 同步。
 				sort.SliceStable(routingAvailable, func(i, j int) bool {
 					a, b := routingAvailable[i], routingAvailable[j]
 					if a.account.Priority != b.account.Priority {
@@ -1968,18 +1968,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
 					}
-					switch {
-					case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-						return true
-					case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-						return false
-					case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-						return false
-					default:
-						return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-					}
+					return false
 				})
-				shuffleWithinSortGroups(routingAvailable)
+				shuffleWithinPriorityAndLoad(routingAvailable)
 
 				// 4. 尝试获取槽位
 				for _, item := range routingAvailable {
@@ -2218,7 +2209,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 
-		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
+		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → 随机
 		for len(available) > 0 {
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(available)
@@ -2228,8 +2219,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 			// 3. 取负载率最低的集合
 			candidates = filterByMinLoadRate(candidates)
-			// 4. LRU 选择最久未用的账号
-			selected := selectByLRU(candidates, preferOAuth)
+			// 4. 同层候选随机选择，避免依赖请求热路径的 LastUsedAt 同步。
+			selected := selectRandomAccountWithLoad(candidates, preferOAuth)
 			if selected == nil {
 				break
 			}
@@ -2990,7 +2981,7 @@ func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 // filterBySoonestReset 过滤出「会话窗口最早重置」的账号集合（use-it-or-lose-it）。
 // 仅保留拥有未来重置时间（SessionWindowEnd 在当前时间之后）且最早的账号；
 // 窗口为空或已过期的账号视为无活跃窗口、优先级最低。
-// 当所有账号都没有活跃窗口时，返回原集合（不改变后续 LRU 选择）。
+// 当所有账号都没有活跃窗口时，返回原集合（不改变后续随机选择）。
 func filterBySoonestReset(accounts []accountWithLoad) []accountWithLoad {
 	if len(accounts) <= 1 {
 		return accounts
@@ -3018,6 +3009,31 @@ func filterBySoonestReset(accounts []accountWithLoad) []accountWithLoad {
 		}
 	}
 	return result
+}
+
+func selectRandomAccountWithLoad(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
+	if len(accounts) == 0 {
+		return nil
+	}
+	if len(accounts) == 1 {
+		return &accounts[0]
+	}
+
+	candidateIdxs := make([]int, 0, len(accounts))
+	if preferOAuth {
+		for i := range accounts {
+			if accounts[i].account.Type == AccountTypeOAuth {
+				candidateIdxs = append(candidateIdxs, i)
+			}
+		}
+	}
+	if len(candidateIdxs) == 0 {
+		for i := range accounts {
+			candidateIdxs = append(candidateIdxs, i)
+		}
+	}
+	selectedIdx := candidateIdxs[mathrand.Intn(len(candidateIdxs))]
+	return &accounts[selectedIdx]
 }
 
 // selectByLRU 从集合中选择最久未用的账号
@@ -3103,6 +3119,25 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 	shuffleWithinPriorityAndLastUsed(accounts, preferOAuth)
 }
 
+func sortAccountsByPriorityAndLoad(accounts []accountWithLoad) {
+	sort.SliceStable(accounts, func(i, j int) bool {
+		a, b := accounts[i], accounts[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		return false
+	})
+	shuffleWithinPriorityAndLoad(accounts)
+}
+
+func sortAccountsByPriorityOnlyRandom(accounts []*Account, preferOAuth bool) {
+	sortAccountsByPriorityOnly(accounts, preferOAuth)
+	shuffleWithinPriority(accounts)
+}
+
 // shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。
 // 防止并发请求读取同一快照时，确定性排序导致所有请求命中相同账号。
 func shuffleWithinSortGroups(accounts []accountWithLoad) {
@@ -3113,6 +3148,27 @@ func shuffleWithinSortGroups(accounts []accountWithLoad) {
 	for i < len(accounts) {
 		j := i + 1
 		for j < len(accounts) && sameAccountWithLoadGroup(accounts[i], accounts[j]) {
+			j++
+		}
+		if j-i > 1 {
+			mathrand.Shuffle(j-i, func(a, b int) {
+				accounts[i+a], accounts[i+b] = accounts[i+b], accounts[i+a]
+			})
+		}
+		i = j
+	}
+}
+
+func shuffleWithinPriorityAndLoad(accounts []accountWithLoad) {
+	if len(accounts) <= 1 {
+		return
+	}
+	i := 0
+	for i < len(accounts) {
+		j := i + 1
+		for j < len(accounts) &&
+			accounts[i].account.Priority == accounts[j].account.Priority &&
+			accounts[i].loadInfo.LoadRate == accounts[j].loadInfo.LoadRate {
 			j++
 		}
 		if j-i > 1 {
@@ -3205,8 +3261,7 @@ func sameLastUsedAt(a, b *time.Time) bool {
 func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, preferOAuth bool, mode string) {
 	if mode == "random" {
 		// 先按优先级排序，然后在同优先级内随机打乱
-		sortAccountsByPriorityOnly(accounts, preferOAuth)
-		shuffleWithinPriority(accounts)
+		sortAccountsByPriorityOnlyRandom(accounts, preferOAuth)
 	} else {
 		// 默认按最后使用时间排序
 		sortAccountsByPriorityAndLastUsed(accounts, preferOAuth)

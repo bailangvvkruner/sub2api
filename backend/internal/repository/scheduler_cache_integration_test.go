@@ -101,4 +101,18 @@ func TestSchedulerCacheSnapshotUsesSlimMetadataButKeepsFullAccount(t *testing.T)
 	require.Equal(t, strings.Repeat("x", 4096), full.GetCredential("huge_blob"))
 	require.Len(t, full.AccountGroups, 1)
 	require.NotNil(t, full.AccountGroups[0].Group)
+
+	id := "101"
+	fullBefore, err := rdb.Get(ctx, schedulerAccountKey(id)).Result()
+	require.NoError(t, err)
+	metaBefore, err := rdb.Get(ctx, schedulerAccountMetaKey(id)).Result()
+	require.NoError(t, err)
+	updatedLastUsed := now.Add(time.Minute)
+	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: updatedLastUsed}))
+	fullAfter, err := rdb.Get(ctx, schedulerAccountKey(id)).Result()
+	require.NoError(t, err)
+	metaAfter, err := rdb.Get(ctx, schedulerAccountMetaKey(id)).Result()
+	require.NoError(t, err)
+	require.Equal(t, fullBefore, fullAfter)
+	require.Equal(t, metaBefore, metaAfter)
 }

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -11,7 +10,6 @@ import (
 type outboxCleanupCache struct {
 	watermark     int64
 	setWatermarks []int64
-	updateErr     error
 }
 
 func (c *outboxCleanupCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
@@ -35,7 +33,7 @@ func (c *outboxCleanupCache) DeleteAccount(ctx context.Context, accountID int64)
 }
 
 func (c *outboxCleanupCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
-	return c.updateErr
+	return nil
 }
 
 func (c *outboxCleanupCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
@@ -205,10 +203,8 @@ func TestSchedulerSnapshotServicePollOutboxSkipsCleanupWhenLockUnavailable(t *te
 	}
 }
 
-func TestSchedulerSnapshotServicePollOutboxDoesNotCleanupOnHandleFailure(t *testing.T) {
-	cache := &outboxCleanupCache{
-		updateErr: errors.New("cache update failed"),
-	}
+func TestSchedulerSnapshotServicePollOutboxConsumesLastUsedWithoutCacheWrite(t *testing.T) {
+	cache := &outboxCleanupCache{}
 	repo := &outboxCleanupRepo{
 		events: []SchedulerOutboxEvent{
 			{
@@ -226,17 +222,17 @@ func TestSchedulerSnapshotServicePollOutboxDoesNotCleanupOnHandleFailure(t *test
 
 	svc.pollOutbox()
 
-	if len(cache.setWatermarks) != 0 {
-		t.Fatalf("expected no watermark write on handle failure, got %#v", cache.setWatermarks)
+	if cache.watermark != 5 {
+		t.Fatalf("expected watermark 5, got %d", cache.watermark)
 	}
-	if repo.lockAttempts != 0 {
-		t.Fatalf("expected cleanup lock not to be attempted, got %d", repo.lockAttempts)
+	if !reflect.DeepEqual(cache.setWatermarks, []int64{5}) {
+		t.Fatalf("unexpected watermark writes: %#v", cache.setWatermarks)
 	}
-	if len(repo.deleteCalls) != 0 {
-		t.Fatalf("expected no delete calls, got %#v", repo.deleteCalls)
+	if repo.lockAttempts != 1 || repo.releaseCount != 1 {
+		t.Fatalf("expected one lock acquire/release, got acquire=%d release=%d", repo.lockAttempts, repo.releaseCount)
 	}
-	if !reflect.DeepEqual(repo.rows, []int64{1, 2, 3, 4, 5, 6}) {
-		t.Fatalf("expected rows unchanged, got %#v", repo.rows)
+	if !reflect.DeepEqual(repo.rows, []int64{6}) {
+		t.Fatalf("expected consumed rows to be cleaned, got %#v", repo.rows)
 	}
 }
 

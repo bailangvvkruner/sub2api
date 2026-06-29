@@ -1,3 +1,21 @@
+## Patch Note: Scheduler Redis Write Amplification
+
+This fork removes the request-hot Redis writes caused by account `LastUsedAt`
+updates. Account `last_used_at` is still persisted in the database for
+statistics, but the scheduler no longer enqueues `account_last_used` outbox
+events or rewrites `sched:acc:*` / `sched:meta:*` cache entries for every
+request. Load-aware scheduling now defaults to priority/load/random tie-breaks;
+`fallback_selection_mode: last_used` remains available for compatibility.
+
+Build from mainland China with:
+
+```powershell
+$env:GOPROXY='https://goproxy.cn,direct'
+$env:GOSUMDB='sum.golang.google.cn'
+cd backend
+go build -o '..\.tmp\sub2api-server.exe' .\cmd\server
+```
+
 # Sub2API
 
 <div align="center">
