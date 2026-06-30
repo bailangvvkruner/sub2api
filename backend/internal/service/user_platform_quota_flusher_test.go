@@ -320,7 +320,7 @@ func TestScenario_ZeroPercentCompany(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// P1: IntervalFallback — flush_interval_ms ≤0 时回退 2s；正常值保留
+// P1: IntervalFallback — flush_interval_ms ≤0 时回退 30s；正常值保留
 // ---------------------------------------------------------------------------
 
 func TestNewUserPlatformQuotaUsageFlusher_IntervalFallback(t *testing.T) {
@@ -329,9 +329,9 @@ func TestNewUserPlatformQuotaUsageFlusher_IntervalFallback(t *testing.T) {
 		inMs   int
 		wantDu time.Duration
 	}{
-		{"零值回退 2s", 0, 2 * time.Second},
-		{"负数回退 2s", -100, 2 * time.Second},
-		{"正常 2000ms 保留", 2000, 2 * time.Second},
+		{"零值回退 30s", 0, 30 * time.Second},
+		{"负数回退 30s", -100, 30 * time.Second},
+		{"正常 30000ms 保留", 30000, 30 * time.Second},
 		{"正常 500ms 保留", 500, 500 * time.Millisecond},
 	}
 	for _, tc := range cases {

@@ -1721,7 +1721,7 @@ func setDefaults() {
 	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
 	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
 	viper.SetDefault("database.user_platform_quota_flusher_enabled", true)
-	viper.SetDefault("database.user_platform_quota_flush_interval_ms", 2000)
+	viper.SetDefault("database.user_platform_quota_flush_interval_ms", 30000)
 	viper.SetDefault("database.user_platform_quota_flush_batch_size", 1000)
 
 	// Redis

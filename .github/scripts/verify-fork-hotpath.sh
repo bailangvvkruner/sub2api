@@ -45,6 +45,7 @@ require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpa
 require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.local_billing_cache", true)' "local billing L1 cache must default on"
 require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.local_billing_cache_max_entries", 262144)' "local billing L1 cache size default changed"
 require_fixed backend/internal/config/config.go 'viper.SetDefault("database.user_platform_quota_flusher_enabled", true)' "quota usage flusher must default on"
+require_fixed backend/internal/config/config.go 'viper.SetDefault("database.user_platform_quota_flush_interval_ms", 30000)' "quota usage flusher interval must default to 30s"
 require_fixed backend/internal/config/config.go 'fallback_selection_mode", "random"' "fork fallback selection default changed"
 
 require_file backend/internal/repository/local_concurrency_cache.go
@@ -80,3 +81,4 @@ require_fixed README.md 'gateway.hotpath.local_billing_cache: true' "README no l
 require_fixed deploy/config.example.yaml 'local_billing_cache: true' "deploy example lost local billing cache switch"
 require_fixed deploy/config.example.yaml 'local_billing_cache_max_entries: 262144' "deploy example lost local billing cache size"
 require_fixed deploy/config.example.yaml 'user_platform_quota_flusher_enabled: true' "deploy example lost quota flusher switch"
+require_fixed deploy/config.example.yaml 'user_platform_quota_flush_interval_ms: 30000' "deploy example lost quota flusher 30s interval"

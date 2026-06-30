@@ -427,8 +427,8 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
 	if !cfg.Database.UserPlatformQuotaFlusherEnabled {
 		t.Fatalf("Database.UserPlatformQuotaFlusherEnabled = false, want true")
 	}
-	if cfg.Database.UserPlatformQuotaFlushIntervalMs != 2000 {
-		t.Fatalf("Database.UserPlatformQuotaFlushIntervalMs = %d, want 2000", cfg.Database.UserPlatformQuotaFlushIntervalMs)
+	if cfg.Database.UserPlatformQuotaFlushIntervalMs != 30000 {
+		t.Fatalf("Database.UserPlatformQuotaFlushIntervalMs = %d, want 30000", cfg.Database.UserPlatformQuotaFlushIntervalMs)
 	}
 	if cfg.Database.UserPlatformQuotaFlushBatchSize != 1000 {
 		t.Fatalf("Database.UserPlatformQuotaFlushBatchSize = %d, want 1000", cfg.Database.UserPlatformQuotaFlushBatchSize)

@@ -833,7 +833,7 @@ database:
   user_platform_quota_flusher_enabled: true
   # Flush interval for user×platform quota snapshots (milliseconds).
   # user×platform 配额快照刷盘间隔（毫秒）。
-  user_platform_quota_flush_interval_ms: 2000
+  user_platform_quota_flush_interval_ms: 30000
   # Max user×platform quota rows per flush batch.
   # 单批刷入的 user×platform 配额行数上限，建议不超过 6000。
   user_platform_quota_flush_batch_size: 1000

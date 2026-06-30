@@ -5,7 +5,7 @@
 - `gateway.hotpath.local_concurrency_slots: true`：账号/用户并发槽与等待计数从 Redis ZSET/计数器切到本机内存，抢槽、释放槽、负载读取不再走 Redis。
 - `gateway.hotpath.persist_account_last_used: false`：账号 `last_used_at` 默认不再按请求延迟批量写数据库，减少高 QPS 下的 DB 写入与调度缓存刷新。
 - `gateway.hotpath.local_billing_cache: true`：余额、订阅用量、API key 限速、user×platform quota 增加 sub2api 进程内 L1 缓存。读路径优先级为 `sub2api 程序缓存 > Redis > PostgreSQL`；写路径先更新本机热快照，再透传 Redis/原有持久化路径。
-- `database.user_platform_quota_flusher_enabled: true`：user×platform quota usage 默认不再每请求同步直写 PostgreSQL，而是先累加到本机/Redis 快照，再由 flusher 默认每 2 秒批量刷入 PostgreSQL，降低 DB 写入次数和磁盘 IOPS。
+- `database.user_platform_quota_flusher_enabled: true`：user×platform quota usage 默认不再每请求同步直写 PostgreSQL，而是先累加到本机/Redis 快照，再由 flusher 默认每 30 秒批量刷入 PostgreSQL，降低 DB 写入次数和磁盘 IOPS。
 - 调度默认走 priority/load/random 类 tie-break；`fallback_selection_mode: last_used` 仍保留兼容，但激进模式下不建议依赖它。
 - 上游同步工作流会检查这些补丁是否仍在，避免同步后被上游改动悄悄冲掉。
 

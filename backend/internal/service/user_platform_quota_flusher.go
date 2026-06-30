@@ -47,6 +47,8 @@ const maxFlushBatchSize = 6000
 // defaultFlushBatchSize 是配置 flush_batch_size 非法(≤0)时的回退值。
 const defaultFlushBatchSize = 1000
 
+const defaultQuotaFlushInterval = 30 * time.Second
+
 // UserPlatformQuotaUsageFlusher 将 Redis 脏集快照定期批量写入 DB。
 // 不维护任何 delta/in-process 状态；每批读取 Redis 当前绝对值覆盖写入。
 type UserPlatformQuotaUsageFlusher struct {
@@ -77,8 +79,8 @@ func NewUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, qu
 	}
 	interval := time.Duration(cfg.Database.UserPlatformQuotaFlushIntervalMs) * time.Millisecond
 	if interval <= 0 {
-		logger.LegacyPrintf("quota_flusher", "[QuotaFlusher] flush_interval_ms %d 非法,回退 2000ms", cfg.Database.UserPlatformQuotaFlushIntervalMs)
-		interval = 2 * time.Second
+		logger.LegacyPrintf("quota_flusher", "[QuotaFlusher] flush_interval_ms %d 非法,回退 30000ms", cfg.Database.UserPlatformQuotaFlushIntervalMs)
+		interval = defaultQuotaFlushInterval
 	}
 	return &UserPlatformQuotaUsageFlusher{
 		cache:        cache,
