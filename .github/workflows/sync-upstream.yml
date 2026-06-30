@@ -28,6 +28,16 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config rerere.enabled true
+          git config rerere.autoupdate true
+
+      - name: Restore rerere cache
+        uses: actions/cache@v4
+        with:
+          path: .git/rr-cache
+          key: rerere-main-${{ github.repository }}-${{ github.run_id }}
+          restore-keys: |
+            rerere-main-${{ github.repository }}-
 
       - name: Fetch upstream
         run: |
@@ -50,6 +60,11 @@ jobs:
           fi
 
           conflicts="$(git diff --name-only --diff-filter=U || true)"
+          if [ -z "$conflicts" ] && ! git diff --cached --quiet; then
+            git commit --no-edit
+            exit 0
+          fi
+
           allowed_conflicts="$(printf '%s\n' "$conflicts" | grep -E '^\.github/workflows/(backend-ci|cla|release|security-scan)\.yml$' || true)"
           blocked_conflicts="$(printf '%s\n' "$conflicts" | grep -vE '^\.github/workflows/(backend-ci|cla|release|security-scan)\.yml$' || true)"
 
@@ -88,13 +103,17 @@ jobs:
 
       - name: Verify fork patch is still applied
         run: |
-          grep -A2 "func (c \*schedulerCache) UpdateLastUsed" backend/internal/repository/scheduler_cache.go | grep -q "return nil"
-          grep -A2 "func (s \*SchedulerSnapshotService) handleLastUsedEvent" backend/internal/service/scheduler_snapshot_service.go | grep -q "return nil"
-          grep -q "fallback_selection_mode\", \"random\"" backend/internal/config/config.go
-          grep -q 'gateway.hotpath.local_concurrency_slots", true' backend/internal/config/config.go
-          grep -q 'gateway.hotpath.persist_account_last_used", false' backend/internal/config/config.go
-          grep -q "func NewLocalConcurrencyCache" backend/internal/repository/local_concurrency_cache.go
-          grep -q "NewDeferredServiceWithOptions" backend/internal/service/deferred_service.go
+          bash .github/scripts/verify-fork-hotpath.sh
+
+      - name: Run focused backend tests
+        working-directory: backend
+        env:
+          GOCACHE: ${{ github.workspace }}/.tmp/go-build-cache
+          GOTMPDIR: ${{ github.workspace }}/.tmp/go-tmp
+        run: |
+          mkdir -p "$GOCACHE" "$GOTMPDIR"
+          trap 'rm -rf "$GOCACHE" "$GOTMPDIR"' EXIT
+          go test ./internal/repository ./internal/service ./internal/handler ./internal/server
 
       - name: Set image metadata
         run: |
