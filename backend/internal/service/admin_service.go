@@ -1015,13 +1015,15 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 	}
 
 	if s.billingCacheService != nil {
-		go func() {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := s.billingCacheService.InvalidateUserBalance(cacheCtx, userID); err != nil {
-				logger.LegacyPrintf("service.admin", "invalidate user balance cache failed: user_id=%d err=%v", userID, err)
+		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if operation == "set" {
+			if err := s.billingCacheService.SetUserBalanceRealtime(cacheCtx, userID, user.Balance); err != nil {
+				logger.LegacyPrintf("service.admin", "set user balance cache failed: user_id=%d err=%v", userID, err)
 			}
-		}()
+		} else if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(cacheCtx, userID, balanceDiff); err != nil {
+			logger.LegacyPrintf("service.admin", "update user balance cache failed: user_id=%d err=%v", userID, err)
+		}
+		cancel()
 	}
 
 	if balanceDiff != 0 {
@@ -2260,15 +2262,13 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
 	// 事务成功后，异步失效受影响用户的订阅缓存
 	if len(affectedUserIDs) > 0 && s.billingCacheService != nil {
 		groupID := id
-		go func() {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			for _, userID := range affectedUserIDs {
-				if err := s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID); err != nil {
-					logger.LegacyPrintf("service.admin", "invalidate subscription cache failed: user_id=%d group_id=%d err=%v", userID, groupID, err)
-				}
+		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		for _, userID := range affectedUserIDs {
+			if err := s.billingCacheService.RefreshSubscription(cacheCtx, userID, groupID); err != nil {
+				logger.LegacyPrintf("service.admin", "refresh subscription cache failed: user_id=%d group_id=%d err=%v", userID, groupID, err)
 			}
-		}()
+		}
+		cancel()
 	}
 	if s.authCacheInvalidator != nil {
 		for _, key := range groupKeys {

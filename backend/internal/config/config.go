@@ -1015,10 +1015,13 @@ type GatewayUsageRecordConfig struct {
 }
 
 type GatewayHotPathConfig struct {
-	LocalConcurrencySlots       bool `mapstructure:"local_concurrency_slots"`
-	PersistAccountLastUsed      bool `mapstructure:"persist_account_last_used"`
-	LocalBillingCache           bool `mapstructure:"local_billing_cache"`
-	LocalBillingCacheMaxEntries int  `mapstructure:"local_billing_cache_max_entries"`
+	LocalConcurrencySlots         bool `mapstructure:"local_concurrency_slots"`
+	PersistAccountLastUsed        bool `mapstructure:"persist_account_last_used"`
+	LocalBillingCache             bool `mapstructure:"local_billing_cache"`
+	LocalBillingCacheMaxEntries   int  `mapstructure:"local_billing_cache_max_entries"`
+	LocalBillingCacheWriteThrough bool `mapstructure:"local_billing_cache_write_through"`
+	UsageBillingWriteBehind       bool `mapstructure:"usage_billing_write_behind"`
+	UsageBillingFlushIntervalMs   int  `mapstructure:"usage_billing_flush_interval_ms"`
 }
 
 // TLSFingerprintConfig TLS指纹伪装配置
@@ -1966,6 +1969,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.hotpath.persist_account_last_used", false)
 	viper.SetDefault("gateway.hotpath.local_billing_cache", true)
 	viper.SetDefault("gateway.hotpath.local_billing_cache_max_entries", 262144)
+	viper.SetDefault("gateway.hotpath.local_billing_cache_write_through", false)
+	viper.SetDefault("gateway.hotpath.usage_billing_write_behind", true)
+	viper.SetDefault("gateway.hotpath.usage_billing_flush_interval_ms", 30000)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
@@ -2707,6 +2713,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.UsageRecord.WorkerCount <= 0 {
 		return fmt.Errorf("gateway.usage_record.worker_count must be positive")
+	}
+	if c.Gateway.HotPath.LocalBillingCacheMaxEntries < 0 {
+		return fmt.Errorf("gateway.hotpath.local_billing_cache_max_entries must be non-negative")
+	}
+	if c.Gateway.HotPath.UsageBillingWriteBehind && c.Gateway.HotPath.UsageBillingFlushIntervalMs <= 0 {
+		return fmt.Errorf("gateway.hotpath.usage_billing_flush_interval_ms must be positive")
 	}
 	if c.Gateway.UsageRecord.QueueSize <= 0 {
 		return fmt.Errorf("gateway.usage_record.queue_size must be positive")

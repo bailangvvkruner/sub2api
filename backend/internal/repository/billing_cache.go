@@ -149,7 +149,7 @@ func ProvideBillingCache(rdb *redis.Client, cfg *config.Config) service.BillingC
 	if cfg == nil || !cfg.Gateway.HotPath.LocalBillingCache {
 		return base
 	}
-	return newLocalBillingCache(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries)
+	return newLocalBillingCacheWithOptions(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries, cfg.Gateway.HotPath.LocalBillingCacheWriteThrough)
 }
 
 func (c *billingCache) GetUserBalance(ctx context.Context, userID int64) (float64, error) {

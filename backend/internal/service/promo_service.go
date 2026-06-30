@@ -10,6 +10,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
 
@@ -152,11 +153,11 @@ func (s *PromoService) ApplyPromoCode(ctx context.Context, userID int64, code st
 
 	// 失效余额缓存
 	if s.billingCacheService != nil {
-		go func() {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = s.billingCacheService.InvalidateUserBalance(cacheCtx, userID)
-		}()
+		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(cacheCtx, userID, promoCode.BonusAmount); err != nil {
+			logger.LegacyPrintf("service.promo", "update user balance cache failed: user_id=%d err=%v", userID, err)
+		}
+		cancel()
 	}
 
 	return nil

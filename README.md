@@ -4,12 +4,13 @@
 
 - `gateway.hotpath.local_concurrency_slots: true`：账号/用户并发槽与等待计数从 Redis ZSET/计数器切到本机内存，抢槽、释放槽、负载读取不再走 Redis。
 - `gateway.hotpath.persist_account_last_used: false`：账号 `last_used_at` 默认不再按请求延迟批量写数据库，减少高 QPS 下的 DB 写入与调度缓存刷新。
-- `gateway.hotpath.local_billing_cache: true`：余额、订阅用量、API key 限速、user×platform quota 增加 sub2api 进程内 L1 缓存。读路径优先级为 `sub2api 程序缓存 > Redis > PostgreSQL`；写路径先更新本机热快照，再透传 Redis/原有持久化路径。
-- `database.user_platform_quota_flusher_enabled: true`：user×platform quota usage 默认不再每请求同步直写 PostgreSQL，而是先累加到本机/Redis 快照，再由 flusher 默认每 30 秒批量刷入 PostgreSQL，降低 DB 写入次数和磁盘 IOPS。
+- `gateway.hotpath.local_billing_cache: true`：余额、订阅用量、API key 限速、user×platform quota 增加 sub2api 进程内 L1 缓存。读路径优先级为 `sub2api 程序缓存 > Redis > PostgreSQL`；默认 `local_billing_cache_write_through: false`，热路径写入先更新本机快照，不再每次透传 Redis。
+- `gateway.hotpath.usage_billing_write_behind: true`：余额扣费、订阅用量、API key quota/限速用量、账号 quota 默认先进入进程内聚合器，再按 `usage_billing_flush_interval_ms: 30000` 批量刷入 PostgreSQL；正常退出 cleanup 会先 flush，减少每请求事务和磁盘写入。
+- `database.user_platform_quota_flusher_enabled: true`：user×platform quota usage 默认不再每请求同步直写 PostgreSQL，而是先累加到本机热快照，再由 flusher 默认每 30 秒批量刷入 PostgreSQL，降低 DB 写入次数和磁盘 IOPS。
 - 调度默认走 priority/load/random 类 tie-break；`fallback_selection_mode: last_used` 仍保留兼容，但激进模式下不建议依赖它。
 - 上游同步工作流会检查这些补丁是否仍在，避免同步后被上游改动悄悄冲掉。
 
-边界说明：用户扣费账本、支付订单、充值记录、真实 usage 明细、管理员配置变更仍以 PostgreSQL 为权威，不做“只放内存”。这些数据关系到账务和审计，完全放进进程内存会在断电、强杀、多实例切换时丢账；本补丁只把高频判断和 usage 快照放到 L1/Redis 热层，用批量刷盘减少写放大。
+边界说明：请求数据面默认 L1 优先，但不是所有数据都只放内存。支付订单、充值记录、管理员配置变更、账号/API key/用户创建修改等控制面仍直接以 PostgreSQL 为权威。`usage_billing_write_behind` 会把请求扣费延迟到 30 秒批量刷盘；正常停止会 flush，断电、宿主机崩溃、`docker kill -9` 可能丢失未 flush 的窗口。多实例部署如果需要跨进程强一致热快照，应打开 `local_billing_cache_write_through` 或关闭激进 L1 模式。
 
 Docker 部署已加正常退出保护：`sub2api` 停机宽限期 90 秒，HTTP 排水最多等待 15 秒，应用内部 cleanup 最多等待 45 秒；PostgreSQL/Redis 停机宽限期 120 秒；Redis 收到 `docker compose stop/down` 的 SIGTERM 时会执行 `SHUTDOWN SAVE`，尽量在退出前把 RDB/AOF 写盘。这个保护只覆盖正常停止流程，不能保证断电、宿主机崩溃、`docker kill -9` 这类强杀场景。
 

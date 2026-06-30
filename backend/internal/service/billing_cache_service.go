@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -124,6 +125,14 @@ type BillingCacheService struct {
 }
 
 // NewBillingCacheService 创建计费缓存服务
+type localBillingCacheCapabilities interface {
+	LocalBillingWriteThroughEnabled() bool
+}
+
+type localBillingBalanceDeltaCache interface {
+	ApplyUserBalanceDeltaLocal(userID int64, delta float64) bool
+}
+
 func NewBillingCacheService(
 	cache BillingCache,
 	userRepo UserRepository,
@@ -147,6 +156,25 @@ func NewBillingCacheService(
 	svc.circuitBreaker = newBillingCircuitBreaker(cfg.Billing.CircuitBreaker)
 	svc.startCacheWriteWorkers()
 	return svc
+}
+
+func (s *BillingCacheService) hasLocalBillingCache() bool {
+	if s == nil || s.cache == nil {
+		return false
+	}
+	_, ok := s.cache.(localBillingCacheCapabilities)
+	return ok
+}
+
+func (s *BillingCacheService) applyUserBalanceDeltaLocal(userID int64, delta float64) bool {
+	if s == nil || s.cache == nil {
+		return false
+	}
+	local, ok := s.cache.(localBillingBalanceDeltaCache)
+	if !ok {
+		return false
+	}
+	return local.ApplyUserBalanceDeltaLocal(userID, delta)
 }
 
 // Stop 关闭缓存写入工作池
@@ -363,6 +391,47 @@ func (s *BillingCacheService) setBalanceCache(ctx context.Context, userID int64,
 }
 
 // DeductBalanceCache 扣减余额缓存（同步调用）
+func (s *BillingCacheService) RefreshUserBalance(ctx context.Context, userID int64) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	if s.userRepo == nil {
+		return s.InvalidateUserBalance(ctx, userID)
+	}
+	balance, err := s.getUserBalanceFromDB(ctx, userID)
+	if err != nil {
+		return err
+	}
+	return s.cache.SetUserBalance(ctx, userID, balance)
+}
+
+func (s *BillingCacheService) SetUserBalanceRealtime(ctx context.Context, userID int64, balance float64) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	return s.cache.SetUserBalance(ctx, userID, balance)
+}
+
+func (s *BillingCacheService) ApplyUserBalanceDeltaRealtime(ctx context.Context, userID int64, delta float64) error {
+	if s == nil || s.cache == nil || delta == 0 {
+		return nil
+	}
+	if s.applyUserBalanceDeltaLocal(userID, delta) {
+		return nil
+	}
+	return s.RefreshUserBalance(ctx, userID)
+}
+
+func (s *BillingCacheService) SyncBalanceAfterDeduction(ctx context.Context, userID int64, amount float64, newBalance *float64) error {
+	if s == nil || s.cache == nil || amount <= 0 {
+		return nil
+	}
+	if newBalance != nil {
+		return s.SetUserBalanceRealtime(ctx, userID, *newBalance)
+	}
+	return s.ApplyUserBalanceDeltaRealtime(ctx, userID, -amount)
+}
+
 func (s *BillingCacheService) DeductBalanceCache(ctx context.Context, userID int64, amount float64) error {
 	if s.cache == nil {
 		return nil
@@ -373,6 +442,14 @@ func (s *BillingCacheService) DeductBalanceCache(ctx context.Context, userID int
 // QueueDeductBalance 异步扣减余额缓存
 func (s *BillingCacheService) QueueDeductBalance(userID int64, amount float64) {
 	if s.cache == nil {
+		return
+	}
+	if s.hasLocalBillingCache() {
+		ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
+		defer cancel()
+		if err := s.DeductBalanceCache(ctx, userID, amount); err != nil {
+			logger.LegacyPrintf("service.billing_cache", "Warning: realtime deduct balance cache failed for user %d: %v", userID, err)
+		}
 		return
 	}
 	// 队列满时同步回退，避免关键扣减被静默丢弃。
@@ -485,6 +562,39 @@ func (s *BillingCacheService) setSubscriptionCache(ctx context.Context, userID, 
 }
 
 // UpdateSubscriptionUsage 更新订阅用量缓存（同步调用）
+func (s *BillingCacheService) RefreshSubscription(ctx context.Context, userID, groupID int64) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	if s.subRepo == nil {
+		return s.InvalidateSubscription(ctx, userID, groupID)
+	}
+	data, err := s.getSubscriptionFromDB(ctx, userID, groupID)
+	if err != nil {
+		if errors.Is(err, ErrSubscriptionNotFound) {
+			return s.SetSubscriptionRealtime(ctx, userID, groupID, expiredSubscriptionCacheData())
+		}
+		return err
+	}
+	return s.SetSubscriptionRealtime(ctx, userID, groupID, data)
+}
+
+func (s *BillingCacheService) SetSubscriptionRealtime(ctx context.Context, userID, groupID int64, data *subscriptionCacheData) error {
+	if s == nil || s.cache == nil || data == nil {
+		return nil
+	}
+	return s.cache.SetSubscriptionCache(ctx, userID, groupID, s.convertToPortsData(data))
+}
+
+func expiredSubscriptionCacheData() *subscriptionCacheData {
+	now := time.Now()
+	return &subscriptionCacheData{
+		Status:    SubscriptionStatusExpired,
+		ExpiresAt: now.Add(-time.Second),
+		Version:   now.Unix(),
+	}
+}
+
 func (s *BillingCacheService) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, costUSD float64) error {
 	if s.cache == nil {
 		return nil
@@ -495,6 +605,14 @@ func (s *BillingCacheService) UpdateSubscriptionUsage(ctx context.Context, userI
 // QueueUpdateSubscriptionUsage 异步更新订阅用量缓存
 func (s *BillingCacheService) QueueUpdateSubscriptionUsage(userID, groupID int64, costUSD float64) {
 	if s.cache == nil {
+		return
+	}
+	if s.hasLocalBillingCache() {
+		ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
+		defer cancel()
+		if err := s.UpdateSubscriptionUsage(ctx, userID, groupID, costUSD); err != nil {
+			logger.LegacyPrintf("service.billing_cache", "Warning: realtime update subscription cache failed for user %d group %d: %v", userID, groupID, err)
+		}
 		return
 	}
 	// 队列满时同步回退，确保订阅用量及时更新。
@@ -665,6 +783,14 @@ func (s *BillingCacheService) QueueUpdateAPIKeyRateLimitUsage(apiKeyID int64, co
 	if s.cache == nil {
 		return
 	}
+	if s.hasLocalBillingCache() {
+		ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
+		defer cancel()
+		if err := s.cache.UpdateAPIKeyRateLimitUsage(ctx, apiKeyID, cost); err != nil {
+			logger.LegacyPrintf("service.billing_cache", "Warning: realtime update rate limit cache failed for api key %d: %v", apiKeyID, err)
+		}
+		return
+	}
 	s.enqueueCacheWrite(cacheWriteTask{
 		kind:     cacheWriteUpdateRateLimitUsage,
 		apiKeyID: apiKeyID,
@@ -688,13 +814,27 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
 	defer cancel()
-	ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
-	markDirty := s.cfg.Database.UserPlatformQuotaFlusherEnabled
+	ttl := s.userPlatformQuotaCacheTTL()
+	markDirty := s.cfg != nil && s.cfg.Database.UserPlatformQuotaFlusherEnabled
 	if err := s.cache.IncrUserPlatformQuotaUsageCache(ctx, userID, platform, cost, ttl, markDirty); err != nil {
 		logger.LegacyPrintf("service.billing_cache",
 			"ALERT: incr user platform quota cache failed user=%d platform=%s cost=%f: %v",
 			userID, platform, cost, err)
 	}
+}
+
+func (s *BillingCacheService) userPlatformQuotaCacheTTL() time.Duration {
+	if s == nil || s.cfg == nil || s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
+}
+
+func (s *BillingCacheService) userPlatformQuotaSentinelTTL() time.Duration {
+	if s == nil || s.cfg == nil || s.cfg.Billing.UserPlatformQuotaSentinelTTLSeconds <= 0 {
+		return time.Hour
+	}
+	return time.Duration(s.cfg.Billing.UserPlatformQuotaSentinelTTLSeconds) * time.Second
 }
 
 // ============================================
@@ -707,7 +847,7 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
 // platform 为请求的目标平台（如 "anthropic"），传空串 "" 时跳过 user × platform quota 检查。
 func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user *User, apiKey *APIKey, group *Group, subscription *UserSubscription, platform string) error {
 	// 简易模式：跳过所有计费检查
-	if s.cfg.RunMode == config.RunModeSimple {
+	if s != nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		return nil
 	}
 	if s.circuitBreaker != nil && !s.circuitBreaker.Allow() {
@@ -1130,7 +1270,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 				WeeklyWindowStart:  newWeeklyStart,
 				MonthlyWindowStart: newMonthlyStart,
 			}
-			ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
+			ttl := s.userPlatformQuotaCacheTTL()
 			setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			if setErr := s.cache.SetUserPlatformQuotaCache(setCtx, userID, platform, refreshed, ttl); setErr != nil {
 				logger.LegacyPrintf("service.billing_cache",
@@ -1194,7 +1334,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 				MonthlyWindowStart: &now,
 				// limits 全 nil, usage 全 0(零值)
 			}
-			sentinelTTL := time.Duration(s.cfg.Billing.UserPlatformQuotaSentinelTTLSeconds) * time.Second
+			sentinelTTL := s.userPlatformQuotaSentinelTTL()
 			if sentinelTTL <= 0 {
 				// 防御:TTL<=0 时 Redis EXPIRE 会立即删除整个 key(见 billing_cache.go 的 pipe.Expire),
 				// sentinel 不持久化 → 每请求击穿 DB。配置缺失/误配为 0 时 fallback 到 1h。
@@ -1252,7 +1392,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 		MonthlyWindowStart: rec.MonthlyWindowStart,
 	}
 	if s.cache != nil {
-		ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
+		ttl := s.userPlatformQuotaCacheTTL()
 		// 与 HIT 过期回填路径（上文 SetCache 调用）保持一致：用 context.Background()+50ms,
 		// 避免请求 ctx 提前取消（客户端断连/上游超时）导致 cache 回填失败,
 		// 让下一次 preflight 仍然 MISS 并击穿到 DB（高并发下增大 DB 压力）。
@@ -1331,7 +1471,7 @@ func monthlyQuotaWindowExpired(start *time.Time, now time.Time) bool {
 // 写入点守卫:无 limit 直接跳过 Redis 写 + 脏集标记,消除无谓写入。
 // fail-safe:任何不确定(simple 模式除外)都返回 true 维持写入。
 func (s *BillingCacheService) HasUserPlatformQuotaLimit(ctx context.Context, userID int64, platform string) bool {
-	if s.cfg.RunMode == config.RunModeSimple {
+	if s != nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		return false
 	}
 	if s.cache == nil {

@@ -475,6 +475,15 @@ gateway:
     # Max entries per local billing cache bucket before approximate LRU eviction.
     # 本机计费缓存每类最大条目数，超过后按近似 LRU 淘汰。
     local_billing_cache_max_entries: 262144
+    # Also write local billing cache mutations through to Redis.
+    # 是否把本机计费热快照的写入同时透传 Redis；单实例 L1 激进模式默认关闭以降低 Redis QPS。
+    local_billing_cache_write_through: false
+    # Batch per-request usage billing in process memory before PostgreSQL.
+    # 请求扣费/用量先进入进程内 write-behind 聚合，再批量刷入 PostgreSQL。
+    usage_billing_write_behind: true
+    # Flush interval for usage billing write-behind (milliseconds).
+    # 请求扣费/用量 write-behind 刷盘间隔（毫秒）。
+    usage_billing_flush_interval_ms: 30000
   # TLS fingerprint simulation / TLS 指纹伪装
   # Default profile "claude_cli_v2" simulates Node.js 20.x
   # 默认模板 "claude_cli_v2" 模拟 Node.js 20.x 指纹

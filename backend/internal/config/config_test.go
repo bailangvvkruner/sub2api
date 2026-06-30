@@ -1948,6 +1948,15 @@ func TestLoad_DefaultGatewayHotPathConfig(t *testing.T) {
 	if cfg.Gateway.HotPath.LocalBillingCacheMaxEntries != 262144 {
 		t.Fatalf("local_billing_cache_max_entries = %d, want 262144", cfg.Gateway.HotPath.LocalBillingCacheMaxEntries)
 	}
+	if cfg.Gateway.HotPath.LocalBillingCacheWriteThrough {
+		t.Fatalf("local_billing_cache_write_through = true, want false")
+	}
+	if !cfg.Gateway.HotPath.UsageBillingWriteBehind {
+		t.Fatalf("usage_billing_write_behind = false, want true")
+	}
+	if cfg.Gateway.HotPath.UsageBillingFlushIntervalMs != 30000 {
+		t.Fatalf("usage_billing_flush_interval_ms = %d, want 30000", cfg.Gateway.HotPath.UsageBillingFlushIntervalMs)
+	}
 }
 
 func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {

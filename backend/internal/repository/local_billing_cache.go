@@ -19,8 +19,9 @@ const (
 type localBillingCache struct {
 	next service.BillingCache
 
-	maxEntries int
-	clock      func() time.Time
+	maxEntries   int
+	writeThrough bool
+	clock        func() time.Time
 
 	balanceMu sync.Mutex
 	balances  map[int64]localBalanceEntry
@@ -73,6 +74,10 @@ type localQuotaEntry struct {
 }
 
 func newLocalBillingCache(next service.BillingCache, maxEntries int) service.BillingCache {
+	return newLocalBillingCacheWithOptions(next, maxEntries, false)
+}
+
+func newLocalBillingCacheWithOptions(next service.BillingCache, maxEntries int, writeThrough bool) service.BillingCache {
 	if maxEntries <= 0 {
 		maxEntries = defaultLocalBillingCacheMaxEntries
 	}
@@ -82,6 +87,7 @@ func newLocalBillingCache(next service.BillingCache, maxEntries int) service.Bil
 	return &localBillingCache{
 		next:          next,
 		maxEntries:    maxEntries,
+		writeThrough:  writeThrough,
 		clock:         time.Now,
 		balances:      make(map[int64]localBalanceEntry),
 		subscriptions: make(map[localSubscriptionKey]localSubscriptionEntry),
@@ -89,6 +95,30 @@ func newLocalBillingCache(next service.BillingCache, maxEntries int) service.Bil
 		quotas:        make(map[localQuotaKey]localQuotaEntry),
 		quotaDirty:    make(map[localQuotaKey]struct{}),
 	}
+}
+
+func (c *localBillingCache) LocalBillingWriteThroughEnabled() bool {
+	return c != nil && c.writeThrough
+}
+
+func (c *localBillingCache) ApplyUserBalanceDeltaLocal(userID int64, delta float64) bool {
+	if c == nil {
+		return false
+	}
+	c.balanceMu.Lock()
+	defer c.balanceMu.Unlock()
+	entry, ok := c.balances[userID]
+	if !ok || !entry.expires.After(c.clock()) {
+		if ok {
+			delete(c.balances, userID)
+		}
+		return false
+	}
+	entry.value += delta
+	entry.expires = c.clock().Add(billingCacheTTL)
+	entry.accessed = c.nextAccess()
+	c.balances[userID] = entry
+	return true
 }
 
 func (c *localBillingCache) nextAccess() uint64 {
@@ -219,7 +249,7 @@ func (c *localBillingCache) GetUserBalance(ctx context.Context, userID int64) (f
 
 func (c *localBillingCache) SetUserBalance(ctx context.Context, userID int64, balance float64) error {
 	c.setBalanceLocal(userID, balance, billingCacheTTL)
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.SetUserBalance(ctx, userID, balance)
@@ -246,7 +276,7 @@ func (c *localBillingCache) DeductUserBalance(ctx context.Context, userID int64,
 		c.balances[userID] = entry
 	}
 	c.balanceMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.DeductUserBalance(ctx, userID, amount)
@@ -256,7 +286,7 @@ func (c *localBillingCache) InvalidateUserBalance(ctx context.Context, userID in
 	c.balanceMu.Lock()
 	delete(c.balances, userID)
 	c.balanceMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.InvalidateUserBalance(ctx, userID)
@@ -293,7 +323,7 @@ func (c *localBillingCache) SetSubscriptionCache(ctx context.Context, userID, gr
 	if data != nil {
 		c.setSubscriptionLocal(localSubscriptionKey{userID: userID, groupID: groupID}, data, billingCacheTTL)
 	}
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.SetSubscriptionCache(ctx, userID, groupID, data)
@@ -326,7 +356,7 @@ func (c *localBillingCache) UpdateSubscriptionUsage(ctx context.Context, userID,
 		c.subscriptions[key] = entry
 	}
 	c.subMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.UpdateSubscriptionUsage(ctx, userID, groupID, cost)
@@ -336,7 +366,7 @@ func (c *localBillingCache) InvalidateSubscriptionCache(ctx context.Context, use
 	c.subMu.Lock()
 	delete(c.subscriptions, localSubscriptionKey{userID: userID, groupID: groupID})
 	c.subMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.InvalidateSubscriptionCache(ctx, userID, groupID)
@@ -372,7 +402,7 @@ func (c *localBillingCache) SetAPIKeyRateLimit(ctx context.Context, keyID int64,
 	if data != nil {
 		c.setRateLimitLocal(keyID, data, rateLimitCacheTTL)
 	}
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.SetAPIKeyRateLimit(ctx, keyID, data)
@@ -405,7 +435,7 @@ func (c *localBillingCache) UpdateAPIKeyRateLimitUsage(ctx context.Context, keyI
 		c.rateLimits[keyID] = entry
 	}
 	c.rateMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.UpdateAPIKeyRateLimitUsage(ctx, keyID, cost)
@@ -427,7 +457,7 @@ func (c *localBillingCache) InvalidateAPIKeyRateLimit(ctx context.Context, keyID
 	c.rateMu.Lock()
 	delete(c.rateLimits, keyID)
 	c.rateMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.InvalidateAPIKeyRateLimit(ctx, keyID)
@@ -465,7 +495,7 @@ func (c *localBillingCache) SetUserPlatformQuotaCache(ctx context.Context, userI
 	if entry != nil {
 		c.setQuotaLocal(localQuotaKey{userID: userID, platform: platform}, entry, ttl)
 	}
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.SetUserPlatformQuotaCache(ctx, userID, platform, entry, ttl)
@@ -492,7 +522,7 @@ func (c *localBillingCache) DeleteUserPlatformQuotaCache(ctx context.Context, us
 	delete(c.quotas, key)
 	delete(c.quotaDirty, key)
 	c.quotaMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.DeleteUserPlatformQuotaCache(ctx, userID, platform)
@@ -515,7 +545,7 @@ func (c *localBillingCache) IncrUserPlatformQuotaUsageCache(ctx context.Context,
 		}
 	}
 	c.quotaMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.IncrUserPlatformQuotaUsageCache(ctx, userID, platform, cost, ttl, markDirty)
@@ -537,7 +567,7 @@ func (c *localBillingCache) PopDirtyUserPlatformQuotaKeys(ctx context.Context, n
 		}
 	}
 	c.quotaMu.Unlock()
-	if len(keys) >= n || c.next == nil {
+	if len(keys) >= n || c.next == nil || !c.writeThrough {
 		return keys, nil
 	}
 	more, err := c.next.PopDirtyUserPlatformQuotaKeys(ctx, n-len(keys))
@@ -567,7 +597,7 @@ func (c *localBillingCache) ReaddDirtyUserPlatformQuotaKeys(ctx context.Context,
 		c.quotaDirty[localQuotaKey{userID: key.UserID, platform: key.Platform}] = struct{}{}
 	}
 	c.quotaMu.Unlock()
-	if c.next == nil {
+	if c.next == nil || !c.writeThrough {
 		return nil
 	}
 	return c.next.ReaddDirtyUserPlatformQuotaKeys(ctx, keys)
@@ -601,7 +631,7 @@ func (c *localBillingCache) BatchGetUserPlatformQuotaCache(ctx context.Context, 
 	}
 	c.quotaMu.Unlock()
 
-	if len(missKeys) == 0 || c.next == nil {
+	if len(missKeys) == 0 || c.next == nil || !c.writeThrough {
 		return results, nil
 	}
 	missResults, err := c.next.BatchGetUserPlatformQuotaCache(ctx, missKeys)

@@ -196,19 +196,20 @@ type RateLimitCacheInvalidator interface {
 }
 
 type APIKeyService struct {
-	apiKeyRepo            APIKeyRepository
-	userRepo              UserRepository
-	groupRepo             GroupRepository
-	userSubRepo           UserSubscriptionRepository
-	userGroupRateRepo     UserGroupRateRepository
-	cache                 APIKeyCache
-	rateLimitCacheInvalid RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
-	cfg                   *config.Config
-	authCacheL1           *ristretto.Cache
-	authCfg               apiKeyAuthCacheConfig
-	authGroup             singleflight.Group
-	lastUsedTouchL1       sync.Map // keyID -> nextAllowedAt(time.Time)
-	lastUsedTouchSF       singleflight.Group
+	apiKeyRepo              APIKeyRepository
+	userRepo                UserRepository
+	groupRepo               GroupRepository
+	userSubRepo             UserSubscriptionRepository
+	userGroupRateRepo       UserGroupRateRepository
+	cache                   APIKeyCache
+	rateLimitCacheInvalid   RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
+	cfg                     *config.Config
+	authCacheL1             *ristretto.Cache
+	authCfg                 apiKeyAuthCacheConfig
+	usageBillingWriteBehind *UsageBillingWriteBehind
+	authGroup               singleflight.Group
+	lastUsedTouchL1         sync.Map // keyID -> nextAllowedAt(time.Time)
+	lastUsedTouchSF         singleflight.Group
 }
 
 // NewAPIKeyService 创建API Key服务实例
@@ -238,6 +239,10 @@ func NewAPIKeyService(
 // Called after construction (e.g. in wire) to avoid circular dependencies.
 func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidator) {
 	s.rateLimitCacheInvalid = inv
+}
+
+func (s *APIKeyService) SetUsageBillingWriteBehind(wb *UsageBillingWriteBehind) {
+	s.usageBillingWriteBehind = wb
 }
 
 func (s *APIKeyService) compileAPIKeyIPRules(apiKey *APIKey) {
@@ -819,11 +824,21 @@ func (s *APIKeyService) CheckAPIKeyQuotaAndExpiry(apiKey *APIKey) error {
 	}
 
 	// Check quota
-	if apiKey.IsQuotaExhausted() {
+	if s.IsQuotaExhausted(apiKey) {
 		return ErrAPIKeyQuotaExhausted
 	}
 
 	return nil
+}
+
+func (s *APIKeyService) IsQuotaExhausted(apiKey *APIKey) bool {
+	if apiKey == nil {
+		return false
+	}
+	if apiKey.IsQuotaExhausted() {
+		return true
+	}
+	return s != nil && s.usageBillingWriteBehind != nil && s.usageBillingWriteBehind.APIKeyQuotaExhausted(apiKey)
 }
 
 // UpdateQuotaUsed updates the quota_used field after a request

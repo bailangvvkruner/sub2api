@@ -438,6 +438,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 	}
 
 	// 执行兑换逻辑（兑换码已被锁定，此时可安全操作）
+	balanceDelta := 0.0
 	switch redeemCode.Type {
 	case RedeemTypeBalance:
 		amount := redeemCode.Value
@@ -448,6 +449,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 		if err := s.userRepo.UpdateBalance(txCtx, userID, amount); err != nil {
 			return nil, fmt.Errorf("update user balance: %w", err)
 		}
+		balanceDelta = amount
 
 	case RedeemTypeConcurrency:
 		delta := int(redeemCode.Value)
@@ -492,7 +494,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 	}
 
 	// 事务提交成功后失效缓存
-	s.invalidateRedeemCaches(ctx, userID, redeemCode)
+	s.invalidateRedeemCaches(ctx, userID, redeemCode, balanceDelta)
 
 	// 余额类正数兑换码触发邀请返利（best-effort，失败不影响兑换结果）
 	if redeemCode.Type == RedeemTypeBalance && redeemCode.Value > 0 {
@@ -509,7 +511,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 }
 
 // invalidateRedeemCaches 失效兑换相关的缓存
-func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64, redeemCode *RedeemCode) {
+func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64, redeemCode *RedeemCode, balanceDelta float64) {
 	switch redeemCode.Type {
 	case RedeemTypeBalance:
 		if s.authCacheInvalidator != nil {
@@ -518,11 +520,11 @@ func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64
 		if s.billingCacheService == nil {
 			return
 		}
-		go func() {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = s.billingCacheService.InvalidateUserBalance(cacheCtx, userID)
-		}()
+		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(cacheCtx, userID, balanceDelta); err != nil {
+			logger.LegacyPrintf("service.redeem", "update user balance cache failed: user_id=%d err=%v", userID, err)
+		}
+		cancel()
 	case RedeemTypeConcurrency:
 		if s.authCacheInvalidator != nil {
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
@@ -539,11 +541,13 @@ func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64
 		}
 		if redeemCode.GroupID != nil {
 			groupID := *redeemCode.GroupID
-			go func() {
-				cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID)
-			}()
+			if s.subscriptionService != nil {
+				s.subscriptionService.refreshSubscriptionCaches(ctx, userID, groupID)
+			} else {
+				cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				_ = s.billingCacheService.RefreshSubscription(cacheCtx, userID, groupID)
+				cancel()
+			}
 		}
 	}
 }
@@ -681,9 +685,6 @@ func (s *RedeemService) reduceOrCancelSubscription(ctx context.Context, userID, 
 	if err := s.subscriptionService.userSubRepo.UpdateNotes(ctx, sub.ID, newNotes); err != nil {
 		return fmt.Errorf("update subscription notes: %w", err)
 	}
-
-	// 失效缓存
-	s.subscriptionService.InvalidateSubCache(userID, groupID)
 
 	return nil
 }

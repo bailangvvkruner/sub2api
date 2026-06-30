@@ -109,7 +109,7 @@ func TestLocalBillingCache_UserPlatformQuotaDirtyServesFlusherFromLocal(t *testi
 
 	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, 7, "openai", entry, time.Hour))
 	require.NoError(t, cache.IncrUserPlatformQuotaUsageCache(ctx, 7, "openai", 2.5, time.Hour, true))
-	require.Equal(t, int64(1), next.quotaIncrs.Load())
+	require.Equal(t, int64(0), next.quotaIncrs.Load())
 
 	keys, err := cache.PopDirtyUserPlatformQuotaKeys(ctx, 10)
 	require.NoError(t, err)
@@ -122,4 +122,23 @@ func TestLocalBillingCache_UserPlatformQuotaDirtyServesFlusherFromLocal(t *testi
 	require.Equal(t, 3.5, got[0].DailyUsageUSD)
 	require.Equal(t, 4.5, got[0].WeeklyUsageUSD)
 	require.Equal(t, 5.5, got[0].MonthlyUsageUSD)
+}
+
+func TestLocalBillingCache_UserPlatformQuotaWriteThroughPassesToNext(t *testing.T) {
+	next := &localBillingNextStub{}
+	cache := newLocalBillingCacheWithOptions(next, 1024, true)
+	ctx := context.Background()
+	limit := 10.0
+	now := time.Now().UTC()
+	entry := &service.UserPlatformQuotaCacheEntry{
+		SchemaVersion:      service.UserPlatformQuotaCacheSchemaV1,
+		DailyLimitUSD:      &limit,
+		DailyWindowStart:   &now,
+		WeeklyWindowStart:  &now,
+		MonthlyWindowStart: &now,
+	}
+
+	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, 7, "openai", entry, time.Hour))
+	require.NoError(t, cache.IncrUserPlatformQuotaUsageCache(ctx, 7, "openai", 2.5, time.Hour, true))
+	require.Equal(t, int64(1), next.quotaIncrs.Load())
 }
