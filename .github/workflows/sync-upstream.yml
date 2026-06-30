@@ -56,6 +56,12 @@ jobs:
             git commit -m "ci: keep fork workflows only"
           fi
 
+      - name: Verify fork patch is still applied
+        run: |
+          grep -A2 "func (c \*schedulerCache) UpdateLastUsed" backend/internal/repository/scheduler_cache.go | grep -q "return nil"
+          grep -A2 "func (s \*SchedulerSnapshotService) handleLastUsedEvent" backend/internal/service/scheduler_snapshot_service.go | grep -q "return nil"
+          grep -q "fallback_selection_mode\", \"random\"" backend/internal/config/config.go
+
       - name: Push synced main
         run: |
           git push origin HEAD:main
