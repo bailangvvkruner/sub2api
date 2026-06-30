@@ -40,7 +40,37 @@ jobs:
 
       - name: Merge upstream main
         run: |
+          set +e
           git merge --no-edit upstream/main
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          conflicts="$(git diff --name-only --diff-filter=U || true)"
+          allowed_conflicts="$(printf '%s\n' "$conflicts" | grep -E '^\.github/workflows/(backend-ci|cla|release|security-scan)\.yml$' || true)"
+          blocked_conflicts="$(printf '%s\n' "$conflicts" | grep -vE '^\.github/workflows/(backend-ci|cla|release|security-scan)\.yml$' || true)"
+
+          if [ -n "$blocked_conflicts" ]; then
+            echo "Upstream merge has conflicts outside removable fork workflows:"
+            printf '%s\n' "$blocked_conflicts"
+            exit 1
+          fi
+
+          if [ -z "$allowed_conflicts" ]; then
+            echo "Upstream merge failed without a known removable workflow conflict."
+            exit 1
+          fi
+
+          rm -f \
+            .github/workflows/backend-ci.yml \
+            .github/workflows/cla.yml \
+            .github/workflows/release.yml \
+            .github/workflows/security-scan.yml
+          git add .github/workflows
+          git commit --no-edit
 
       - name: Keep fork workflows only
         run: |
