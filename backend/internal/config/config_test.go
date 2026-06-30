@@ -424,6 +424,15 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
 	if cfg.Database.SSLMode != "prefer" {
 		t.Fatalf("Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "prefer")
 	}
+	if !cfg.Database.UserPlatformQuotaFlusherEnabled {
+		t.Fatalf("Database.UserPlatformQuotaFlusherEnabled = false, want true")
+	}
+	if cfg.Database.UserPlatformQuotaFlushIntervalMs != 2000 {
+		t.Fatalf("Database.UserPlatformQuotaFlushIntervalMs = %d, want 2000", cfg.Database.UserPlatformQuotaFlushIntervalMs)
+	}
+	if cfg.Database.UserPlatformQuotaFlushBatchSize != 1000 {
+		t.Fatalf("Database.UserPlatformQuotaFlushBatchSize = %d, want 1000", cfg.Database.UserPlatformQuotaFlushBatchSize)
+	}
 }
 
 func TestValidateLinuxDoFrontendRedirectURL(t *testing.T) {
@@ -1932,6 +1941,12 @@ func TestLoad_DefaultGatewayHotPathConfig(t *testing.T) {
 	}
 	if cfg.Gateway.HotPath.PersistAccountLastUsed {
 		t.Fatalf("persist_account_last_used = true, want false")
+	}
+	if !cfg.Gateway.HotPath.LocalBillingCache {
+		t.Fatalf("local_billing_cache = false, want true")
+	}
+	if cfg.Gateway.HotPath.LocalBillingCacheMaxEntries != 262144 {
+		t.Fatalf("local_billing_cache_max_entries = %d, want 262144", cfg.Gateway.HotPath.LocalBillingCacheMaxEntries)
 	}
 }
 

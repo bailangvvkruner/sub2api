@@ -29,6 +29,8 @@ vendor/
 backend/.gocache/
 backend/.gomodcache/
 backend/.gotmp/
+backend/.tmp/
+.tmp/
 
 # ===================
 # Node.js / Vue 前端
@@ -36,6 +38,9 @@ backend/.gotmp/
 node_modules/
 frontend/node_modules/
 frontend/dist/
+.pnpm-store/
+.vite/
+frontend/.corepack/
 *.local
 *.tsbuildinfo
 vite.config.d.ts

@@ -1015,8 +1015,10 @@ type GatewayUsageRecordConfig struct {
 }
 
 type GatewayHotPathConfig struct {
-	LocalConcurrencySlots  bool `mapstructure:"local_concurrency_slots"`
-	PersistAccountLastUsed bool `mapstructure:"persist_account_last_used"`
+	LocalConcurrencySlots       bool `mapstructure:"local_concurrency_slots"`
+	PersistAccountLastUsed      bool `mapstructure:"persist_account_last_used"`
+	LocalBillingCache           bool `mapstructure:"local_billing_cache"`
+	LocalBillingCacheMaxEntries int  `mapstructure:"local_billing_cache_max_entries"`
 }
 
 // TLSFingerprintConfig TLS指纹伪装配置
@@ -1718,7 +1720,7 @@ func setDefaults() {
 	viper.SetDefault("database.max_idle_conns", 128)
 	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
 	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
-	viper.SetDefault("database.user_platform_quota_flusher_enabled", false)
+	viper.SetDefault("database.user_platform_quota_flusher_enabled", true)
 	viper.SetDefault("database.user_platform_quota_flush_interval_ms", 2000)
 	viper.SetDefault("database.user_platform_quota_flush_batch_size", 1000)
 
@@ -1962,6 +1964,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
 	viper.SetDefault("gateway.hotpath.local_concurrency_slots", true)
 	viper.SetDefault("gateway.hotpath.persist_account_last_used", false)
+	viper.SetDefault("gateway.hotpath.local_billing_cache", true)
+	viper.SetDefault("gateway.hotpath.local_billing_cache_max_entries", 262144)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
