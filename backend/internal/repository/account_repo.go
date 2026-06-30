@@ -147,12 +147,7 @@ func (r *accountRepository) Create(ctx context.Context, account *service.Account
 }
 
 func (r *accountRepository) GetByID(ctx context.Context, id int64) (*service.Account, error) {
-	m, err := r.client.Account.Query().
-		Where(
-			dbaccount.IDEQ(id),
-			dbaccount.DeletedAtIsNil(),
-		).
-		Only(ctx)
+	m, err := r.client.Account.Query().Where(dbaccount.IDEQ(id)).Only(ctx)
 	if err != nil {
 		return nil, translatePersistenceError(err, service.ErrAccountNotFound, nil)
 	}
@@ -191,10 +186,7 @@ func (r *accountRepository) GetByIDs(ctx context.Context, ids []int64) ([]*servi
 
 	entAccounts, err := r.client.Account.
 		Query().
-		Where(
-			dbaccount.IDIn(uniqueIDs...),
-			dbaccount.DeletedAtIsNil(),
-		).
+		Where(dbaccount.IDIn(uniqueIDs...)).
 		WithProxy().
 		All(ctx)
 	if err != nil {
@@ -260,12 +252,7 @@ func (r *accountRepository) GetByIDs(ctx context.Context, ids []int64) ([]*servi
 //   - 不加载完整的账号实体及其关联数据（Groups、Proxy 等）
 //   - 适用于删除前的存在性检查等只需判断有无的场景
 func (r *accountRepository) ExistsByID(ctx context.Context, id int64) (bool, error) {
-	exists, err := r.client.Account.Query().
-		Where(
-			dbaccount.IDEQ(id),
-			dbaccount.DeletedAtIsNil(),
-		).
-		Exist(ctx)
+	exists, err := r.client.Account.Query().Where(dbaccount.IDEQ(id)).Exist(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -279,12 +266,9 @@ func (r *accountRepository) GetByCRSAccountID(ctx context.Context, crsAccountID 
 
 	// 使用 sqljson.ValueEQ 生成 JSON 路径过滤，避免手写 SQL 片段导致语法兼容问题。
 	m, err := r.client.Account.Query().
-		Where(
-			dbaccount.DeletedAtIsNil(),
-			func(s *entsql.Selector) {
-				s.Where(sqljson.ValueEQ(dbaccount.FieldExtra, crsAccountID, sqljson.Path("crs_account_id")))
-			},
-		).
+		Where(func(s *entsql.Selector) {
+			s.Where(sqljson.ValueEQ(dbaccount.FieldExtra, crsAccountID, sqljson.Path("crs_account_id")))
+		}).
 		Only(ctx)
 	if err != nil {
 		if dbent.IsNotFound(err) {
@@ -442,62 +426,36 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-
-	now := time.Now()
+	// 使用事务保证账号与关联分组的删除原子性
 	tx, err := r.client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
 		return err
 	}
 
 	var txClient *dbent.Client
-	var txExec sqlExecutor
 	if err == nil {
 		defer func() { _ = tx.Rollback() }()
 		txClient = tx.Client()
-		txExec = tx
 	} else {
+		// 已处于外部事务中（ErrTxStarted），复用当前 client
 		txClient = r.client
-		txExec = r.sql
-	}
-
-	// Soft-delete account rows. Hard deletion can cascade through large usage
-	// history tables and provider-specific side tables, which is too expensive
-	// for an admin request and can surface as a reverse-proxy 502 in production.
-	affected, err := txClient.Account.Update().
-		Where(
-			dbaccount.IDEQ(id),
-			dbaccount.DeletedAtIsNil(),
-		).
-		SetDeletedAt(now).
-		SetUpdatedAt(now).
-		SetStatus(service.StatusDisabled).
-		SetSchedulable(false).
-		Save(ctx)
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return service.ErrAccountNotFound
 	}
 
 	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(id)).Exec(ctx); err != nil {
 		return err
 	}
-	if txExec != nil {
-		if _, err := txExec.ExecContext(ctx, `
-			UPDATE scheduled_test_plans
-			SET enabled = false, updated_at = NOW()
-			WHERE account_id = $1
-		`, id); err != nil {
-			return err
-		}
+	if _, err := txClient.ExecContext(ctx, "DELETE FROM scheduled_test_plans WHERE account_id = $1", id); err != nil {
+		return err
 	}
+	if _, err := txClient.Account.Delete().Where(dbaccount.IDEQ(id)).Exec(ctx); err != nil {
+		return err
+	}
+
 	if tx != nil {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
-
 	r.deleteSchedulerAccountSnapshot(ctx, id)
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, buildSchedulerGroupPayload(groupIDs)); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account delete failed: account=%d err=%v", id, err)
@@ -510,7 +468,7 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 }
 
 func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
-	q := r.client.Account.Query().Where(dbaccount.DeletedAtIsNil())
+	q := r.client.Account.Query()
 
 	if platform != "" {
 		q = q.Where(dbaccount.PlatformEQ(platform))
@@ -682,10 +640,7 @@ func (r *accountRepository) ListByGroup(ctx context.Context, groupID int64) ([]s
 
 func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, error) {
 	accounts, err := r.client.Account.Query().
-		Where(
-			dbaccount.DeletedAtIsNil(),
-			dbaccount.StatusEQ(service.StatusActive),
-		).
+		Where(dbaccount.StatusEQ(service.StatusActive)).
 		Order(dbent.Asc(dbaccount.FieldPriority)).
 		All(ctx)
 	if err != nil {
@@ -753,7 +708,6 @@ func (r *accountRepository) ListOAuthRefreshCandidates(ctx context.Context) ([]s
 func (r *accountRepository) ListByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.DeletedAtIsNil(),
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 		).
@@ -1015,7 +969,6 @@ func (r *accountRepository) ListSchedulable(ctx context.Context) ([]service.Acco
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.DeletedAtIsNil(),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
 			tempUnschedulablePredicate(),
@@ -1042,7 +995,6 @@ func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platf
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.DeletedAtIsNil(),
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
@@ -1077,7 +1029,6 @@ func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, plat
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.DeletedAtIsNil(),
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
@@ -1098,7 +1049,6 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Conte
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.DeletedAtIsNil(),
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
@@ -1123,7 +1073,6 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Cont
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.DeletedAtIsNil(),
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),

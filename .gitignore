@@ -86,7 +86,6 @@ temp/
 *.log
 *.bak
 .cache/
-.vite/
 .dev/
 .serena/
 
@@ -131,8 +130,6 @@ deploy/docker-compose.override.yml
 .gocache/
 .gomodcache/
 .gotmp/
-.pnpm-store/
-frontend/.corepack/
 vite.config.js
 docs/*
 !docs/PAYMENT.md

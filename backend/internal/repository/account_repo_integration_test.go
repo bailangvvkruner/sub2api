@@ -8,9 +8,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
-	dbaccount "github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
-	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/suite"
@@ -190,62 +188,6 @@ func (s *AccountRepoSuite) TestDelete() {
 
 	_, err = s.repo.GetByID(s.ctx, account.ID)
 	s.Require().Error(err, "expected error after delete")
-
-	raw, err := s.client.Account.Query().
-		Where(dbaccount.IDEQ(account.ID)).
-		Only(mixins.SkipSoftDelete(s.ctx))
-	s.Require().NoError(err, "soft-deleted account row should remain")
-	s.Require().NotNil(raw.DeletedAt)
-	s.Require().Equal(service.StatusDisabled, raw.Status)
-	s.Require().False(raw.Schedulable)
-}
-
-func (s *AccountRepoSuite) TestDelete_DisablesScheduledPlansAndKeepsUsageLogs() {
-	user := mustCreateUser(s.T(), s.client, &service.User{Email: "delete-account-usage@test.com"})
-	apiKey := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-delete-account-usage", Name: "k"})
-	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "to-delete-with-history"})
-	usageRepo := newUsageLogRepositoryWithSQL(s.client, s.repo.sql)
-
-	_, err := s.repo.sql.ExecContext(s.ctx, `
-		INSERT INTO scheduled_test_plans (account_id, model_id, cron_expression, enabled, max_results, auto_recover, next_run_at, created_at, updated_at)
-		VALUES ($1, 'claude-3', '* * * * *', true, 5, false, NOW(), NOW(), NOW())
-	`, account.ID)
-	s.Require().NoError(err)
-
-	_, err = usageRepo.Create(s.ctx, &service.UsageLog{
-		UserID:       user.ID,
-		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
-		RequestID:    "req-delete-account-history",
-		Model:        "claude-3",
-		InputTokens:  1,
-		OutputTokens: 2,
-		TotalCost:    0.01,
-		ActualCost:   0.01,
-		CreatedAt:    time.Now().UTC(),
-	})
-	s.Require().NoError(err)
-
-	err = s.repo.Delete(s.ctx, account.ID)
-	s.Require().NoError(err, "Delete")
-
-	var planEnabled bool
-	err = scanSingleRow(s.ctx, s.repo.sql,
-		"SELECT enabled FROM scheduled_test_plans WHERE account_id = $1",
-		[]any{account.ID},
-		&planEnabled,
-	)
-	s.Require().NoError(err)
-	s.Require().False(planEnabled)
-
-	var usageCount int
-	err = scanSingleRow(s.ctx, s.repo.sql,
-		"SELECT COUNT(*) FROM usage_logs WHERE account_id = $1",
-		[]any{account.ID},
-		&usageCount,
-	)
-	s.Require().NoError(err)
-	s.Require().Equal(1, usageCount)
 }
 
 func (s *AccountRepoSuite) TestDelete_RemovesSchedulerAccountSnapshot() {
@@ -292,18 +234,6 @@ func (s *AccountRepoSuite) TestList() {
 	s.Require().NoError(err, "List")
 	s.Require().Len(accounts, 2)
 	s.Require().Equal(int64(2), page.Total)
-}
-
-func (s *AccountRepoSuite) TestListWithFilters_ExcludesDeletedAccounts() {
-	visible := mustCreateAccount(s.T(), s.client, &service.Account{Name: "visible-account"})
-	deleted := mustCreateAccount(s.T(), s.client, &service.Account{Name: "deleted-account"})
-	s.Require().NoError(s.repo.Delete(s.ctx, deleted.ID))
-
-	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "account", 0, "")
-	s.Require().NoError(err)
-	s.Require().Equal(int64(1), page.Total)
-	s.Require().Len(accounts, 1)
-	s.Require().Equal(visible.ID, accounts[0].ID)
 }
 
 func (s *AccountRepoSuite) TestListWithFilters() {
@@ -544,8 +474,6 @@ func (s *AccountRepoSuite) TestListByGroup() {
 func (s *AccountRepoSuite) TestListActive() {
 	mustCreateAccount(s.T(), s.client, &service.Account{Name: "active1", Status: service.StatusActive})
 	mustCreateAccount(s.T(), s.client, &service.Account{Name: "inactive1", Status: service.StatusDisabled})
-	deleted := mustCreateAccount(s.T(), s.client, &service.Account{Name: "deleted-active", Status: service.StatusActive})
-	s.Require().NoError(s.repo.Delete(s.ctx, deleted.ID))
 
 	accounts, err := s.repo.ListActive(s.ctx)
 	s.Require().NoError(err, "ListActive")
@@ -556,8 +484,6 @@ func (s *AccountRepoSuite) TestListActive() {
 func (s *AccountRepoSuite) TestListByPlatform() {
 	mustCreateAccount(s.T(), s.client, &service.Account{Name: "p1", Platform: service.PlatformAnthropic, Status: service.StatusActive})
 	mustCreateAccount(s.T(), s.client, &service.Account{Name: "p2", Platform: service.PlatformOpenAI, Status: service.StatusActive})
-	deleted := mustCreateAccount(s.T(), s.client, &service.Account{Name: "p-deleted", Platform: service.PlatformAnthropic, Status: service.StatusActive})
-	s.Require().NoError(s.repo.Delete(s.ctx, deleted.ID))
 
 	accounts, err := s.repo.ListByPlatform(s.ctx, service.PlatformAnthropic)
 	s.Require().NoError(err, "ListByPlatform")
@@ -644,15 +570,12 @@ func (s *AccountRepoSuite) TestListSchedulable() {
 	future := now.Add(10 * time.Minute)
 	overloaded := mustCreateAccount(s.T(), s.client, &service.Account{Name: "over", Schedulable: true, OverloadUntil: &future})
 	mustBindAccountToGroup(s.T(), s.client, overloaded.ID, group.ID, 1)
-	deleted := mustCreateAccount(s.T(), s.client, &service.Account{Name: "deleted-sched", Schedulable: true})
-	s.Require().NoError(s.repo.Delete(s.ctx, deleted.ID))
 
 	sched, err := s.repo.ListSchedulable(s.ctx)
 	s.Require().NoError(err, "ListSchedulable")
 	ids := idsOfAccounts(sched)
 	s.Require().Contains(ids, okAcc.ID)
 	s.Require().NotContains(ids, overloaded.ID)
-	s.Require().NotContains(ids, deleted.ID)
 }
 
 func (s *AccountRepoSuite) TestListSchedulableByGroupID_TimeBoundaries_And_StatusUpdates() {
@@ -1094,19 +1017,6 @@ func (s *AccountRepoSuite) TestGetByCRSAccountID() {
 	s.Require().NoError(err)
 	s.Require().NotNil(got)
 	s.Require().Equal("acc-crs", got.Name)
-}
-
-func (s *AccountRepoSuite) TestGetByCRSAccountID_DeletedAccountNotReturned() {
-	crsID := "crs-deleted"
-	account := mustCreateAccount(s.T(), s.client, &service.Account{
-		Name:  "acc-crs-deleted",
-		Extra: map[string]any{"crs_account_id": crsID},
-	})
-	s.Require().NoError(s.repo.Delete(s.ctx, account.ID))
-
-	got, err := s.repo.GetByCRSAccountID(s.ctx, crsID)
-	s.Require().NoError(err)
-	s.Require().Nil(got)
 }
 
 func (s *AccountRepoSuite) TestGetByCRSAccountID_NotFound() {
