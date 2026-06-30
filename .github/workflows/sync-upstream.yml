@@ -62,6 +62,41 @@ jobs:
           grep -A2 "func (s \*SchedulerSnapshotService) handleLastUsedEvent" backend/internal/service/scheduler_snapshot_service.go | grep -q "return nil"
           grep -q "fallback_selection_mode\", \"random\"" backend/internal/config/config.go
 
+      - name: Set image metadata
+        run: |
+          echo "HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/sub2api" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ env.HEAD_SHA }}
+          build-args: |
+            VERSION=main
+            COMMIT=${{ env.HEAD_SHA }}
+          cache: false
+
       - name: Push synced main
         run: |
           git push origin HEAD:main
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: |
+          docker push "${IMAGE_NAME}:latest"
+          docker push "${IMAGE_NAME}:${HEAD_SHA}"
