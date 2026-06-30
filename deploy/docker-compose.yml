@@ -31,7 +31,7 @@ services:
     # 治本 但是脱离主线
     # image: ghcr.io/atoz03/sub2api:latest
     # 治本补丁
-    image: bailangvvkig/sub2api:latest
+    image: bailangvvking/sub2api:latest
     container_name: sub2api
     network_mode: host
     init: true
