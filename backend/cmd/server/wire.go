@@ -103,7 +103,7 @@ func provideCleanup(
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 ) func() {
 	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
 		type cleanupStep struct {
@@ -316,7 +316,7 @@ func provideCleanup(
 		// Check if context timed out
 		select {
 		case <-ctx.Done():
-			log.Printf("[Cleanup] Warning: cleanup timed out after 10 seconds")
+			log.Printf("[Cleanup] Warning: cleanup timed out after 45 seconds")
 		default:
 			log.Printf("[Cleanup] All cleanup steps completed")
 		}

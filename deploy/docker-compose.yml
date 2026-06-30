@@ -1,14 +1,22 @@
 # =============================================================================
-# Sub2API Docker Compose Configuration
+# Sub2API Docker Compose - Local Directory Version
 # =============================================================================
+# This configuration uses local directories for data storage instead of named
+# volumes, making it easy to migrate the entire deployment by simply copying
+# the deploy directory.
+#
 # Quick Start:
 #   1. Copy .env.example to .env and configure
-#   2. docker-compose up -d
-#   3. Check logs: docker-compose logs -f sub2api
-#   4. Access: http://localhost:8080
+#   2. mkdir -p data postgres_data redis_data
+#   3. docker-compose -f docker-compose.local.yml up -d
+#   4. Check logs: docker-compose -f docker-compose.local.yml logs -f sub2api
+#   5. Access: http://localhost:8080
 #
-# All configuration is done via environment variables.
-# No Setup Wizard needed - the system auto-initializes on first run.
+# Migration to New Server:
+#   1. docker-compose -f docker-compose.local.yml down
+#   2. tar czf sub2api-deploy.tar.gz deploy/
+#   3. Transfer to new server and extract
+#   4. docker-compose -f docker-compose.local.yml up -d
 # =============================================================================
 
 services:
@@ -16,25 +24,29 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: weishaw/sub2api:latest
+    # redis大量写入
+    # image: weishaw/sub2api:latest
+    # 治标不治本
+    # image: ghcr.io/youxuanxue/sub2api:latest
+    # 治本 但是脱离主线
+    # image: ghcr.io/atoz03/sub2api:latest
+    # 治本补丁
+    image: bailangvvkig/sub2api:latest
     container_name: sub2api
+    network_mode: host
+    init: true
     restart: unless-stopped
+    stop_grace_period: 90s
     ulimits:
       nofile:
         soft: 100000
         hard: 100000
-    ports:
-      - "${BIND_HOST:-0.0.0.0}:${SERVER_PORT:-8080}:8080"
     volumes:
-      # Data persistence (config.yaml will be auto-generated here)
-      - sub2api_data:/app/data
+      # Local directory mapping for easy migration
+      - /data/sub2api-deploy/data:/app/data
       # Optional: Mount custom config.yaml (uncomment and create the file first)
       # Copy config.example.yaml to config.yaml, modify it, then uncomment:
       # - ./config.yaml:/app/data/config.yaml
-      # Optional: Mount a custom Codex instructions template file, then point
-      # gateway.forced_codex_instructions_template_file at /app/data/codex-instructions.md.tmpl
-      # in config.yaml.
-      # - ./codex-instructions.md.tmpl:/app/data/codex-instructions.md.tmpl:ro
     environment:
       # =======================================================================
       # Auto Setup (REQUIRED for Docker deployment)
@@ -52,7 +64,7 @@ services:
       # =======================================================================
       # Database Configuration (PostgreSQL)
       # =======================================================================
-      - DATABASE_HOST=postgres
+      - DATABASE_HOST=127.0.0.1
       - DATABASE_PORT=5432
       - DATABASE_USER=${POSTGRES_USER:-sub2api}
       - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -66,7 +78,7 @@ services:
       # =======================================================================
       # Redis Configuration
       # =======================================================================
-      - REDIS_HOST=redis
+      - REDIS_HOST=127.0.0.1
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_DB=${REDIS_DB:-0}
@@ -147,13 +159,6 @@ services:
       # =======================================================================
       # Image Generation Stream & Concurrency
       # =======================================================================
-      # OpenAI HTTP upstream protocol/timeout
-      - GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT=${GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT:-0}
-      - GATEWAY_OPENAI_HTTP2_ENABLED=${GATEWAY_OPENAI_HTTP2_ENABLED:-true}
-      - GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1=${GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1:-true}
-      - GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD=${GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD:-2}
-      - GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS:-60}
-      - GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS:-600}
       - GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT=${GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT:-900}
       - GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL=${GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL:-10}
       - GATEWAY_IMAGE_CONCURRENCY_ENABLED=${GATEWAY_IMAGE_CONCURRENCY_ENABLED:-false}
@@ -166,20 +171,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    networks:
-      - sub2api-network
     healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "-q",
-          "-T",
-          "5",
-          "-O",
-          "/dev/null",
-          "http://localhost:8080/health",
-        ]
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -191,30 +184,26 @@ services:
   postgres:
     image: postgres:18-alpine
     container_name: sub2api-postgres
+    network_mode: host
+    init: true
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
     restart: unless-stopped
+    stop_grace_period: 120s
     ulimits:
       nofile:
         soft: 100000
         hard: 100000
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # Local directory mapping for easy migration
+      - /data/sub2api-deploy/postgres_data:/var/lib/postgresql/data
     environment:
-      # postgres:18-alpine 默认 PGDATA=/var/lib/postgresql/18/docker（位于镜像声明的匿名卷 /var/lib/postgresql 内）。
-      # 若不显式设置 PGDATA，则即使挂载了 postgres_data 到 /var/lib/postgresql/data，数据也不会落盘到该命名卷，
-      # docker compose down/up 后会触发 initdb 重新初始化，导致用户/密码等数据丢失。
-      - PGDATA=/var/lib/postgresql/data
       - POSTGRES_USER=${POSTGRES_USER:-sub2api}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_DB=${POSTGRES_DB:-sub2api}
+      - PGDATA=/var/lib/postgresql/data
       - TZ=${TZ:-Asia/Shanghai}
-    networks:
-      - sub2api-network
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}",
-        ]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -228,48 +217,33 @@ services:
   redis:
     image: redis:8-alpine
     container_name: sub2api-redis
+    network_mode: host
+    init: true
     restart: unless-stopped
+    stop_grace_period: 120s
     ulimits:
       nofile:
         soft: 100000
         hard: 100000
     volumes:
-      - redis_data:/data
+      # Local directory mapping for easy migration
+      - /data/sub2api-deploy/redis_data:/data
     command: >
-      sh -c '
-        redis-server
-        --save 60 1
-        --appendonly yes
-        --appendfsync everysec
-        ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
+        sh -c 'redis-server --bind 127.0.0.1 ::1 --protected-mode yes --save 60 1 --appendonly yes --appendfsync everysec ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"} &
+        pid=$$!;
+        trap "redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN SAVE >/dev/null 2>&1 || kill -TERM $$pid; wait $$pid; exit 0" TERM INT;
+        wait $$pid'
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       # REDISCLI_AUTH is used by redis-cli for authentication (safer than -a flag)
       - REDISCLI_AUTH=${REDIS_PASSWORD:-}
-    networks:
-      - sub2api-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 5s
-    # 注意：不暴露端口到宿主机，应用通过内部网络连接
-    # 如需调试，可临时添加：ports: ["127.0.0.1:6379:6379"]
-# =============================================================================
-# Volumes
-# =============================================================================
-volumes:
-  sub2api_data:
-    driver: local
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local
 
 # =============================================================================
 # Networks
 # =============================================================================
-networks:
-  sub2api-network:
-    driver: bridge

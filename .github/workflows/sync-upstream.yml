@@ -91,6 +91,10 @@ jobs:
           grep -A2 "func (c \*schedulerCache) UpdateLastUsed" backend/internal/repository/scheduler_cache.go | grep -q "return nil"
           grep -A2 "func (s \*SchedulerSnapshotService) handleLastUsedEvent" backend/internal/service/scheduler_snapshot_service.go | grep -q "return nil"
           grep -q "fallback_selection_mode\", \"random\"" backend/internal/config/config.go
+          grep -q 'gateway.hotpath.local_concurrency_slots", true' backend/internal/config/config.go
+          grep -q 'gateway.hotpath.persist_account_last_used", false' backend/internal/config/config.go
+          grep -q "func NewLocalConcurrencyCache" backend/internal/repository/local_concurrency_cache.go
+          grep -q "NewDeferredServiceWithOptions" backend/internal/service/deferred_service.go
 
       - name: Set image metadata
         run: |
@@ -108,9 +112,7 @@ jobs:
           platforms: linux/amd64
           push: false
           load: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ env.HEAD_SHA }}
+          tags: ${{ env.IMAGE_NAME }}:latest
           build-args: |
             VERSION=main
             COMMIT=${{ env.HEAD_SHA }}
@@ -129,4 +131,3 @@ jobs:
       - name: Push Docker image
         run: |
           docker push "${IMAGE_NAME}:latest"
-          docker push "${IMAGE_NAME}:${HEAD_SHA}"

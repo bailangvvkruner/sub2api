@@ -15,6 +15,7 @@ services:
       dockerfile: Dockerfile
     container_name: sub2api-dev
     restart: unless-stopped
+    stop_grace_period: 60s
     ports:
       - "${BIND_HOST:-127.0.0.1}:${SERVER_PORT:-8080}:8080"
     volumes:
@@ -72,6 +73,7 @@ services:
     image: postgres:18-alpine
     container_name: sub2api-postgres-dev
     restart: unless-stopped
+    stop_grace_period: 120s
     volumes:
       - ./postgres_data:/var/lib/postgresql/data:Z
     environment:
@@ -93,6 +95,7 @@ services:
     image: redis:8-alpine
     container_name: sub2api-redis-dev
     restart: unless-stopped
+    stop_grace_period: 120s
     volumes:
       - ./redis_data:/data:Z
     command: >
@@ -101,7 +104,10 @@ services:
           --save 60 1
           --appendonly yes
           --appendfsync everysec
-          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
+          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"} &
+          pid=$$!;
+          trap "redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN SAVE >/dev/null 2>&1 || kill -TERM $$pid; wait $$pid; exit 0" TERM INT;
+          wait $$pid'
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - REDISCLI_AUTH=${REDIS_PASSWORD:-}

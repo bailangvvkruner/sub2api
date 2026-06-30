@@ -22,6 +22,9 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
 	if waitTTLSeconds <= 0 {
 		waitTTLSeconds = cfg.Gateway.ConcurrencySlotTTLMinutes * 60
 	}
+	if cfg.Gateway.HotPath.LocalConcurrencySlots {
+		return NewLocalConcurrencyCache(cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+	}
 	return NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
 }
 

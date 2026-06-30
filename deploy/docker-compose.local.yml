@@ -27,6 +27,7 @@ services:
     image: weishaw/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
+    stop_grace_period: 60s
     ulimits:
       nofile:
         soft: 100000
@@ -186,6 +187,7 @@ services:
     image: postgres:18-alpine
     container_name: sub2api-postgres
     restart: unless-stopped
+    stop_grace_period: 120s
     ulimits:
       nofile:
         soft: 100000
@@ -217,6 +219,7 @@ services:
     image: redis:8-alpine
     container_name: sub2api-redis
     restart: unless-stopped
+    stop_grace_period: 120s
     ulimits:
       nofile:
         soft: 100000
@@ -230,7 +233,10 @@ services:
           --save 60 1
           --appendonly yes
           --appendfsync everysec
-          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
+          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"} &
+          pid=$$!;
+          trap "redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN SAVE >/dev/null 2>&1 || kill -TERM $$pid; wait $$pid; exit 0" TERM INT;
+          wait $$pid'
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       # REDISCLI_AUTH is used by redis-cli for authentication (safer than -a flag)

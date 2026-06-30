@@ -460,6 +460,15 @@ gateway:
     outbox_backlog_rebuild_rows: 10000
     # 全量重建周期（秒），0 表示禁用
     full_rebuild_interval_seconds: 300
+  # Hot-path optimization switches. Defaults keep upstream-compatible behavior.
+  # 热路径优化开关。默认保持现有行为；单机高性能模式可按需开启。
+  hotpath:
+    # Store concurrency slots and wait counters in process memory instead of Redis.
+    # 将并发槽和等待计数放到本机内存，适合单实例部署；多实例会各自放行并发额度。
+    local_concurrency_slots: true
+    # Persist account last_used_at to DB via deferred batch updates.
+    # 是否继续把账号 last_used_at 延迟批量写入数据库；关闭可进一步降低 DB 写入。
+    persist_account_last_used: false
   # TLS fingerprint simulation / TLS 指纹伪装
   # Default profile "claude_cli_v2" simulates Node.js 20.x
   # 默认模板 "claude_cli_v2" 模拟 Node.js 20.x 指纹

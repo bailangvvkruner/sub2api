@@ -789,6 +789,9 @@ type GatewayConfig struct {
 	// Scheduling: 账号调度相关配置
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
 
+	// HotPath: fork-only switches for reducing request-path Redis/DB writes.
+	HotPath GatewayHotPathConfig `mapstructure:"hotpath"`
+
 	// TLSFingerprint: TLS指纹伪装配置
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
 
@@ -1009,6 +1012,11 @@ type GatewayUsageRecordConfig struct {
 	AutoScaleCheckIntervalSeconds int `mapstructure:"auto_scale_check_interval_seconds"`
 	// AutoScaleCooldownSeconds: 自动扩缩容冷却时间（秒）
 	AutoScaleCooldownSeconds int `mapstructure:"auto_scale_cooldown_seconds"`
+}
+
+type GatewayHotPathConfig struct {
+	LocalConcurrencySlots  bool `mapstructure:"local_concurrency_slots"`
+	PersistAccountLastUsed bool `mapstructure:"persist_account_last_used"`
 }
 
 // TLSFingerprintConfig TLS指纹伪装配置
@@ -1952,6 +1960,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_down_step", 16)
 	viper.SetDefault("gateway.usage_record.auto_scale_check_interval_seconds", 3)
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
+	viper.SetDefault("gateway.hotpath.local_concurrency_slots", true)
+	viper.SetDefault("gateway.hotpath.persist_account_last_used", false)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）

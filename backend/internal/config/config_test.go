@@ -1921,6 +1921,20 @@ func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
 	}
 }
 
+func TestLoad_DefaultGatewayHotPathConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.Gateway.HotPath.LocalConcurrencySlots {
+		t.Fatalf("local_concurrency_slots = false, want true")
+	}
+	if cfg.Gateway.HotPath.PersistAccountLastUsed {
+		t.Fatalf("persist_account_last_used = true, want false")
+	}
+}
+
 func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

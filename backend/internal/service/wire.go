@@ -230,8 +230,12 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
 }
 
 // ProvideDeferredService creates and starts DeferredService
-func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService) *DeferredService {
-	svc := NewDeferredService(accountRepo, timingWheel, 10*time.Second)
+func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService, cfg *config.Config) *DeferredService {
+	persistLastUsed := true
+	if cfg != nil {
+		persistLastUsed = cfg.Gateway.HotPath.PersistAccountLastUsed
+	}
+	svc := NewDeferredServiceWithOptions(accountRepo, timingWheel, 10*time.Second, persistLastUsed)
 	svc.Start()
 	return svc
 }

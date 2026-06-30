@@ -1,13 +1,35 @@
-## Patch Note: Scheduler Redis Write Amplification
+## 本分支性能补丁说明（单机激进模式默认开启）
 
-This fork removes the request-hot Redis writes caused by account `LastUsedAt`
-updates. Account `last_used_at` is still persisted in the database for
-statistics, but the scheduler no longer enqueues `account_last_used` outbox
-events or rewrites `sched:acc:*` / `sched:meta:*` cache entries for every
-request. Load-aware scheduling now defaults to priority/load/random tie-breaks;
-`fallback_selection_mode: last_used` remains available for compatibility.
+这个 fork 的目标是压低请求热路径里的 Redis/DB 写放大，适合单机或单进程部署。默认已开启：
 
-Build from mainland China with:
+- `gateway.hotpath.local_concurrency_slots: true`：账号/用户并发槽与等待计数从 Redis ZSET/计数器切到本机内存，抢槽、释放槽、负载读取不再走 Redis。
+- `gateway.hotpath.persist_account_last_used: false`：账号 `last_used_at` 默认不再按请求延迟批量写数据库，减少高 QPS 下的 DB 写入与调度缓存刷新。
+- 调度默认走 priority/load/random 类 tie-break；`fallback_selection_mode: last_used` 仍保留兼容，但激进模式下不建议依赖它。
+- 上游同步工作流会检查这些补丁是否仍在，避免同步后被上游改动悄悄冲掉。
+
+Docker 部署已加正常退出保护：`sub2api` 停机宽限期 90 秒，HTTP 排水最多等待 15 秒，应用内部 cleanup 最多等待 45 秒；PostgreSQL/Redis 停机宽限期 120 秒；Redis 收到 `docker compose stop/down` 的 SIGTERM 时会执行 `SHUTDOWN SAVE`，尽量在退出前把 RDB/AOF 写盘。这个保护只覆盖正常停止流程，不能保证断电、宿主机崩溃、`docker kill -9` 这类强杀场景。
+
+### 本机热路径 QPS 对比
+
+口径：只测并发控制缓存热路径，不代表完整 HTTP 网关吞吐。完整吞吐还会受上游响应、数据库查询、日志、鉴权、流式传输等影响。
+
+测试命令：
+
+```powershell
+$env:GOMAXPROCS='2'
+cd backend
+go test -run '^$' -bench '^BenchmarkConcurrencyCacheHotPath$' -benchtime=3s -count=1 -cpu=2 ./internal/repository
+```
+
+测试环境：Windows/amd64，Intel i5-10400，`GOMAXPROCS=2`。本机未配置 `TEST_REDIS_URL`，Redis 基线使用内嵌 `miniredis`，所以绝对值仅作本机参考；真实 Redis 会受网络、部署方式和实例性能影响。
+
+| 场景 | 优化前：Redis ZSET | 优化后：本机内存 | 提升 |
+| --- | ---: | ---: | ---: |
+| 抢槽+释放槽（单线程） | 4,557 QPS | 3,286,863 QPS | 约 721x |
+| 抢槽+释放槽（2 核并行） | 5,303 QPS | 2,327,639 QPS | 约 439x |
+| 100 个账号负载批量读取 | 248 QPS | 53,012 QPS | 约 214x |
+
+### 中国大陆构建命令
 
 ```powershell
 $env:GOPROXY='https://goproxy.cn,direct'

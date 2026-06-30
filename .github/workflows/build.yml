@@ -39,9 +39,7 @@ jobs:
           platforms: linux/amd64
           push: false
           load: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
@@ -56,10 +54,9 @@ jobs:
       - name: Push Docker image
         run: |
           docker push "${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
-          docker push "${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
 
       - name: Output image info
         run: |
           echo "Image built and pushed successfully"
           echo "Repository: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}"
-          echo "Tags: ${{ env.IMAGE_TAG }}, ${{ github.sha }}"
+          echo "Tag: ${{ env.IMAGE_TAG }}"
