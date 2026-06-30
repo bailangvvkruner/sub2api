@@ -1,0 +1,61 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 20 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream main
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/Wei-Shaw/sub2api.git
+          else
+            git remote add upstream https://github.com/Wei-Shaw/sub2api.git
+          fi
+          git fetch upstream main
+
+      - name: Merge upstream main
+        run: |
+          git merge --no-edit upstream/main
+
+      - name: Keep fork workflows only
+        run: |
+          find .github/workflows -type f \
+            ! -name "build.yml" \
+            ! -name "sync-upstream.yml" \
+            -delete
+
+          git add .github/workflows
+          if git diff --cached --quiet; then
+            echo "No workflow cleanup needed."
+          else
+            git commit -m "ci: keep fork workflows only"
+          fi
+
+      - name: Push synced main
+        run: |
+          git push origin HEAD:main
