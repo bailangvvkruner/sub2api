@@ -79,7 +79,7 @@ require_file backend/internal/service/user_platform_quota_flusher.go
 require_fixed backend/internal/service/user_platform_quota_flusher.go 'type UserPlatformQuotaUsageFlusher struct' "quota usage flusher type is missing"
 require_fixed backend/internal/service/wire.go 'ProvideUserPlatformQuotaUsageFlusher,' "quota usage flusher is not in the provider set"
 require_fixed backend/internal/service/wire.go 'func ProvideUserPlatformQuotaUsageFlusher(' "quota usage flusher provider is missing"
-require_fixed backend/internal/service/billing_cache_service.go 'markDirty := s.cfg.Database.UserPlatformQuotaFlusherEnabled' "quota dirty marking is not config-gated"
+require_fixed backend/internal/service/billing_cache_service.go 'markDirty := s.cfg != nil && s.cfg.Database.UserPlatformQuotaFlusherEnabled' "quota dirty marking is not config-gated"
 require_file backend/internal/service/usage_billing_write_behind.go
 require_fixed backend/internal/service/usage_billing_write_behind.go 'type UsageBillingWriteBehind struct' "usage billing write-behind type is missing"
 require_fixed backend/internal/service/usage_billing_write_behind.go 'func (s *UsageBillingWriteBehind) Apply' "usage billing write-behind apply path is missing"
