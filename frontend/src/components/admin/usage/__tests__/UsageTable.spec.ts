@@ -11,6 +11,15 @@ const messages: Record<string, string> = {
   'admin.usage.outputCost': 'Output Cost',
   'admin.usage.cacheCreationCost': 'Cache Creation Cost',
   'admin.usage.cacheReadCost': 'Cache Read Cost',
+  'admin.usage.inputTokens': 'Input Tokens',
+  'admin.usage.outputTokens': 'Output Tokens',
+  'admin.usage.cacheCreationTokens': 'Cache Creation Tokens',
+  'admin.usage.cacheCreation5mTokens': 'Cache Creation 5m Tokens',
+  'admin.usage.cacheCreation1hTokens': 'Cache Creation 1h Tokens',
+  'admin.usage.cacheReadTokens': 'Cache Read Tokens',
+  'usage.tokenDetails': 'Token Breakdown',
+  'usage.totalTokens': 'Total Tokens',
+  'usage.cacheHitRate': 'Cache hit rate',
   'usage.inputTokenPrice': 'Input price',
   'usage.outputTokenPrice': 'Output price',
   'usage.perMillionTokens': '/ 1M tokens',
@@ -160,6 +169,52 @@ describe('admin UsageTable tooltip', () => {
     expect(text).toContain('$5.0000 / 1M tokens')
     expect(text).toContain('$30.0000 / 1M tokens')
     expect(text).toContain('$0.069568')
+  })
+  it('shows cache hit rate in token tooltip', async () => {
+    const row = {
+      request_id: 'req-cache-rate-1',
+      model: 'gpt-5',
+      actual_cost: 0,
+      total_cost: 0,
+      account_rate_multiplier: 1,
+      rate_multiplier: 1,
+      service_tier: null,
+      input_cost: 0,
+      output_cost: 0,
+      cache_creation_cost: 0,
+      cache_read_cost: 0,
+      input_tokens: 200,
+      output_tokens: 50,
+      cache_creation_tokens: 300,
+      cache_read_tokens: 500,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
+      cache_ttl_overridden: false,
+    }
+
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [row],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    await wrapper.findAll('.group.relative')[0].trigger('mouseenter')
+    await nextTick()
+
+    const text = wrapper.text()
+    expect(text).toContain('Token Breakdown')
+    expect(text).toContain('Cache hit rate')
+    expect(text).toContain('50.00%')
   })
 
   it('shows requested and upstream models separately for admin rows', () => {

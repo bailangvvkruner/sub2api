@@ -262,6 +262,10 @@
               <span class="text-gray-400">{{ t('admin.usage.cacheReadTokens') }}</span>
               <span class="font-medium text-white">{{ tokenTooltipData.cache_read_tokens.toLocaleString() }}</span>
             </div>
+            <div v-if="tokenTooltipData && promptTokenTotal(tokenTooltipData) > 0" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.cacheHitRate') }}</span>
+              <span class="font-semibold text-violet-300">{{ formatCacheHitRate(tokenTooltipData) }}</span>
+            </div>
           </div>
           <div class="flex items-center justify-between gap-6 border-t border-gray-700 pt-1.5">
             <span class="text-gray-400">{{ t('usage.totalTokens') }}</span>
@@ -510,6 +514,19 @@ const formatDuration = (ms: number | null | undefined): string => {
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(2)}s`
 }
+type PromptTokenRow = Partial<Pick<AdminUsageLog, 'input_tokens' | 'cache_creation_tokens' | 'cache_read_tokens'>>
+
+const promptTokenTotal = (row: PromptTokenRow | null | undefined): number => {
+  if (!row) return 0
+  return (row.input_tokens || 0) + (row.cache_creation_tokens || 0) + (row.cache_read_tokens || 0)
+}
+
+const formatCacheHitRate = (row: PromptTokenRow | null | undefined): string => {
+  const total = promptTokenTotal(row)
+  if (total <= 0) return '0.00%'
+  return `${(((row?.cache_read_tokens || 0) / total) * 100).toFixed(2)}%`
+}
+
 
 // Cost tooltip functions
 const showTooltip = (event: MouseEvent, row: AdminUsageLog) => {
