@@ -55,6 +55,8 @@ const paymentOrdersOutTradeNoUniqueMigration = "120_enforce_payment_orders_out_t
 const paymentOrdersOutTradeNoUniqueIndex = "paymentorder_out_trade_no_unique"
 const schedulerOutboxPendingDedupKeyMigration = "153_scheduler_outbox_pending_dedup_key_index_notx.sql"
 const schedulerOutboxPendingDedupKeyIndex = "idx_scheduler_outbox_pending_dedup_key"
+const opsSystemLogsAPIKeyIDIndexMigration = "155_add_ops_system_logs_api_key_id_index_notx.sql"
+const opsSystemLogsAPIKeyIDIndex = "idx_ops_system_logs_api_key_id_created_at"
 
 type migrationChecksumCompatibilityRule struct {
 	fileChecksum       string
@@ -207,6 +209,17 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 				return fmt.Errorf("prepare migration %s: %w", name, err)
 			}
 
+			handled, err := applySpecialNonTransactionalMigration(ctx, db, name)
+			if err != nil {
+				return fmt.Errorf("apply migration %s (special handler): %w", name, err)
+			}
+			if handled {
+				if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)", name, checksum); err != nil {
+					return fmt.Errorf("record migration %s (non-tx): %w", name, err)
+				}
+				continue
+			}
+
 			// *_notx.sql：用于 CREATE/DROP INDEX CONCURRENTLY 场景，必须非事务执行。
 			// 逐条语句执行，避免将多条 CONCURRENTLY 语句放入同一个隐式事务块。
 			statements := splitSQLStatements(content)
@@ -267,6 +280,71 @@ func prepareNonTransactionalMigration(ctx context.Context, db *sql.DB, name stri
 	}
 }
 
+func applySpecialNonTransactionalMigration(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	switch name {
+	case opsSystemLogsAPIKeyIDIndexMigration:
+		return applyOpsSystemLogsAPIKeyIDIndexMigration(ctx, db)
+	default:
+		return false, nil
+	}
+}
+
+func applyOpsSystemLogsAPIKeyIDIndexMigration(ctx context.Context, db *sql.DB) (bool, error) {
+	partitioned, err := tableIsPartitioned(ctx, db, "ops_system_logs")
+	if err != nil {
+		return false, fmt.Errorf("check ops_system_logs partitioning: %w", err)
+	}
+	if !partitioned {
+		return false, nil
+	}
+
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(
+		"CREATE INDEX IF NOT EXISTS %s ON ONLY %s (api_key_id, created_at DESC)",
+		quotePGIdentifier(opsSystemLogsAPIKeyIDIndex),
+		qualifyPGIdentifier("public", "ops_system_logs"),
+	)); err != nil {
+		return true, fmt.Errorf("create partitioned parent index: %w", err)
+	}
+
+	partitions, err := listLeafPartitions(ctx, db, "ops_system_logs")
+	if err != nil {
+		return true, fmt.Errorf("list ops_system_logs partitions: %w", err)
+	}
+
+	for _, partition := range partitions {
+		childIndex := opsSystemLogsAPIKeyPartitionIndexName(partition.name)
+		if err := dropInvalidIndexIfPresentInSchema(ctx, db, partition.schema, childIndex); err != nil {
+			return true, fmt.Errorf("prepare partition index %s: %w", childIndex, err)
+		}
+
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s (api_key_id, created_at DESC)",
+			quotePGIdentifier(childIndex),
+			qualifyPGIdentifier(partition.schema, partition.name),
+		)); err != nil {
+			return true, fmt.Errorf("create partition index %s: %w", childIndex, err)
+		}
+
+		attached, err := indexPartitionAttached(ctx, db, "public", opsSystemLogsAPIKeyIDIndex, partition.schema, childIndex)
+		if err != nil {
+			return true, fmt.Errorf("check partition index attachment %s: %w", childIndex, err)
+		}
+		if attached {
+			continue
+		}
+
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"ALTER INDEX %s ATTACH PARTITION %s",
+			qualifyPGIdentifier("public", opsSystemLogsAPIKeyIDIndex),
+			qualifyPGIdentifier(partition.schema, childIndex),
+		)); err != nil {
+			return true, fmt.Errorf("attach partition index %s: %w", childIndex, err)
+		}
+	}
+
+	return true, nil
+}
+
 func preparePaymentOrdersOutTradeNoUniqueMigration(ctx context.Context, db *sql.DB) error {
 	duplicates, err := findDuplicatePaymentOrderOutTradeNos(ctx, db)
 	if err != nil {
@@ -284,7 +362,11 @@ func preparePaymentOrdersOutTradeNoUniqueMigration(ctx context.Context, db *sql.
 }
 
 func dropInvalidIndexIfPresent(ctx context.Context, db *sql.DB, indexName string) error {
-	invalid, err := indexIsInvalid(ctx, db, indexName)
+	return dropInvalidIndexIfPresentInSchema(ctx, db, "public", indexName)
+}
+
+func dropInvalidIndexIfPresentInSchema(ctx context.Context, db *sql.DB, schemaName, indexName string) error {
+	invalid, err := indexIsInvalidInSchema(ctx, db, schemaName, indexName)
 	if err != nil {
 		return fmt.Errorf("check invalid index %s: %w", indexName, err)
 	}
@@ -292,7 +374,7 @@ func dropInvalidIndexIfPresent(ctx context.Context, db *sql.DB, indexName string
 		return nil
 	}
 
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s", indexName)); err != nil {
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s", qualifyPGIdentifier(schemaName, indexName))); err != nil {
 		return fmt.Errorf("drop invalid index %s: %w", indexName, err)
 	}
 	return nil
@@ -331,6 +413,10 @@ func findDuplicatePaymentOrderOutTradeNos(ctx context.Context, db *sql.DB) ([]st
 }
 
 func indexIsInvalid(ctx context.Context, db *sql.DB, indexName string) (bool, error) {
+	return indexIsInvalidInSchema(ctx, db, "public", indexName)
+}
+
+func indexIsInvalidInSchema(ctx context.Context, db *sql.DB, schemaName, indexName string) (bool, error) {
 	var invalid bool
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -338,12 +424,121 @@ func indexIsInvalid(ctx context.Context, db *sql.DB, indexName string) (bool, er
 			FROM pg_class idx
 			JOIN pg_namespace ns ON ns.oid = idx.relnamespace
 			JOIN pg_index i ON i.indexrelid = idx.oid
-			WHERE ns.nspname = 'public'
-			  AND idx.relname = $1
+			WHERE ns.nspname = $1
+			  AND idx.relname = $2
 			  AND NOT i.indisvalid
 		)
-	`, indexName).Scan(&invalid)
+	`, schemaName, indexName).Scan(&invalid)
 	return invalid, err
+}
+
+func tableIsPartitioned(ctx context.Context, db *sql.DB, tableName string) (bool, error) {
+	var partitioned bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_partitioned_table pt
+			JOIN pg_class cls ON cls.oid = pt.partrelid
+			JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+			WHERE ns.nspname = 'public'
+			  AND cls.relname = $1
+		)
+	`, tableName).Scan(&partitioned)
+	return partitioned, err
+}
+
+type tableIdentifier struct {
+	schema string
+	name   string
+}
+
+func listLeafPartitions(ctx context.Context, db *sql.DB, parentTable string) ([]tableIdentifier, error) {
+	rows, err := db.QueryContext(ctx, `
+		WITH RECURSIVE partition_tree AS (
+			SELECT child.oid
+			FROM pg_inherits inh
+			JOIN pg_class child ON child.oid = inh.inhrelid
+			WHERE inh.inhparent = to_regclass('public.' || $1)
+			UNION ALL
+			SELECT child.oid
+			FROM pg_inherits inh
+			JOIN pg_class child ON child.oid = inh.inhrelid
+			JOIN partition_tree parent ON parent.oid = inh.inhparent
+		)
+		SELECT ns.nspname, cls.relname
+		FROM partition_tree pt
+		JOIN pg_class cls ON cls.oid = pt.oid
+		JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM pg_inherits child_inh
+			WHERE child_inh.inhparent = cls.oid
+		)
+		ORDER BY ns.nspname, cls.relname
+	`, parentTable)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	partitions := make([]tableIdentifier, 0)
+	for rows.Next() {
+		var partition tableIdentifier
+		if err := rows.Scan(&partition.schema, &partition.name); err != nil {
+			return nil, err
+		}
+		partitions = append(partitions, partition)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return partitions, nil
+}
+
+func indexPartitionAttached(ctx context.Context, db *sql.DB, parentSchema, parentIndex, childSchema, childIndex string) (bool, error) {
+	var attached bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_inherits inh
+			JOIN pg_class parent_idx ON parent_idx.oid = inh.inhparent
+			JOIN pg_namespace parent_ns ON parent_ns.oid = parent_idx.relnamespace
+			JOIN pg_class child_idx ON child_idx.oid = inh.inhrelid
+			JOIN pg_namespace child_ns ON child_ns.oid = child_idx.relnamespace
+			WHERE parent_ns.nspname = $1
+			  AND parent_idx.relname = $2
+			  AND child_ns.nspname = $3
+			  AND child_idx.relname = $4
+		)
+	`, parentSchema, parentIndex, childSchema, childIndex).Scan(&attached)
+	return attached, err
+}
+
+func opsSystemLogsAPIKeyPartitionIndexName(partitionName string) string {
+	const maxIdentifierLength = 63
+	suffix := strings.TrimPrefix(partitionName, "ops_system_logs")
+	if suffix == "" || suffix == partitionName {
+		suffix = "_" + partitionName
+	}
+
+	base := opsSystemLogsAPIKeyIDIndex + suffix
+	if len(base) <= maxIdentifierLength {
+		return base
+	}
+
+	sum := sha256.Sum256([]byte(base))
+	hashSuffix := "_" + hex.EncodeToString(sum[:])[:8]
+	return base[:maxIdentifierLength-len(hashSuffix)] + hashSuffix
+}
+
+func quotePGIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+func qualifyPGIdentifier(schema, identifier string) string {
+	return quotePGIdentifier(schema) + "." + quotePGIdentifier(identifier)
 }
 
 func ensureAtlasBaselineAligned(ctx context.Context, db *sql.DB, fsys fs.FS) error {

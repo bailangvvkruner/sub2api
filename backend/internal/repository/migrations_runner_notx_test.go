@@ -162,9 +162,9 @@ func TestApplyMigrationsFS_PaymentOrdersOutTradeNoUniqueMigration_DropsInvalidIn
 	mock.ExpectQuery("SELECT out_trade_no, COUNT\\(\\*\\) AS duplicate_count FROM payment_orders").
 		WillReturnRows(sqlmock.NewRows([]string{"out_trade_no", "duplicate_count"}))
 	mock.ExpectQuery("SELECT EXISTS \\(").
-		WithArgs("paymentorder_out_trade_no_unique").
+		WithArgs("public", "paymentorder_out_trade_no_unique").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectExec("DROP INDEX CONCURRENTLY IF EXISTS paymentorder_out_trade_no_unique").
+	mock.ExpectExec("DROP INDEX CONCURRENTLY IF EXISTS \"public\"\\.\"paymentorder_out_trade_no_unique\"").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS paymentorder_out_trade_no_unique").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -204,9 +204,9 @@ func TestApplyMigrationsFS_SchedulerOutboxPendingDedupKeyMigration_DropsInvalidI
 		WithArgs("153_scheduler_outbox_pending_dedup_key_index_notx.sql").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT EXISTS \\(").
-		WithArgs("idx_scheduler_outbox_pending_dedup_key").
+		WithArgs("public", "idx_scheduler_outbox_pending_dedup_key").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectExec("DROP INDEX CONCURRENTLY IF EXISTS idx_scheduler_outbox_pending_dedup_key").
+	mock.ExpectExec("DROP INDEX CONCURRENTLY IF EXISTS \"public\"\\.\"idx_scheduler_outbox_pending_dedup_key\"").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_scheduler_outbox_pending_dedup_key").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -223,6 +223,64 @@ func TestApplyMigrationsFS_SchedulerOutboxPendingDedupKeyMigration_DropsInvalidI
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_scheduler_outbox_pending_dedup_key
     ON scheduler_outbox (dedup_key)
     WHERE dedup_key IS NOT NULL;
+`),
+		},
+	}
+
+	err = applyMigrationsFS(context.Background(), db, fsys)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestApplyMigrationsFS_OpsSystemLogsAPIKeyIndexMigration_HandlesPartitionedTable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	prepareMigrationsBootstrapExpectations(mock)
+	mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").
+		WithArgs("155_add_ops_system_logs_api_key_id_index_notx.sql").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery("SELECT EXISTS \\(").
+		WithArgs("ops_system_logs").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec("CREATE INDEX IF NOT EXISTS \"idx_ops_system_logs_api_key_id_created_at\" ON ONLY \"public\"\\.\"ops_system_logs\"").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("WITH RECURSIVE partition_tree AS").
+		WithArgs("ops_system_logs").
+		WillReturnRows(sqlmock.NewRows([]string{"nspname", "relname"}).
+			AddRow("public", "ops_system_logs_202607").
+			AddRow("public", "ops_system_logs_202608"))
+	mock.ExpectQuery("SELECT EXISTS \\(").
+		WithArgs("public", "idx_ops_system_logs_api_key_id_created_at_202607").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec("CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_ops_system_logs_api_key_id_created_at_202607\" ON \"public\"\\.\"ops_system_logs_202607\"").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT EXISTS \\(").
+		WithArgs("public", "idx_ops_system_logs_api_key_id_created_at", "public", "idx_ops_system_logs_api_key_id_created_at_202607").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec("ALTER INDEX \"public\"\\.\"idx_ops_system_logs_api_key_id_created_at\" ATTACH PARTITION \"public\"\\.\"idx_ops_system_logs_api_key_id_created_at_202607\"").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT EXISTS \\(").
+		WithArgs("public", "idx_ops_system_logs_api_key_id_created_at_202608").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec("CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_ops_system_logs_api_key_id_created_at_202608\" ON \"public\"\\.\"ops_system_logs_202608\"").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT EXISTS \\(").
+		WithArgs("public", "idx_ops_system_logs_api_key_id_created_at", "public", "idx_ops_system_logs_api_key_id_created_at_202608").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec("INSERT INTO schema_migrations \\(filename, checksum\\) VALUES \\(\\$1, \\$2\\)").
+		WithArgs("155_add_ops_system_logs_api_key_id_index_notx.sql", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("SELECT pg_advisory_unlock\\(\\$1\\)").
+		WithArgs(migrationsAdvisoryLockID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	fsys := fstest.MapFS{
+		"155_add_ops_system_logs_api_key_id_index_notx.sql": &fstest.MapFile{
+			Data: []byte(`
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ops_system_logs_api_key_id_created_at
+  ON ops_system_logs (api_key_id, created_at DESC);
 `),
 		},
 	}
