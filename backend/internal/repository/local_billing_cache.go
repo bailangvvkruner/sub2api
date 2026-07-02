@@ -372,6 +372,26 @@ func (c *localBillingCache) InvalidateSubscriptionCache(ctx context.Context, use
 	return c.next.InvalidateSubscriptionCache(ctx, userID, groupID)
 }
 
+func (c *localBillingCache) PublishSubscriptionCacheInvalidation(ctx context.Context, cacheKey string) error {
+	pubsub, ok := c.next.(interface {
+		PublishSubscriptionCacheInvalidation(context.Context, string) error
+	})
+	if !ok {
+		return nil
+	}
+	return pubsub.PublishSubscriptionCacheInvalidation(ctx, cacheKey)
+}
+
+func (c *localBillingCache) SubscribeSubscriptionCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error {
+	pubsub, ok := c.next.(interface {
+		SubscribeSubscriptionCacheInvalidation(context.Context, func(string)) error
+	})
+	if !ok {
+		return nil
+	}
+	return pubsub.SubscribeSubscriptionCacheInvalidation(ctx, handler)
+}
+
 func (c *localBillingCache) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*service.APIKeyRateLimitCacheData, error) {
 	now := c.clock()
 	c.rateMu.Lock()

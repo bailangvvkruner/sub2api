@@ -65,18 +65,24 @@ jobs:
             exit 0
           fi
 
-          allowed_conflicts="$(printf '%s\n' "$conflicts" | grep -E '^\.github/workflows/(backend-ci|cla|release|security-scan)\.yml$' || true)"
-          blocked_conflicts="$(printf '%s\n' "$conflicts" | grep -vE '^\.github/workflows/(backend-ci|cla|release|security-scan)\.yml$' || true)"
+          allowed_conflicts="$(printf '%s\n' "$conflicts" | grep -E '^(\.github/workflows/(backend-ci|cla|release|security-scan)\.yml|backend/internal/service/subscription_service\.go)$' || true)"
+          blocked_conflicts="$(printf '%s\n' "$conflicts" | grep -vE '^(\.github/workflows/(backend-ci|cla|release|security-scan)\.yml|backend/internal/service/subscription_service\.go)$' || true)"
 
           if [ -n "$blocked_conflicts" ]; then
-            echo "Upstream merge has conflicts outside removable fork workflows:"
+            echo "Upstream merge has conflicts outside known fork-only resolutions:"
             printf '%s\n' "$blocked_conflicts"
             exit 1
           fi
 
           if [ -z "$allowed_conflicts" ]; then
-            echo "Upstream merge failed without a known removable workflow conflict."
+            echo "Upstream merge failed without a known fork-only conflict."
             exit 1
+          fi
+
+          if printf '%s\n' "$conflicts" | grep -qx 'backend/internal/service/subscription_service.go'; then
+            echo "Resolving subscription_service.go by keeping fork L1 refresh logic with upstream pub/sub invalidation already applied."
+            git checkout --ours -- backend/internal/service/subscription_service.go
+            git add backend/internal/service/subscription_service.go
           fi
 
           rm -f \

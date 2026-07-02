@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -47,10 +48,12 @@ type SubscriptionService struct {
 	entClient           *dbent.Client
 
 	// L1 缓存：加速中间件热路径的订阅查询
-	subCacheL1     *ristretto.Cache
-	subCacheGroup  singleflight.Group
-	subCacheTTL    time.Duration
-	subCacheJitter int // 抖动百分比
+	subCacheL1      *ristretto.Cache
+	subCacheGroup   singleflight.Group
+	subCacheTTL     time.Duration
+	subCachePubMu   sync.Mutex
+	subCachePubSkip map[string]int
+	subCacheJitter  int // 抖动百分比
 
 	maintenanceQueue *SubscriptionMaintenanceQueue
 }
@@ -65,6 +68,7 @@ func NewSubscriptionService(groupRepo GroupRepository, userSubRepo UserSubscript
 	}
 	svc.initSubCache(cfg)
 	svc.initMaintenanceQueue(cfg)
+	svc.StartSubCacheInvalidationSubscriber(context.Background())
 	return svc
 }
 
@@ -142,12 +146,84 @@ func (s *SubscriptionService) InvalidateSubCache(userID, groupID int64) {
 	s.subCacheL1.Del(subCacheKey(userID, groupID))
 }
 
+// InvalidateSubCacheSync removes a subscription L1 cache entry and waits for Ristretto.
+func (s *SubscriptionService) InvalidateSubCacheSync(userID, groupID int64) {
+	s.invalidateSubCacheKeySync(subCacheKey(userID, groupID))
+}
+
+func (s *SubscriptionService) invalidateSubCacheKeySync(key string) {
+	if s == nil || s.subCacheL1 == nil {
+		return
+	}
+	s.subCacheL1.Del(key)
+	s.subCacheL1.Wait()
+}
+
+func (s *SubscriptionService) markLocalSubCacheInvalidation(cacheKey string) {
+	if s == nil || cacheKey == "" {
+		return
+	}
+	s.subCachePubMu.Lock()
+	if s.subCachePubSkip == nil {
+		s.subCachePubSkip = make(map[string]int)
+	}
+	s.subCachePubSkip[cacheKey]++
+	s.subCachePubMu.Unlock()
+}
+
+func (s *SubscriptionService) consumeLocalSubCacheInvalidation(cacheKey string) bool {
+	if s == nil || cacheKey == "" {
+		return false
+	}
+	s.subCachePubMu.Lock()
+	defer s.subCachePubMu.Unlock()
+	count := s.subCachePubSkip[cacheKey]
+	if count <= 0 {
+		return false
+	}
+	if count == 1 {
+		delete(s.subCachePubSkip, cacheKey)
+	} else {
+		s.subCachePubSkip[cacheKey] = count - 1
+	}
+	return true
+}
+
+// StartSubCacheInvalidationSubscriber listens for cross-instance L1 invalidations.
+func (s *SubscriptionService) StartSubCacheInvalidationSubscriber(ctx context.Context) {
+	if s == nil || s.billingCacheService == nil || s.subCacheL1 == nil {
+		return
+	}
+	if err := s.billingCacheService.SubscribeSubscriptionCacheInvalidation(ctx, func(cacheKey string) {
+		if s.consumeLocalSubCacheInvalidation(cacheKey) {
+			return
+		}
+		s.invalidateSubCacheKeySync(cacheKey)
+	}); err != nil {
+		log.Printf("Warning: failed to start subscription cache invalidation subscriber: %v", err)
+	}
+}
+
+func (s *SubscriptionService) publishSubCacheInvalidation(ctx context.Context, cacheKey string) {
+	if s == nil || s.billingCacheService == nil || cacheKey == "" {
+		return
+	}
+	s.markLocalSubCacheInvalidation(cacheKey)
+	time.AfterFunc(30*time.Second, func() {
+		_ = s.consumeLocalSubCacheInvalidation(cacheKey)
+	})
+	if err := s.billingCacheService.PublishSubscriptionCacheInvalidation(ctx, cacheKey); err != nil {
+		_ = s.consumeLocalSubCacheInvalidation(cacheKey)
+		log.Printf("Warning: publish subscription cache invalidation failed for key %s: %v", cacheKey, err)
+	}
+}
+
 func (s *SubscriptionService) refreshSubscriptionCaches(ctx context.Context, userID, groupID int64) {
 	if s == nil {
 		return
 	}
+	key := subCacheKey(userID, groupID)
 	if s.subCacheL1 != nil {
-		key := subCacheKey(userID, groupID)
 		sub, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, userID, groupID)
 		if err == nil && sub != nil {
 			_ = s.subCacheL1.SetWithTTL(key, sub, 1, s.jitteredTTL(s.subCacheTTL))
@@ -161,6 +237,9 @@ func (s *SubscriptionService) refreshSubscriptionCaches(ctx context.Context, use
 			log.Printf("Warning: refresh billing subscription cache failed for user %d group %d: %v", userID, groupID, err)
 		}
 	}
+	cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.publishSubCacheInvalidation(cacheCtx, key)
 }
 
 // AssignSubscriptionInput 分配订阅输入
