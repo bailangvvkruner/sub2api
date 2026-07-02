@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -11,12 +12,15 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
 	defaultUsageBillingFlushInterval = 30 * time.Second
 	usageBillingApplyTimeout         = 3 * time.Second
 	usageBillingFlushMaxBatches      = 16
+	usagePendingRedisTimeout         = 250 * time.Millisecond
+	usagePendingL2TTL                = 24 * time.Hour
 )
 
 type usageBillingDedupEntry struct {
@@ -31,6 +35,8 @@ type usageBillingWriteBehindBatch struct {
 	apiKeyRate     map[int64]float64
 	apiKeyUpdaters map[int64]APIKeyQuotaUpdater
 	accountQuota   map[int64]float64
+	commands       []*UsageBillingCommand
+	l2Entries      int64
 }
 
 type usageBillingAPIKeyQuotaDelta struct {
@@ -43,29 +49,62 @@ type usageBillingAPIKeyQuotaShadow struct {
 	expiresAt time.Time
 }
 
+type usageBillingPendingRecord struct {
+	RequestID           string  `json:"request_id"`
+	APIKeyID            int64   `json:"api_key_id"`
+	RequestFingerprint  string  `json:"request_fingerprint"`
+	UserID              int64   `json:"user_id"`
+	AccountID           int64   `json:"account_id"`
+	SubscriptionID      *int64  `json:"subscription_id,omitempty"`
+	AccountType         string  `json:"account_type,omitempty"`
+	Model               string  `json:"model,omitempty"`
+	ServiceTier         string  `json:"service_tier,omitempty"`
+	ReasoningEffort     string  `json:"reasoning_effort,omitempty"`
+	BillingType         int8    `json:"billing_type"`
+	InputTokens         int     `json:"input_tokens"`
+	OutputTokens        int     `json:"output_tokens"`
+	CacheCreationTokens int     `json:"cache_creation_tokens"`
+	CacheReadTokens     int     `json:"cache_read_tokens"`
+	ImageCount          int     `json:"image_count"`
+	MediaType           string  `json:"media_type,omitempty"`
+	BalanceCost         float64 `json:"balance_cost,omitempty"`
+	SubscriptionCost    float64 `json:"subscription_cost,omitempty"`
+	APIKeyQuotaCost     float64 `json:"api_key_quota_cost,omitempty"`
+	APIKeyRateLimitCost float64 `json:"api_key_rate_limit_cost,omitempty"`
+	AccountQuotaCost    float64 `json:"account_quota_cost,omitempty"`
+	CreatedAtUnixNano   int64   `json:"created_at_unix_nano"`
+}
+
 type UsageBillingWriteBehindStats struct {
-	PendingBalanceKeys         int
-	PendingSubscriptionKeys    int
-	PendingAPIKeyQuotaKeys     int
-	PendingAPIKeyRateKeys      int
-	PendingAPIKeyUpdaterKeys   int
-	PendingAccountQuotaKeys    int
-	DedupEntries               int
-	AppliedTotal               uint64
-	DedupSkippedTotal          uint64
-	FlushSuccessTotal          uint64
-	FlushErrorTotal            uint64
-	FlushBalanceKeysTotal      uint64
-	FlushSubscriptionKeysTotal uint64
-	FlushAPIKeyQuotaKeysTotal  uint64
-	FlushAPIKeyRateKeysTotal   uint64
-	FlushAccountQuotaKeysTotal uint64
+	PendingL1Entries           int    `json:"pending_l1_entries"`
+	PendingBalanceKeys         int    `json:"pending_balance_keys"`
+	PendingSubscriptionKeys    int    `json:"pending_subscription_keys"`
+	PendingAPIKeyQuotaKeys     int    `json:"pending_api_key_quota_keys"`
+	PendingAPIKeyRateKeys      int    `json:"pending_api_key_rate_keys"`
+	PendingAPIKeyUpdaterKeys   int    `json:"pending_api_key_updater_keys"`
+	PendingAccountQuotaKeys    int    `json:"pending_account_quota_keys"`
+	PendingL2Entries           int64  `json:"pending_l2_entries"`
+	DedupEntries               int    `json:"dedup_entries"`
+	AppliedTotal               uint64 `json:"applied_total"`
+	DedupSkippedTotal          uint64 `json:"dedup_skipped_total"`
+	L2MirrorErrorTotal         uint64 `json:"l2_mirror_error_total"`
+	L2TrimErrorTotal           uint64 `json:"l2_trim_error_total"`
+	FlushSuccessTotal          uint64 `json:"flush_success_total"`
+	FlushErrorTotal            uint64 `json:"flush_error_total"`
+	FlushBalanceKeysTotal      uint64 `json:"flush_balance_keys_total"`
+	FlushSubscriptionKeysTotal uint64 `json:"flush_subscription_keys_total"`
+	FlushAPIKeyQuotaKeysTotal  uint64 `json:"flush_api_key_quota_keys_total"`
+	FlushAPIKeyRateKeysTotal   uint64 `json:"flush_api_key_rate_keys_total"`
+	FlushAccountQuotaKeysTotal uint64 `json:"flush_account_quota_keys_total"`
 }
 
 type UsageBillingWriteBehind struct {
 	cfg      *config.Config
 	enabled  bool
 	interval time.Duration
+	rdb      *redis.Client
+	repo     UsageBillingRepository
+	l2Key    string
 	stopCh   chan struct{}
 	stopped  atomic.Bool
 	started  atomic.Bool
@@ -81,11 +120,16 @@ type UsageBillingWriteBehind struct {
 	apiKeyRate     map[int64]float64
 	apiKeyUpdaters map[int64]APIKeyQuotaUpdater
 	accountQuota   map[int64]float64
+	commands       []*UsageBillingCommand
 	quotaShadow    map[int64]usageBillingAPIKeyQuotaShadow
 	dedup          map[string]usageBillingDedupEntry
+	l2Entries      int64
 
 	appliedTotal               atomic.Uint64
 	dedupSkippedTotal          atomic.Uint64
+	l2PendingEntries           atomic.Int64
+	l2MirrorErrorTotal         atomic.Uint64
+	l2TrimErrorTotal           atomic.Uint64
 	flushSuccessTotal          atomic.Uint64
 	flushErrorTotal            atomic.Uint64
 	flushBalanceKeysTotal      atomic.Uint64
@@ -96,6 +140,10 @@ type UsageBillingWriteBehind struct {
 }
 
 func NewUsageBillingWriteBehind(cfg *config.Config) *UsageBillingWriteBehind {
+	return NewUsageBillingWriteBehindWithRedis(cfg, nil, nil)
+}
+
+func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, rdb *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
 	interval := defaultUsageBillingFlushInterval
 	if cfg != nil && cfg.Gateway.HotPath.UsageBillingFlushIntervalMs > 0 {
 		interval = time.Duration(cfg.Gateway.HotPath.UsageBillingFlushIntervalMs) * time.Millisecond
@@ -104,6 +152,9 @@ func NewUsageBillingWriteBehind(cfg *config.Config) *UsageBillingWriteBehind {
 		cfg:            cfg,
 		enabled:        cfg != nil && cfg.Gateway.HotPath.UsageBillingWriteBehind,
 		interval:       interval,
+		rdb:            rdb,
+		repo:           repo,
+		l2Key:          usagePendingInstanceKey("usage:pending:billing"),
 		stopCh:         make(chan struct{}),
 		balances:       make(map[int64]float64),
 		subscriptions:  make(map[int64]float64),
@@ -111,6 +162,7 @@ func NewUsageBillingWriteBehind(cfg *config.Config) *UsageBillingWriteBehind {
 		apiKeyRate:     make(map[int64]float64),
 		apiKeyUpdaters: make(map[int64]APIKeyQuotaUpdater),
 		accountQuota:   make(map[int64]float64),
+		commands:       make([]*UsageBillingCommand, 0),
 		quotaShadow:    make(map[int64]usageBillingAPIKeyQuotaShadow),
 		dedup:          make(map[string]usageBillingDedupEntry),
 	}
@@ -156,6 +208,78 @@ func (s *UsageBillingWriteBehind) APIKeyQuotaExhausted(apiKey *APIKey) bool {
 		used = shadow.used
 	}
 	return used >= apiKey.Quota
+}
+
+func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *UsageBillingCommand) error {
+	if s == nil || s.rdb == nil || cmd == nil {
+		return nil
+	}
+	record := usageBillingPendingRecord{
+		RequestID:           cmd.RequestID,
+		APIKeyID:            cmd.APIKeyID,
+		RequestFingerprint:  cmd.RequestFingerprint,
+		UserID:              cmd.UserID,
+		AccountID:           cmd.AccountID,
+		SubscriptionID:      cmd.SubscriptionID,
+		AccountType:         cmd.AccountType,
+		Model:               cmd.Model,
+		ServiceTier:         cmd.ServiceTier,
+		ReasoningEffort:     cmd.ReasoningEffort,
+		BillingType:         cmd.BillingType,
+		InputTokens:         cmd.InputTokens,
+		OutputTokens:        cmd.OutputTokens,
+		CacheCreationTokens: cmd.CacheCreationTokens,
+		CacheReadTokens:     cmd.CacheReadTokens,
+		ImageCount:          cmd.ImageCount,
+		MediaType:           cmd.MediaType,
+		BalanceCost:         cmd.BalanceCost,
+		SubscriptionCost:    cmd.SubscriptionCost,
+		APIKeyQuotaCost:     cmd.APIKeyQuotaCost,
+		APIKeyRateLimitCost: cmd.APIKeyRateLimitCost,
+		AccountQuotaCost:    cmd.AccountQuotaCost,
+		CreatedAtUnixNano:   time.Now().UnixNano(),
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mirrorCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
+	defer cancel()
+	pipe := s.rdb.Pipeline()
+	pipe.RPush(mirrorCtx, s.l2Key, payload)
+	pipe.Expire(mirrorCtx, s.l2Key, usagePendingTTL())
+	if _, err := pipe.Exec(mirrorCtx); err != nil {
+		return err
+	}
+	s.l2PendingEntries.Add(1)
+	return nil
+}
+
+func (s *UsageBillingWriteBehind) trimPendingL2(ctx context.Context, n int64) error {
+	if s == nil || s.rdb == nil || n <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	trimCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
+	defer cancel()
+	if err := s.rdb.LTrim(trimCtx, s.l2Key, n, -1).Err(); err != nil {
+		return err
+	}
+	for {
+		current := s.l2PendingEntries.Load()
+		next := current - n
+		if next < 0 {
+			next = 0
+		}
+		if s.l2PendingEntries.CompareAndSwap(current, next) {
+			return nil
+		}
+	}
 }
 
 func (s *UsageBillingWriteBehind) Start() {
@@ -268,8 +392,15 @@ func (s *UsageBillingWriteBehind) Apply(ctx context.Context, cmd *UsageBillingCo
 	if cmd.AccountQuotaCost > 0 {
 		s.accountQuota[cmd.AccountID] += cmd.AccountQuotaCost
 	}
+	s.commands = append(s.commands, cloneUsageBillingCommand(cmd))
+	s.l2Entries++
 	s.appliedTotal.Add(1)
 	s.mu.Unlock()
+
+	if err := s.mirrorPendingToL2(ctx, cmd); err != nil {
+		s.l2MirrorErrorTotal.Add(1)
+		logger.LegacyPrintf("usage_billing_write_behind", "[UsageBillingWriteBehind] L2 mirror failed, continuing L1-only: %v", err)
+	}
 
 	return result, true, nil
 }
@@ -297,6 +428,10 @@ func (s *UsageBillingWriteBehind) Flush(parentCtx context.Context, deps *billing
 			logger.LegacyPrintf("usage_billing_write_behind", "[UsageBillingWriteBehind] ALERT flush failed: %v", err)
 			return
 		}
+		if err := s.trimPendingL2(parentCtx, batch.l2Entries); err != nil {
+			s.l2TrimErrorTotal.Add(1)
+			logger.LegacyPrintf("usage_billing_write_behind", "[UsageBillingWriteBehind] L2 trim failed after DB flush: %v", err)
+		}
 		s.flushSuccessTotal.Add(1)
 		s.flushBalanceKeysTotal.Add(uint64(balanceKeys))
 		s.flushSubscriptionKeysTotal.Add(uint64(subscriptionKeys))
@@ -314,15 +449,19 @@ func (s *UsageBillingWriteBehind) Stats() UsageBillingWriteBehindStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return UsageBillingWriteBehindStats{
+		PendingL1Entries:           len(s.commands),
 		PendingBalanceKeys:         len(s.balances),
 		PendingSubscriptionKeys:    len(s.subscriptions),
 		PendingAPIKeyQuotaKeys:     len(s.apiKeyQuota),
 		PendingAPIKeyRateKeys:      len(s.apiKeyRate),
 		PendingAPIKeyUpdaterKeys:   len(s.apiKeyUpdaters),
 		PendingAccountQuotaKeys:    len(s.accountQuota),
+		PendingL2Entries:           s.l2PendingEntries.Load(),
 		DedupEntries:               len(s.dedup),
 		AppliedTotal:               s.appliedTotal.Load(),
 		DedupSkippedTotal:          s.dedupSkippedTotal.Load(),
+		L2MirrorErrorTotal:         s.l2MirrorErrorTotal.Load(),
+		L2TrimErrorTotal:           s.l2TrimErrorTotal.Load(),
 		FlushSuccessTotal:          s.flushSuccessTotal.Load(),
 		FlushErrorTotal:            s.flushErrorTotal.Load(),
 		FlushBalanceKeysTotal:      s.flushBalanceKeysTotal.Load(),
@@ -345,6 +484,8 @@ func (s *UsageBillingWriteBehind) takeBatch() usageBillingWriteBehindBatch {
 		apiKeyRate:     s.apiKeyRate,
 		apiKeyUpdaters: s.apiKeyUpdaters,
 		accountQuota:   s.accountQuota,
+		commands:       s.commands,
+		l2Entries:      s.l2Entries,
 	}
 	s.balances = make(map[int64]float64)
 	s.subscriptions = make(map[int64]float64)
@@ -352,6 +493,8 @@ func (s *UsageBillingWriteBehind) takeBatch() usageBillingWriteBehindBatch {
 	s.apiKeyRate = make(map[int64]float64)
 	s.apiKeyUpdaters = make(map[int64]APIKeyQuotaUpdater)
 	s.accountQuota = make(map[int64]float64)
+	s.commands = make([]*UsageBillingCommand, 0)
+	s.l2Entries = 0
 	return batch
 }
 
@@ -385,11 +528,18 @@ func (s *UsageBillingWriteBehind) requeue(batch usageBillingWriteBehindBatch) {
 	for accountID, cost := range batch.accountQuota {
 		s.accountQuota[accountID] += cost
 	}
+	if len(batch.commands) > 0 {
+		s.commands = append(batch.commands, s.commands...)
+	}
+	s.l2Entries += batch.l2Entries
 }
 
 func (s *UsageBillingWriteBehind) flushBatch(parentCtx context.Context, deps *billingDeps, batch usageBillingWriteBehindBatch) error {
 	if batch.empty() {
 		return nil
+	}
+	if s.repo != nil && len(batch.commands) > 0 {
+		return s.flushBatchCommands(parentCtx, batch)
 	}
 	if deps == nil {
 		deps = s.currentDeps()
@@ -472,12 +622,31 @@ func (s *UsageBillingWriteBehind) flushBatch(parentCtx context.Context, deps *bi
 	return nil
 }
 
+func (s *UsageBillingWriteBehind) flushBatchCommands(parentCtx context.Context, batch usageBillingWriteBehindBatch) error {
+	if s == nil || s.repo == nil || batch.empty() {
+		return nil
+	}
+	for _, cmd := range batch.commands {
+		if cmd == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(parentCtx, usageBillingApplyTimeout)
+		if _, err := s.repo.Apply(ctx, cmd); err != nil {
+			cancel()
+			return err
+		}
+		cancel()
+	}
+	return nil
+}
+
 func (b usageBillingWriteBehindBatch) empty() bool {
 	return len(b.balances) == 0 &&
 		len(b.subscriptions) == 0 &&
 		len(b.apiKeyQuota) == 0 &&
 		len(b.apiKeyRate) == 0 &&
-		len(b.accountQuota) == 0
+		len(b.accountQuota) == 0 &&
+		len(b.commands) == 0
 }
 
 func (s *UsageBillingWriteBehind) pruneDedupLocked(now time.Time) {

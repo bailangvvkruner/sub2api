@@ -245,6 +245,13 @@ func (s *APIKeyService) SetUsageBillingWriteBehind(wb *UsageBillingWriteBehind) 
 	s.usageBillingWriteBehind = wb
 }
 
+func (s *APIKeyService) UsageBillingWriteBehind() *UsageBillingWriteBehind {
+	if s == nil {
+		return nil
+	}
+	return s.usageBillingWriteBehind
+}
+
 func (s *APIKeyService) compileAPIKeyIPRules(apiKey *APIKey) {
 	if apiKey == nil {
 		return

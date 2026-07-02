@@ -82,6 +82,21 @@ func (s *usageBillingWriteBehindAPIKeyUpdaterStub) UpdateRateLimitUsage(ctx cont
 	return s.err
 }
 
+type usageBillingWriteBehindRepoStub struct {
+	calls   int
+	lastCmd *UsageBillingCommand
+	err     error
+}
+
+func (s *usageBillingWriteBehindRepoStub) Apply(ctx context.Context, cmd *UsageBillingCommand) (*UsageBillingApplyResult, error) {
+	s.calls++
+	s.lastCmd = cloneUsageBillingCommand(cmd)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &UsageBillingApplyResult{Applied: true}, nil
+}
+
 func newUsageBillingWriteBehindForTest() *UsageBillingWriteBehind {
 	cfg := &config.Config{}
 	cfg.Gateway.HotPath.UsageBillingWriteBehind = true
@@ -169,6 +184,42 @@ func TestUsageBillingWriteBehind_AggregatesAndFlushesOnce(t *testing.T) {
 	require.Equal(t, 1, accountRepo.calls)
 	require.InDelta(t, 1.25, accountRepo.amount, 1e-12)
 	require.Equal(t, 0, wb.Stats().PendingBalanceKeys)
+}
+
+func TestUsageBillingWriteBehind_FlushesL1CommandsThroughRepository(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.HotPath.UsageBillingWriteBehind = true
+	cfg.Gateway.HotPath.UsageBillingFlushIntervalMs = 30000
+	cfg.Idempotency.DefaultTTLSeconds = 60
+	cfg.APIKeyAuth.L2TTLSeconds = 60
+	repo := &usageBillingWriteBehindRepoStub{}
+	wb := NewUsageBillingWriteBehindWithRedis(cfg, nil, repo)
+
+	result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
+		RequestID: "zero-cost-request",
+		APIKeyID:  7,
+		UserID:    42,
+		AccountID: 99,
+	}, &postUsageBillingParams{
+		User:    &User{ID: 42, Balance: 10},
+		APIKey:  &APIKey{ID: 7},
+		Account: &Account{ID: 99},
+	}, &billingDeps{})
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.True(t, result.Applied)
+	require.Equal(t, 1, wb.Stats().PendingL1Entries)
+	require.Equal(t, 0, wb.Stats().PendingBalanceKeys)
+	require.Equal(t, 0, repo.calls)
+
+	wb.Flush(context.Background(), nil)
+
+	require.Equal(t, 1, repo.calls)
+	require.NotNil(t, repo.lastCmd)
+	require.Equal(t, "zero-cost-request", repo.lastCmd.RequestID)
+	stats := wb.Stats()
+	require.Equal(t, 0, stats.PendingL1Entries)
+	require.Equal(t, uint64(1), stats.FlushSuccessTotal)
 }
 
 func TestUsageBillingWriteBehind_DeduplicatesRequestID(t *testing.T) {

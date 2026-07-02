@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	dbuser "github.com/Wei-Shaw/sub2api/ent/user"
 	dbusersub "github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -27,6 +28,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 	gocache "github.com/patrickmn/go-cache"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -290,6 +292,14 @@ const (
 
 func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLogRepository {
 	return newUsageLogRepositoryWithSQL(client, sqlDB)
+}
+
+func ProvideUsageLogRepository(client *dbent.Client, sqlDB *sql.DB, rdb *redis.Client, cfg *config.Config) service.UsageLogRepository {
+	base := newUsageLogRepositoryWithSQL(client, sqlDB)
+	if cfg == nil || !cfg.Gateway.HotPath.UsageBillingWriteBehind {
+		return base
+	}
+	return NewUsageLogRepositoryWithPending(base, rdb, cfg)
 }
 
 func newUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *usageLogRepository {

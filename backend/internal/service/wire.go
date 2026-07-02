@@ -532,8 +532,8 @@ func ProvideBillingCacheService(
 }
 
 // ProvideUsageBillingWriteBehind creates and starts the request hot-path billing flusher.
-func ProvideUsageBillingWriteBehind(cfg *config.Config) *UsageBillingWriteBehind {
-	svc := NewUsageBillingWriteBehind(cfg)
+func ProvideUsageBillingWriteBehind(cfg *config.Config, redisClient *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
+	svc := NewUsageBillingWriteBehindWithRedis(cfg, redisClient, repo)
 	svc.Start()
 	return svc
 }

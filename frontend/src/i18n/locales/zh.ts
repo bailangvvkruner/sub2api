@@ -4916,6 +4916,12 @@ export default {
       clickToViewBalance: '点击查看充值记录',
       failedToLoadUser: '加载用户信息失败',
       userDeletedBadge: '已删除',
+      pending: {
+        title: '待刷写',
+        logs: '日志',
+        billing: '计费',
+        errors: '错误'
+      },
       cleanup: {
         button: '清理',
         title: '清理使用记录',

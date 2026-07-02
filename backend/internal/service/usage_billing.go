@@ -100,6 +100,18 @@ func valueOrZero(v *int64) int64 {
 	return *v
 }
 
+func cloneUsageBillingCommand(in *UsageBillingCommand) *UsageBillingCommand {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.SubscriptionID != nil {
+		subID := *in.SubscriptionID
+		out.SubscriptionID = &subID
+	}
+	return &out
+}
+
 // AccountQuotaState holds the post-increment quota state returned by the DB transaction.
 // All values are post-update (i.e., already include the increment).
 type AccountQuotaState struct {

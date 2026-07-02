@@ -4763,6 +4763,12 @@ export default {
       clickToViewBalance: 'Click to view balance history',
       failedToLoadUser: 'Failed to load user info',
       userDeletedBadge: 'Deleted',
+      pending: {
+        title: 'Pending',
+        logs: 'Logs',
+        billing: 'Billing',
+        errors: 'Errors'
+      },
       cleanup: {
         button: 'Cleanup',
         title: 'Cleanup Usage Records',

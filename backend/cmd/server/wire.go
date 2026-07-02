@@ -101,6 +101,7 @@ func provideCleanup(
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
+	usageLogRepo service.UsageLogRepository,
 	usageBillingWriteBehind *service.UsageBillingWriteBehind,
 ) func() {
 	return func() {
@@ -263,6 +264,12 @@ func provideCleanup(
 			{"UserPlatformQuotaUsageFlusher", func() error {
 				if quotaFlusher != nil {
 					quotaFlusher.Stop()
+				}
+				return nil
+			}},
+			{"UsageLogPendingRepository", func() error {
+				if stopper, ok := usageLogRepo.(interface{ Stop() }); ok {
+					stopper.Stop()
 				}
 				return nil
 			}},

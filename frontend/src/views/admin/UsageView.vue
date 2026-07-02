@@ -2,6 +2,28 @@
   <AppLayout>
     <div class="space-y-6">
       <UsageStatsCards :stats="usageStats" />
+      <div class="flex flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600 shadow-sm dark:border-dark-700 dark:bg-dark-800 dark:text-gray-300">
+        <span class="font-medium text-gray-800 dark:text-gray-100">{{ t('admin.usage.pending.title') }}</span>
+        <span class="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-1 dark:bg-dark-700">
+          <span>{{ t('admin.usage.pending.logs') }}</span>
+          <span>L1 {{ usageLogPendingL1 }}</span>
+          <span>L2 {{ usagePendingStats?.usage_log.pending_l2_entries ?? 0 }}</span>
+        </span>
+        <span class="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-1 dark:bg-dark-700">
+          <span>{{ t('admin.usage.pending.billing') }}</span>
+          <span>L1 {{ usageBillingPendingL1 }}</span>
+          <span>L2 {{ usagePendingStats?.usage_billing.pending_l2_entries ?? 0 }}</span>
+        </span>
+        <span
+          v-if="usagePendingErrorCount > 0"
+          class="inline-flex items-center gap-1 rounded bg-red-50 px-2 py-1 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+        >
+          {{ t('admin.usage.pending.errors') }} {{ usagePendingErrorCount }}
+        </span>
+        <span class="ml-auto text-gray-400" v-if="usagePendingStats">
+          {{ formatPendingUpdatedAt(usagePendingStats.updated_at) }}
+        </span>
+      </div>
       <!-- Charts Section -->
       <div class="space-y-4">
         <div class="card p-4">
@@ -170,7 +192,7 @@ import type { OpsErrorLog } from '@/api/admin/ops'
 import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'; import GroupDistributionChart from '@/components/charts/GroupDistributionChart.vue'; import TokenUsageTrend from '@/components/charts/TokenUsageTrend.vue'
 import EndpointDistributionChart from '@/components/charts/EndpointDistributionChart.vue'
 import Icon from '@/components/icons/Icon.vue'
-import type { AdminUsageLog, TrendDataPoint, ModelStat, GroupStat, EndpointStat, AdminUser } from '@/types'; import type { AdminUsageStatsResponse, AdminUsageQueryParams } from '@/api/admin/usage'
+import type { AdminUsageLog, TrendDataPoint, ModelStat, GroupStat, EndpointStat, AdminUser } from '@/types'; import type { AdminUsageStatsResponse, AdminUsageQueryParams, UsagePendingStatsResponse } from '@/api/admin/usage'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -178,7 +200,7 @@ type DistributionMetric = 'tokens' | 'actual_cost'
 type EndpointSource = 'inbound' | 'upstream' | 'path'
 type ModelDistributionSource = 'requested' | 'upstream' | 'mapping'
 const route = useRoute()
-const usageStats = ref<AdminUsageStatsResponse | null>(null); const usageLogs = ref<AdminUsageLog[]>([]); const loading = ref(false); const exporting = ref(false)
+const usageStats = ref<AdminUsageStatsResponse | null>(null); const usageLogs = ref<AdminUsageLog[]>([]); const usagePendingStats = ref<UsagePendingStatsResponse | null>(null); const loading = ref(false); const exporting = ref(false)
 const trendData = ref<TrendDataPoint[]>([]); const requestedModelStats = ref<ModelStat[]>([]); const upstreamModelStats = ref<ModelStat[]>([]); const mappingModelStats = ref<ModelStat[]>([]); const groupStats = ref<GroupStat[]>([]); const chartsLoading = ref(false); const modelStatsLoading = ref(false); const granularity = ref<'day' | 'hour'>('hour')
 const modelDistributionMetric = ref<DistributionMetric>('tokens')
 const modelDistributionSource = ref<ModelDistributionSource>('requested')
@@ -194,7 +216,7 @@ const inboundEndpointStats = ref<EndpointStat[]>([])
 const upstreamEndpointStats = ref<EndpointStat[]>([])
 const endpointPathStats = ref<EndpointStat[]>([])
 const endpointStatsLoading = ref(false)
-let abortController: AbortController | null = null; let exportAbortController: AbortController | null = null
+let abortController: AbortController | null = null; let exportAbortController: AbortController | null = null; let pendingStatsTimer: number | null = null
 let chartReqSeq = 0
 let statsReqSeq = 0
 let modelStatsReqSeq = 0
@@ -365,6 +387,42 @@ const invalidateModelStatsCache = () => {
   loadedModelSources.requested = false
   loadedModelSources.upstream = false
   loadedModelSources.mapping = false
+}
+
+const usageLogPendingL1 = computed(() => usagePendingStats.value?.usage_log.pending_l1_entries ?? 0)
+const usageBillingPendingL1 = computed(() => usagePendingStats.value?.usage_billing.pending_l1_entries ?? 0)
+const usagePendingErrorCount = computed(() => {
+  const logs = usagePendingStats.value?.usage_log
+  const billing = usagePendingStats.value?.usage_billing
+  return (logs?.flush_error_total ?? 0) +
+    (logs?.l2_mirror_error_total ?? 0) +
+    (logs?.l2_trim_error_total ?? 0) +
+    (billing?.flush_error_total ?? 0) +
+    (billing?.l2_mirror_error_total ?? 0) +
+    (billing?.l2_trim_error_total ?? 0)
+})
+const formatPendingUpdatedAt = (raw: string) => {
+  const date = new Date(raw)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString()
+}
+const loadPendingStats = async () => {
+  try {
+    usagePendingStats.value = await adminUsageAPI.getPendingStats()
+  } catch (error) {
+    console.error('Failed to load usage pending stats:', error)
+  }
+}
+const startPendingStatsPolling = () => {
+  void loadPendingStats()
+  pendingStatsTimer = window.setInterval(() => {
+    void loadPendingStats()
+  }, 5000)
+}
+const stopPendingStatsPolling = () => {
+  if (pendingStatsTimer !== null) {
+    window.clearInterval(pendingStatsTimer)
+    pendingStatsTimer = null
+  }
 }
 
 const loadModelStats = async (source: ModelDistributionSource, force = false) => {
@@ -680,6 +738,7 @@ onMounted(() => {
   applyRouteQueryFilters()
   loadLogs()
   loadStats()
+  startPendingStatsPolling()
   loadModelStats(modelDistributionSource.value, true)
   window.setTimeout(() => {
     void loadChartData()
@@ -687,7 +746,7 @@ onMounted(() => {
   loadSavedColumns()
   document.addEventListener('click', handleColumnClickOutside)
 })
-onUnmounted(() => { abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
+onUnmounted(() => { abortController?.abort(); exportAbortController?.abort(); stopPendingStatsPolling(); document.removeEventListener('click', handleColumnClickOutside) })
 
 watch(modelDistributionSource, (source) => {
   void loadModelStats(source)
