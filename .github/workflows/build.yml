@@ -31,6 +31,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set version metadata
+        run: |
+          BASE_VERSION="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
+          echo "APP_VERSION=${BASE_VERSION}-vmain" >> "$GITHUB_ENV"
+
       - name: Build Docker image
         uses: docker/build-push-action@v6
         with:
@@ -41,7 +46,7 @@ jobs:
           load: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ env.APP_VERSION }}
             COMMIT=${{ github.sha }}
           cache: false
 

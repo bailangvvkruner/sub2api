@@ -125,6 +125,8 @@ jobs:
         run: |
           echo "HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/sub2api" >> "$GITHUB_ENV"
+          BASE_VERSION="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
+          echo "APP_VERSION=${BASE_VERSION}-vmain" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -139,7 +141,7 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_NAME }}:latest
           build-args: |
-            VERSION=main
+            VERSION=${{ env.APP_VERSION }}
             COMMIT=${{ env.HEAD_SHA }}
           cache: false
 
