@@ -222,6 +222,16 @@ func (c *localConcurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, 
 	return nil
 }
 
+func (c *localConcurrencyCache) CleanupExpiredAccountSlotKeys(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cleanupSlotOwners(c.accountSlots, time.Now())
+	return nil
+}
+
 func (c *localConcurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error {
 	if err := ctx.Err(); err != nil {
 		return err
