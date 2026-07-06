@@ -1,9 +1,12 @@
 package repository
 
 import (
+	"context"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -74,22 +77,22 @@ func TestBuildOpsErrorLogsWhere_ModelFuzzy(t *testing.T) {
 // cyber_policy hits (status_code=200) remain visible in admin + user error-request
 // lists.  The repository filter must emit an OR exemption for error_type='cyber_policy'
 // so that stream-path cyber rows (upstream delivers 200 with a failed SSE event) are
-// not silently excluded by the COALESCE(status_code,0) >= 400 guard.
+// not silently excluded by the effective status >= 400 guard.
 func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
 	// Default filter (no phase) must include the cyber_policy exemption.
 	where, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{})
 	if !strings.Contains(where, "e.error_type = 'cyber_policy'") {
 		t.Fatalf("default filter must exempt cyber_policy from status >= 400 guard\nfull: %s", where)
 	}
-	if !strings.Contains(where, "COALESCE(e.status_code, 0) >= 400") {
-		t.Fatalf("default filter must still include the status >= 400 guard for non-cyber rows\nfull: %s", where)
+	if !strings.Contains(where, "COALESCE(e.upstream_status_code, e.status_code, 0) >= 400") {
+		t.Fatalf("default filter must still include the effective status >= 400 guard for non-cyber rows\nfull: %s", where)
 	}
 
 	// phase=upstream WITHOUT the recovered-upstream opt-in keeps the status guard:
 	// request-error list endpoints filter by phase=upstream as a plain condition.
 	whereUpstream, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "upstream"})
-	if !strings.Contains(whereUpstream, "COALESCE(e.status_code, 0) >= 400") {
-		t.Fatalf("upstream phase without IncludeRecoveredUpstream must keep the status guard\nfull: %s", whereUpstream)
+	if !strings.Contains(whereUpstream, "COALESCE(e.upstream_status_code, e.status_code, 0) >= 400") {
+		t.Fatalf("upstream phase without IncludeRecoveredUpstream must keep the effective status guard\nfull: %s", whereUpstream)
 	}
 	if !strings.Contains(whereUpstream, "e.error_phase = $") {
 		t.Fatalf("upstream phase filter must emit the error_phase condition\nfull: %s", whereUpstream)
@@ -100,6 +103,53 @@ func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
 	whereRecovered, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "upstream", IncludeRecoveredUpstream: true})
 	if strings.Contains(whereRecovered, "status_code") {
 		t.Fatalf("upstream phase with IncludeRecoveredUpstream must not add any status_code clause\nfull: %s", whereRecovered)
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_DefaultGuardUsesEffectiveStatus(t *testing.T) {
+	where, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{})
+	if !strings.Contains(where, "COALESCE(e.upstream_status_code, e.status_code, 0) >= 400") {
+		t.Fatalf("default visibility guard must include upstream_status_code\nfull: %s", where)
+	}
+	if strings.Contains(where, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("default visibility guard must not fall back to client-only status_code\nfull: %s", where)
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_ViewAllKeepsEffectiveStatusGuard(t *testing.T) {
+	where, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{View: "all"})
+	if !strings.Contains(where, "COALESCE(e.upstream_status_code, e.status_code, 0) >= 400") {
+		t.Fatalf("view=all must keep the effective status guard\nfull: %s", where)
+	}
+	if strings.Contains(where, "COALESCE(e.is_business_limited,false)") {
+		t.Fatalf("view=all must not add business-limited filtering\nfull: %s", where)
+	}
+}
+
+func TestListErrorLogs_DefaultQueriesUseEffectiveStatusGuard(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	effectiveGuard := regexp.QuoteMeta("COALESCE(e.upstream_status_code, e.status_code, 0) >= 400")
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM ops_error_logs e .*" + effectiveGuard).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("(?s)FROM ops_error_logs e.*"+effectiveGuard+".*LIMIT \\$1 OFFSET \\$2").
+		WithArgs(20, 0).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	repo := &opsRepository{db: db}
+	list, err := repo.ListErrorLogs(context.Background(), &service.OpsErrorLogFilter{})
+	if err != nil {
+		t.Fatalf("ListErrorLogs: %v", err)
+	}
+	if list == nil || list.Total != 0 || len(list.Errors) != 0 {
+		t.Fatalf("unexpected list result: %#v", list)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
 	}
 }
 
