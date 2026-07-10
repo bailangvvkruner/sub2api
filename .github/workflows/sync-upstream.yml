@@ -28,16 +28,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config rerere.enabled true
-          git config rerere.autoupdate true
-
-      - name: Restore rerere cache
-        uses: actions/cache@v4
-        with:
-          path: .git/rr-cache
-          key: rerere-main-${{ github.repository }}-${{ github.run_id }}
-          restore-keys: |
-            rerere-main-${{ github.repository }}-
 
       - name: Fetch upstream
         run: |
@@ -48,70 +38,25 @@ jobs:
           fi
           git fetch upstream main
 
-      - name: Merge upstream main
+      - name: Merge upstream and preserve fork patch
+        id: merge
         run: |
-          set +e
-          git merge --no-edit upstream/main
-          status=$?
-          set -e
+          bash .github/scripts/merge-upstream.sh upstream/main
 
-          if [ "$status" -eq 0 ]; then
-            exit 0
-          fi
-
-          conflicts="$(git diff --name-only --diff-filter=U || true)"
-          if [ -z "$conflicts" ] && ! git diff --cached --quiet; then
-            git commit --no-edit
-            exit 0
-          fi
-
-          allowed_conflicts="$(printf '%s\n' "$conflicts" | grep -E '^(\.github/workflows/(backend-ci|cla|release|security-scan)\.yml|backend/internal/service/subscription_service\.go)$' || true)"
-          blocked_conflicts="$(printf '%s\n' "$conflicts" | grep -vE '^(\.github/workflows/(backend-ci|cla|release|security-scan)\.yml|backend/internal/service/subscription_service\.go)$' || true)"
-
-          if [ -n "$blocked_conflicts" ]; then
-            echo "Upstream merge has conflicts outside known fork-only resolutions:"
-            printf '%s\n' "$blocked_conflicts"
-            exit 1
-          fi
-
-          if [ -z "$allowed_conflicts" ]; then
-            echo "Upstream merge failed without a known fork-only conflict."
-            exit 1
-          fi
-
-          if printf '%s\n' "$conflicts" | grep -qx 'backend/internal/service/subscription_service.go'; then
-            echo "Resolving subscription_service.go by keeping fork L1 refresh logic with upstream pub/sub invalidation already applied."
-            git checkout --ours -- backend/internal/service/subscription_service.go
-            git add backend/internal/service/subscription_service.go
-          fi
-
-          rm -f \
-            .github/workflows/backend-ci.yml \
-            .github/workflows/cla.yml \
-            .github/workflows/release.yml \
-            .github/workflows/security-scan.yml
-          git add .github/workflows
-          git commit --no-edit
-
-      - name: Keep fork workflows only
+      - name: Regenerate dependency injection
+        if: steps.merge.outputs.changed == 'true'
+        working-directory: backend
         run: |
-          find .github/workflows -type f \
-            ! -name "build.yml" \
-            ! -name "sync-upstream.yml" \
-            -delete
-
-          git add .github/workflows
-          if git diff --cached --quiet; then
-            echo "No workflow cleanup needed."
-          else
-            git commit -m "ci: keep fork workflows only"
-          fi
+          go generate ./cmd/server
+          git add cmd/server/wire_gen.go
 
       - name: Verify fork patch is still applied
+        if: steps.merge.outputs.changed == 'true'
         run: |
           bash .github/scripts/verify-fork-hotpath.sh
 
       - name: Run focused backend tests
+        if: steps.merge.outputs.changed == 'true'
         working-directory: backend
         env:
           GOCACHE: ${{ github.workspace }}/.tmp/go-build-cache
@@ -121,7 +66,16 @@ jobs:
           trap 'rm -rf "$GOCACHE" "$GOTMPDIR"' EXIT
           go test ./internal/repository ./internal/service ./internal/handler ./internal/server
 
+      - name: Commit synchronized tree
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          git diff --check
+          git diff --cached --check
+          git commit -m "Merge upstream/main into main"
+          git merge-base --is-ancestor upstream/main HEAD
+
       - name: Set image metadata
+        if: steps.merge.outputs.changed == 'true'
         run: |
           echo "HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/sub2api" >> "$GITHUB_ENV"
@@ -129,9 +83,11 @@ jobs:
           echo "APP_VERSION=${BASE_VERSION}-vmain" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
+        if: steps.merge.outputs.changed == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
+        if: steps.merge.outputs.changed == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -143,18 +99,21 @@ jobs:
           build-args: |
             VERSION=${{ env.APP_VERSION }}
             COMMIT=${{ env.HEAD_SHA }}
-          cache: false
-
-      - name: Push synced main
-        run: |
-          git push origin HEAD:main
+          no-cache: true
 
       - name: Log in to Docker Hub
+        if: steps.merge.outputs.changed == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Push synced main
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          git push origin HEAD:main
+
       - name: Push Docker image
+        if: steps.merge.outputs.changed == 'true'
         run: |
           docker push "${IMAGE_NAME}:latest"

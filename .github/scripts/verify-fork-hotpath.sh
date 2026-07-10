@@ -84,8 +84,24 @@ require_file backend/internal/service/usage_billing_write_behind.go
 require_fixed backend/internal/service/usage_billing_write_behind.go 'type UsageBillingWriteBehind struct' "usage billing write-behind type is missing"
 require_fixed backend/internal/service/usage_billing_write_behind.go 'func (s *UsageBillingWriteBehind) Apply' "usage billing write-behind apply path is missing"
 require_fixed backend/internal/service/usage_billing_write_behind.go 'func (s *UsageBillingWriteBehind) Flush' "usage billing write-behind flush path is missing"
-require_fixed backend/internal/service/gateway_service.go 'deps.usageBillingWriteBehind.Apply' "gateway billing does not use write-behind"
+require_fixed backend/internal/service/api_key_service.go 'func (s *APIKeyService) UsageBillingWriteBehind() *UsageBillingWriteBehind' "API key service no longer exposes the write-behind worker"
+require_fixed backend/internal/service/gateway_usage_billing.go 'usageBillingWriteBehind = provider.UsageBillingWriteBehind()' "gateway billing no longer resolves write-behind from APIKeyService"
+require_fixed backend/internal/service/gateway_usage_billing.go 'usageBillingWriteBehind.Apply' "gateway billing does not use write-behind"
 require_fixed backend/internal/service/wire.go 'ProvideUsageBillingWriteBehind,' "usage billing write-behind is not in the provider set"
+
+require_file backend/internal/repository/usage_log_pending_repo.go
+require_fixed backend/internal/repository/usage_log_pending_repo.go 'defaultUsageLogPendingFlushInterval = 30 * time.Second' "usage logs no longer default to a 30s pending flush"
+require_fixed backend/internal/repository/usage_log_repo.go 'return NewUsageLogRepositoryWithPending(base, rdb, cfg)' "usage log repository no longer enables the pending wrapper"
+
+require_fixed backend/internal/service/admin_user.go 'ApplyUserBalanceDeltaRealtime' "admin balance changes no longer refresh L1/Redis in real time"
+require_fixed backend/internal/service/admin_group.go 'RefreshSubscription' "admin group changes no longer refresh subscription caches"
+require_fixed backend/internal/service/subscription_service.go 'func (s *SubscriptionService) refreshSubscriptionCaches' "subscription realtime refresh helper is missing"
+require_fixed backend/internal/service/subscription_service.go 's.billingCacheService.RefreshSubscription' "subscription changes no longer refresh billing caches"
+require_fixed backend/internal/service/gateway_scheduling.go 'func sortAccountsByPriorityAndLoad' "gateway scheduling reverted to LastUsedAt ordering"
+require_fixed backend/internal/service/gateway_scheduling.go 'func sortAccountsByPriorityOnlyRandom' "gateway random fallback helper is missing"
+require_fixed backend/internal/service/openai_gateway_scheduling.go 'sortAccountsByPriorityOnlyRandom(candidates, false)' "OpenAI fallback scheduling reverted to LastUsedAt ordering"
+require_fixed backend/internal/server/middleware/api_key_auth.go 'apiKeyService.IsQuotaExhausted(apiKey)' "main auth middleware no longer checks the write-behind quota shadow"
+require_fixed backend/internal/server/middleware/api_key_auth_google.go 'apiKeyService.IsQuotaExhausted(apiKey)' "Google auth middleware no longer checks the write-behind quota shadow"
 
 require_fixed README.md 'gateway.hotpath.local_billing_cache: true' "README no longer documents local billing L1 cache"
 require_fixed README.md 'gateway.hotpath.usage_billing_write_behind: true' "README no longer documents usage billing write-behind"

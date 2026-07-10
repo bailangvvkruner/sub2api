@@ -126,6 +126,8 @@ tests
 CLAUDE.md
 .claude
 scripts
+!.github/scripts/
+!.github/scripts/*.sh
 !backend/scripts/
 !backend/scripts/resolve-version.sh
 .code-review-state

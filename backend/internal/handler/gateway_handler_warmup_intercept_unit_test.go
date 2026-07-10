@@ -151,7 +151,6 @@ func newTestGatewayHandler(t *testing.T, group *service.Group, accounts []*servi
 		&fakeGroupRepo{group: group},
 		nil, // usageLogRepo
 		nil, // usageBillingRepo
-		nil, // usageBillingWriteBehind
 		nil, // userRepo
 		nil, // userSubRepo
 		nil, // userGroupRateRepo

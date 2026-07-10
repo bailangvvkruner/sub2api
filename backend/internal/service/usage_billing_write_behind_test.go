@@ -97,6 +97,18 @@ func (s *usageBillingWriteBehindRepoStub) Apply(ctx context.Context, cmd *UsageB
 	return &UsageBillingApplyResult{Applied: true}, nil
 }
 
+func (s *usageBillingWriteBehindRepoStub) ReserveBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+	return nil, nil
+}
+
+func (s *usageBillingWriteBehindRepoStub) CaptureBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+	return nil, nil
+}
+
+func (s *usageBillingWriteBehindRepoStub) ReleaseBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+	return nil, nil
+}
+
 func newUsageBillingWriteBehindForTest() *UsageBillingWriteBehind {
 	cfg := &config.Config{}
 	cfg.Gateway.HotPath.UsageBillingWriteBehind = true
@@ -184,6 +196,24 @@ func TestUsageBillingWriteBehind_AggregatesAndFlushesOnce(t *testing.T) {
 	require.Equal(t, 1, accountRepo.calls)
 	require.InDelta(t, 1.25, accountRepo.amount, 1e-12)
 	require.Equal(t, 0, wb.Stats().PendingBalanceKeys)
+}
+
+func TestApplyUsageBilling_ResolvesWriteBehindFromAPIKeyService(t *testing.T) {
+	wb := newUsageBillingWriteBehindForTest()
+	apiKeyService := &APIKeyService{}
+	apiKeyService.SetUsageBillingWriteBehind(wb)
+
+	applied, err := applyUsageBilling(context.Background(), "provider-request", nil, &postUsageBillingParams{
+		Cost:          &CostBreakdown{},
+		User:          &User{ID: 42, Balance: 10},
+		APIKey:        &APIKey{ID: 7},
+		Account:       &Account{ID: 99},
+		APIKeyService: apiKeyService,
+	}, &billingDeps{deferredService: &DeferredService{}}, nil)
+
+	require.NoError(t, err)
+	require.True(t, applied)
+	require.Equal(t, 1, wb.Stats().PendingL1Entries)
 }
 
 func TestUsageBillingWriteBehind_FlushesL1CommandsThroughRepository(t *testing.T) {
