@@ -1,6 +1,6 @@
-From 7bb9cf31c618b540c987b6437cea8ffb076405d3 Mon Sep 17 00:00:00 2001
+From 15d85ffe351203b72fe4a4945c6510789a6a35d9 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 10:16:49 +0800
+Date: Mon, 13 Jul 2026 10:21:09 +0800
 Subject: [PATCH 5/7] fork: restore usage and cache visibility
 
 ---

@@ -50,6 +50,8 @@ trap cleanup EXIT
 
 apply_queue() {
   local worktree="$1" patch_name
+  git -C "$worktree" config user.name "sub2api fork validation"
+  git -C "$worktree" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
   while IFS= read -r patch_name; do
     [ -n "$patch_name" ] || continue
     if ! git -C "$worktree" am --3way --keep-cr "$queue_dir/$patch_name"; then

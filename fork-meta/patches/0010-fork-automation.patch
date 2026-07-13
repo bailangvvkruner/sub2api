@@ -1,6 +1,6 @@
-From 7bb9cf31c618b540c987b6437cea8ffb076405d3 Mon Sep 17 00:00:00 2001
+From 15d85ffe351203b72fe4a4945c6510789a6a35d9 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 10:16:49 +0800
+Date: Mon, 13 Jul 2026 10:21:09 +0800
 Subject: [PATCH 1/7] fork: preserve patch queue and automation
 
 ---
@@ -275,10 +275,10 @@ index 0000000000000000000000000000000000000000..b7df24283c4189784cf95af714a3b79c
 +printf 'fork rebuilt at %s on %s\n' "$worktree_dir" "$branch_name"
 diff --git a/.github/scripts/validate-patch-queue.sh b/.github/scripts/validate-patch-queue.sh
 new file mode 100644
-index 0000000000000000000000000000000000000000..7d1332705e9cfaabe28df23dfb18eb5f49f2e70a
+index 0000000000000000000000000000000000000000..ca389531ff2f73507b0a0d2589b72ae806c51e48
 --- /dev/null
 +++ b/.github/scripts/validate-patch-queue.sh
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,111 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -331,6 +331,8 @@ index 0000000000000000000000000000000000000000..7d1332705e9cfaabe28df23dfb18eb5f
 +
 +apply_queue() {
 +  local worktree="$1" patch_name
++  git -C "$worktree" config user.name "sub2api fork validation"
++  git -C "$worktree" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 +  while IFS= read -r patch_name; do
 +    [ -n "$patch_name" ] || continue
 +    if ! git -C "$worktree" am --3way --keep-cr "$queue_dir/$patch_name"; then
