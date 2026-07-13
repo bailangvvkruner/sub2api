@@ -1,0 +1,2398 @@
+From 08cdea42f59e319d767dadab4dea2c2c42d7cf81 Mon Sep 17 00:00:00 2001
+From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
+Date: Mon, 13 Jul 2026 10:33:15 +0800
+Subject: [PATCH 7/7] fork: retain hotpath regression coverage
+
+---
+diff --git a/backend/cmd/server/wire_gen_test.go b/backend/cmd/server/wire_gen_test.go
+index 27707bc8c61219f15d6b46d131279e9635a57907..5cc2d5055ccaaab7b8652d7d08e4e057ac402994 100644
+--- a/backend/cmd/server/wire_gen_test.go
++++ b/backend/cmd/server/wire_gen_test.go
+@@ -83,6 +83,8 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
+ 		nil, // paymentOrderExpiry
+ 		nil, // channelMonitorRunner
+ 		nil, // quotaFlusher
++		nil, // usageLogRepo
++		nil, // usageBillingWriteBehind
+ 	)
+ 
+ 	require.NotPanics(t, func() {
+diff --git a/backend/internal/config/config_test.go b/backend/internal/config/config_test.go
+index 32aff543af69dbce45ae3ffa1d0cc788eecefe4e..bec5f32492fc146818f6953176c6a454fab52459 100644
+--- a/backend/internal/config/config_test.go
++++ b/backend/internal/config/config_test.go
+@@ -449,6 +449,15 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
+ 	if cfg.Database.SSLMode != "prefer" {
+ 		t.Fatalf("Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "prefer")
+ 	}
++	if !cfg.Database.UserPlatformQuotaFlusherEnabled {
++		t.Fatalf("Database.UserPlatformQuotaFlusherEnabled = false, want true")
++	}
++	if cfg.Database.UserPlatformQuotaFlushIntervalMs != 30000 {
++		t.Fatalf("Database.UserPlatformQuotaFlushIntervalMs = %d, want 30000", cfg.Database.UserPlatformQuotaFlushIntervalMs)
++	}
++	if cfg.Database.UserPlatformQuotaFlushBatchSize != 1000 {
++		t.Fatalf("Database.UserPlatformQuotaFlushBatchSize = %d, want 1000", cfg.Database.UserPlatformQuotaFlushBatchSize)
++	}
+ }
+ 
+ func TestValidateLinuxDoFrontendRedirectURL(t *testing.T) {
+@@ -1946,6 +1955,35 @@ func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
+ 	}
+ }
+ 
++func TestLoad_DefaultGatewayHotPathConfig(t *testing.T) {
++	resetViperWithJWTSecret(t)
++	cfg, err := Load()
++	if err != nil {
++		t.Fatalf("Load() error: %v", err)
++	}
++	if !cfg.Gateway.HotPath.LocalConcurrencySlots {
++		t.Fatalf("local_concurrency_slots = false, want true")
++	}
++	if cfg.Gateway.HotPath.PersistAccountLastUsed {
++		t.Fatalf("persist_account_last_used = true, want false")
++	}
++	if !cfg.Gateway.HotPath.LocalBillingCache {
++		t.Fatalf("local_billing_cache = false, want true")
++	}
++	if cfg.Gateway.HotPath.LocalBillingCacheMaxEntries != 262144 {
++		t.Fatalf("local_billing_cache_max_entries = %d, want 262144", cfg.Gateway.HotPath.LocalBillingCacheMaxEntries)
++	}
++	if cfg.Gateway.HotPath.LocalBillingCacheWriteThrough {
++		t.Fatalf("local_billing_cache_write_through = true, want false")
++	}
++	if !cfg.Gateway.HotPath.UsageBillingWriteBehind {
++		t.Fatalf("usage_billing_write_behind = false, want true")
++	}
++	if cfg.Gateway.HotPath.UsageBillingFlushIntervalMs != 30000 {
++		t.Fatalf("usage_billing_flush_interval_ms = %d, want 30000", cfg.Gateway.HotPath.UsageBillingFlushIntervalMs)
++	}
++}
++
+ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
+ 	resetViperWithJWTSecret(t)
+ 	cfg, err := Load()
+diff --git a/backend/internal/handler/payment_handler_resume_test.go b/backend/internal/handler/payment_handler_resume_test.go
+index 21fd8ad763956e8135c0878f58b334ad3113de17..24e01ecd5392db3666437426e2258cbb182aa1f4 100644
+--- a/backend/internal/handler/payment_handler_resume_test.go
++++ b/backend/internal/handler/payment_handler_resume_test.go
+@@ -118,7 +118,7 @@ func TestVerifyOrderPublicReturnsLegacyOrderState(t *testing.T) {
+ 		Save(context.Background())
+ 	require.NoError(t, err)
+ 
+-	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil)
++	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil, nil)
+ 	h := NewPaymentHandler(paymentSvc, nil, nil)
+ 
+ 	recorder := httptest.NewRecorder()
+@@ -218,7 +218,7 @@ func TestResolveOrderPublicByResumeTokenReturnsFrontendContractFields(t *testing
+ 	require.NoError(t, err)
+ 
+ 	configSvc := service.NewPaymentConfigService(client, nil, []byte("0123456789abcdef0123456789abcdef"))
+-	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, configSvc, nil, nil, nil)
++	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, configSvc, nil, nil, nil, nil)
+ 	h := NewPaymentHandler(paymentSvc, nil, nil)
+ 
+ 	recorder := httptest.NewRecorder()
+@@ -306,7 +306,7 @@ func TestResolveOrderPublicByResumeTokenReturnsBadRequestForMismatchedToken(t *t
+ 	require.NoError(t, err)
+ 
+ 	configSvc := service.NewPaymentConfigService(client, nil, []byte("0123456789abcdef0123456789abcdef"))
+-	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, configSvc, nil, nil, nil)
++	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, configSvc, nil, nil, nil, nil)
+ 	h := NewPaymentHandler(paymentSvc, nil, nil)
+ 
+ 	recorder := httptest.NewRecorder()
+@@ -346,7 +346,7 @@ func TestVerifyOrderPublicRejectsBlankOutTradeNo(t *testing.T) {
+ 	client := enttest.NewClient(t, enttest.WithOptions(dbent.Driver(drv)))
+ 	t.Cleanup(func() { _ = client.Close() })
+ 
+-	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil)
++	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil, nil)
+ 	h := NewPaymentHandler(paymentSvc, nil, nil)
+ 
+ 	recorder := httptest.NewRecorder()
+diff --git a/backend/internal/hotpath/billing_cache_test.go b/backend/internal/hotpath/billing_cache_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..cf08d528d574de8d43680a5966eae29383601d6c
+--- /dev/null
++++ b/backend/internal/hotpath/billing_cache_test.go
+@@ -0,0 +1,256 @@
++package hotpath
++
++import (
++	"context"
++	"errors"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++type localBillingNextStub struct {
++	balanceGets atomic.Int64
++	quotaIncrs  atomic.Int64
++}
++
++func (s *localBillingNextStub) GetUserBalance(context.Context, int64) (float64, error) {
++	s.balanceGets.Add(1)
++	return 42, nil
++}
++
++func (s *localBillingNextStub) SetUserBalance(context.Context, int64, float64) error    { return nil }
++func (s *localBillingNextStub) DeductUserBalance(context.Context, int64, float64) error { return nil }
++func (s *localBillingNextStub) InvalidateUserBalance(context.Context, int64) error      { return nil }
++func (s *localBillingNextStub) GetSubscriptionCache(context.Context, int64, int64) (*service.SubscriptionCacheData, error) {
++	return nil, errors.New("miss")
++}
++func (s *localBillingNextStub) SetSubscriptionCache(context.Context, int64, int64, *service.SubscriptionCacheData) error {
++	return nil
++}
++func (s *localBillingNextStub) UpdateSubscriptionUsage(context.Context, int64, int64, float64) error {
++	return nil
++}
++func (s *localBillingNextStub) InvalidateSubscriptionCache(context.Context, int64, int64) error {
++	return nil
++}
++func (s *localBillingNextStub) GetAPIKeyRateLimit(context.Context, int64) (*service.APIKeyRateLimitCacheData, error) {
++	return nil, errors.New("miss")
++}
++func (s *localBillingNextStub) SetAPIKeyRateLimit(context.Context, int64, *service.APIKeyRateLimitCacheData) error {
++	return nil
++}
++func (s *localBillingNextStub) UpdateAPIKeyRateLimitUsage(context.Context, int64, float64) error {
++	return nil
++}
++func (s *localBillingNextStub) InvalidateAPIKeyRateLimit(context.Context, int64) error { return nil }
++func (s *localBillingNextStub) GetUserPlatformQuotaCache(context.Context, int64, string) (*service.UserPlatformQuotaCacheEntry, bool, error) {
++	return nil, false, nil
++}
++func (s *localBillingNextStub) SetUserPlatformQuotaCache(context.Context, int64, string, *service.UserPlatformQuotaCacheEntry, time.Duration) error {
++	return nil
++}
++func (s *localBillingNextStub) DeleteUserPlatformQuotaCache(context.Context, int64, string) error {
++	return nil
++}
++func (s *localBillingNextStub) IncrUserPlatformQuotaUsageCache(context.Context, int64, string, float64, time.Duration, bool) error {
++	s.quotaIncrs.Add(1)
++	return nil
++}
++func (s *localBillingNextStub) PopDirtyUserPlatformQuotaKeys(context.Context, int) ([]service.UserPlatformQuotaKey, error) {
++	return nil, nil
++}
++func (s *localBillingNextStub) ReaddDirtyUserPlatformQuotaKeys(context.Context, []service.UserPlatformQuotaKey) error {
++	return nil
++}
++func (s *localBillingNextStub) BatchGetUserPlatformQuotaCache(context.Context, []service.UserPlatformQuotaKey) ([]*service.UserPlatformQuotaCacheEntry, error) {
++	return nil, nil
++}
++
++func TestLocalBillingCache_BalanceReadsHitLocalBeforeRedis(t *testing.T) {
++	next := &localBillingNextStub{}
++	cache := NewLocalBillingCache(next, 1024)
++	ctx := context.Background()
++
++	got, err := cache.GetUserBalance(ctx, 1)
++	require.NoError(t, err)
++	require.Equal(t, 42.0, got)
++
++	got, err = cache.GetUserBalance(ctx, 1)
++	require.NoError(t, err)
++	require.Equal(t, 42.0, got)
++	require.Equal(t, int64(1), next.balanceGets.Load())
++
++	require.NoError(t, cache.DeductUserBalance(ctx, 1, 2))
++	got, err = cache.GetUserBalance(ctx, 1)
++	require.NoError(t, err)
++	require.Equal(t, 40.0, got)
++	require.Equal(t, int64(1), next.balanceGets.Load())
++}
++
++func TestLocalBillingCache_UserPlatformQuotaDirtyServesFlusherFromLocal(t *testing.T) {
++	next := &localBillingNextStub{}
++	cache := NewLocalBillingCache(next, 1024)
++	ctx := context.Background()
++	limit := 10.0
++	now := time.Now().UTC()
++	entry := &service.UserPlatformQuotaCacheEntry{
++		SchemaVersion:      service.UserPlatformQuotaCacheSchemaV1,
++		DailyLimitUSD:      &limit,
++		DailyUsageUSD:      1,
++		WeeklyUsageUSD:     2,
++		MonthlyUsageUSD:    3,
++		DailyWindowStart:   &now,
++		WeeklyWindowStart:  &now,
++		MonthlyWindowStart: &now,
++	}
++
++	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, 7, "openai", entry, time.Hour))
++	require.NoError(t, cache.IncrUserPlatformQuotaUsageCache(ctx, 7, "openai", 2.5, time.Hour, true))
++	require.Equal(t, int64(0), next.quotaIncrs.Load())
++
++	keys, err := cache.PopDirtyUserPlatformQuotaKeys(ctx, 10)
++	require.NoError(t, err)
++	require.Equal(t, []service.UserPlatformQuotaKey{{UserID: 7, Platform: "openai"}}, keys)
++
++	got, err := cache.BatchGetUserPlatformQuotaCache(ctx, keys)
++	require.NoError(t, err)
++	require.Len(t, got, 1)
++	require.NotNil(t, got[0])
++	require.Equal(t, 3.5, got[0].DailyUsageUSD)
++	require.Equal(t, 4.5, got[0].WeeklyUsageUSD)
++	require.Equal(t, 5.5, got[0].MonthlyUsageUSD)
++}
++
++func TestLocalBillingCache_UserPlatformQuotaWriteThroughPassesToNext(t *testing.T) {
++	next := &localBillingNextStub{}
++	cache := NewLocalBillingCacheWithOptions(next, 1024, true)
++	ctx := context.Background()
++	limit := 10.0
++	now := time.Now().UTC()
++	entry := &service.UserPlatformQuotaCacheEntry{
++		SchemaVersion:      service.UserPlatformQuotaCacheSchemaV1,
++		DailyLimitUSD:      &limit,
++		DailyWindowStart:   &now,
++		WeeklyWindowStart:  &now,
++		MonthlyWindowStart: &now,
++	}
++
++	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, 7, "openai", entry, time.Hour))
++	require.NoError(t, cache.IncrUserPlatformQuotaUsageCache(ctx, 7, "openai", 2.5, time.Hour, true))
++	require.Equal(t, int64(1), next.quotaIncrs.Load())
++}
++
++func TestLocalBillingCache_UserPlatformQuotaDirtySurvivesExpiration(t *testing.T) {
++	cache, ok := NewLocalBillingCache(nil, 1024).(*localBillingCache)
++	require.True(t, ok)
++	ctx := context.Background()
++	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
++	cache.clock = func() time.Time { return now }
++	entry := localQuotaTestEntry(now, 1)
++
++	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, 7, "openai", entry, time.Second))
++	require.NoError(t, cache.IncrUserPlatformQuotaUsageCache(ctx, 7, "openai", 2.5, time.Second, true))
++	now = now.Add(2 * time.Second)
++
++	got, ok, err := cache.GetUserPlatformQuotaCache(ctx, 7, "openai")
++	require.NoError(t, err)
++	require.True(t, ok)
++	require.Equal(t, 3.5, got.DailyUsageUSD)
++
++	keys, err := cache.PopDirtyUserPlatformQuotaKeys(ctx, 10)
++	require.NoError(t, err)
++	require.Equal(t, []service.UserPlatformQuotaKey{{UserID: 7, Platform: "openai"}}, keys)
++	now = now.Add(24 * time.Hour)
++
++	entries, err := cache.BatchGetUserPlatformQuotaCache(ctx, keys)
++	require.NoError(t, err)
++	require.Len(t, entries, 1)
++	require.NotNil(t, entries[0])
++	require.Equal(t, 3.5, entries[0].DailyUsageUSD)
++
++	cache.AcknowledgeUserPlatformQuotaFlush(keys)
++	_, ok, err = cache.GetUserPlatformQuotaCache(ctx, 7, "openai")
++	require.NoError(t, err)
++	require.False(t, ok, "expired clean entry should become evictable after flush ACK")
++}
++
++func TestLocalBillingCache_UserPlatformQuotaCapacityPreservesDirty(t *testing.T) {
++	cache, ok := NewLocalBillingCache(nil, 1024).(*localBillingCache)
++	require.True(t, ok)
++	cache.maxEntries = 2
++	ctx := context.Background()
++	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
++	cache.clock = func() time.Time { return now }
++	dirtyKey := localQuotaKey{userID: 1, platform: "openai"}
++	cleanOldKey := localQuotaKey{userID: 2, platform: "openai"}
++	cleanNewKey := localQuotaKey{userID: 3, platform: "openai"}
++
++	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, dirtyKey.userID, dirtyKey.platform, localQuotaTestEntry(now, 1), time.Hour))
++	require.NoError(t, cache.IncrUserPlatformQuotaUsageCache(ctx, dirtyKey.userID, dirtyKey.platform, 1, time.Hour, true))
++	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, cleanOldKey.userID, cleanOldKey.platform, localQuotaTestEntry(now, 2), time.Hour))
++	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, cleanNewKey.userID, cleanNewKey.platform, localQuotaTestEntry(now, 3), time.Hour))
++
++	cache.quotaMu.Lock()
++	_, dirtyPresent := cache.quotas[dirtyKey]
++	_, cleanOldPresent := cache.quotas[cleanOldKey]
++	_, cleanNewPresent := cache.quotas[cleanNewKey]
++	cache.quotaMu.Unlock()
++	require.True(t, dirtyPresent, "dirty entry must not be selected as the LRU victim")
++	require.False(t, cleanOldPresent, "the least recently used clean entry should be evicted")
++	require.True(t, cleanNewPresent)
++}
++
++func TestLocalBillingCache_UserPlatformQuotaCapacityAllowsDirtyOverflow(t *testing.T) {
++	cache, ok := NewLocalBillingCache(nil, 1024).(*localBillingCache)
++	require.True(t, ok)
++	cache.maxEntries = 2
++	ctx := context.Background()
++	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
++	cache.clock = func() time.Time { return now }
++	keys := []service.UserPlatformQuotaKey{
++		{UserID: 1, Platform: "openai"},
++		{UserID: 2, Platform: "openai"},
++		{UserID: 3, Platform: "openai"},
++	}
++
++	for _, key := range keys[:2] {
++		require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, key.UserID, key.Platform, localQuotaTestEntry(now, float64(key.UserID)), time.Hour))
++		require.NoError(t, cache.IncrUserPlatformQuotaUsageCache(ctx, key.UserID, key.Platform, 1, time.Hour, true))
++	}
++	// A failed flush can re-add a key before its snapshot is locally reloaded.
++	// Once reloaded, all three entries are dirty and must survive capacity enforcement.
++	require.NoError(t, cache.ReaddDirtyUserPlatformQuotaKeys(ctx, keys[2:]))
++	require.NoError(t, cache.SetUserPlatformQuotaCache(ctx, keys[2].UserID, keys[2].Platform, localQuotaTestEntry(now, 3), time.Hour))
++
++	cache.quotaMu.Lock()
++	quotaCount := len(cache.quotas)
++	dirtyCount := len(cache.quotaDirty)
++	cache.quotaMu.Unlock()
++	require.Equal(t, 3, quotaCount, "all-dirty cache should temporarily exceed capacity")
++	require.Equal(t, 3, dirtyCount)
++
++	popped, err := cache.PopDirtyUserPlatformQuotaKeys(ctx, 10)
++	require.NoError(t, err)
++	require.ElementsMatch(t, keys, popped)
++	entries, err := cache.BatchGetUserPlatformQuotaCache(ctx, popped)
++	require.NoError(t, err)
++	require.Len(t, entries, 3)
++	for _, entry := range entries {
++		require.NotNil(t, entry)
++	}
++}
++
++func localQuotaTestEntry(now time.Time, usage float64) *service.UserPlatformQuotaCacheEntry {
++	return &service.UserPlatformQuotaCacheEntry{
++		SchemaVersion:      service.UserPlatformQuotaCacheSchemaV1,
++		DailyUsageUSD:      usage,
++		WeeklyUsageUSD:     usage,
++		MonthlyUsageUSD:    usage,
++		DailyWindowStart:   &now,
++		WeeklyWindowStart:  &now,
++		MonthlyWindowStart: &now,
++	}
++}
+diff --git a/backend/internal/hotpath/concurrency_cache_test.go b/backend/internal/hotpath/concurrency_cache_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1109edc0e7d19fea1720d68a54c3912ed6ffe5f1
+--- /dev/null
++++ b/backend/internal/hotpath/concurrency_cache_test.go
+@@ -0,0 +1,101 @@
++package hotpath
++
++import (
++	"context"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++func TestLocalConcurrencyCacheAccountSlots(t *testing.T) {
++	ctx := context.Background()
++	cache := NewLocalConcurrencyCache(1, 60)
++
++	ok, err := cache.AcquireAccountSlot(ctx, 1001, 2, "req-1")
++	require.NoError(t, err)
++	require.True(t, ok)
++
++	ok, err = cache.AcquireAccountSlot(ctx, 1001, 2, "req-2")
++	require.NoError(t, err)
++	require.True(t, ok)
++
++	ok, err = cache.AcquireAccountSlot(ctx, 1001, 2, "req-3")
++	require.NoError(t, err)
++	require.False(t, ok)
++
++	current, err := cache.GetAccountConcurrency(ctx, 1001)
++	require.NoError(t, err)
++	require.Equal(t, 2, current)
++
++	require.NoError(t, cache.ReleaseAccountSlot(ctx, 1001, "req-1"))
++
++	current, err = cache.GetAccountConcurrency(ctx, 1001)
++	require.NoError(t, err)
++	require.Equal(t, 1, current)
++}
++
++func TestLocalConcurrencyCacheDuplicateRequestID(t *testing.T) {
++	ctx := context.Background()
++	cache := NewLocalConcurrencyCache(1, 60)
++
++	ok, err := cache.AcquireUserSlot(ctx, 2001, 1, "same-req")
++	require.NoError(t, err)
++	require.True(t, ok)
++
++	ok, err = cache.AcquireUserSlot(ctx, 2001, 1, "same-req")
++	require.NoError(t, err)
++	require.True(t, ok)
++
++	current, err := cache.GetUserConcurrency(ctx, 2001)
++	require.NoError(t, err)
++	require.Equal(t, 1, current)
++}
++
++func TestLocalConcurrencyCacheLoadBatchIncludesWaitCounts(t *testing.T) {
++	ctx := context.Background()
++	cache := NewLocalConcurrencyCache(1, 60)
++
++	ok, err := cache.AcquireAccountSlot(ctx, 3001, 3, "req-1")
++	require.NoError(t, err)
++	require.True(t, ok)
++	ok, err = cache.AcquireAccountSlot(ctx, 3001, 3, "req-2")
++	require.NoError(t, err)
++	require.True(t, ok)
++	ok, err = cache.IncrementAccountWaitCount(ctx, 3001, 10)
++	require.NoError(t, err)
++	require.True(t, ok)
++
++	loads, err := cache.GetAccountsLoadBatch(ctx, []service.AccountWithConcurrency{
++		{ID: 3001, MaxConcurrency: 3},
++		{ID: 3002, MaxConcurrency: 2},
++	})
++	require.NoError(t, err)
++
++	require.Equal(t, 2, loads[3001].CurrentConcurrency)
++	require.Equal(t, 1, loads[3001].WaitingCount)
++	require.Equal(t, 100, loads[3001].LoadRate)
++	require.Equal(t, 0, loads[3002].CurrentConcurrency)
++	require.Equal(t, 0, loads[3002].WaitingCount)
++	require.Equal(t, 0, loads[3002].LoadRate)
++}
++
++func TestLocalConcurrencyCacheWaitCountLimitAndDecrement(t *testing.T) {
++	ctx := context.Background()
++	cache := NewLocalConcurrencyCache(1, 60)
++
++	ok, err := cache.IncrementWaitCount(ctx, 4001, 1)
++	require.NoError(t, err)
++	require.True(t, ok)
++
++	ok, err = cache.IncrementWaitCount(ctx, 4001, 1)
++	require.NoError(t, err)
++	require.False(t, ok)
++
++	require.NoError(t, cache.DecrementWaitCount(ctx, 4001))
++
++	loads, err := cache.GetUsersLoadBatch(ctx, []service.UserWithConcurrency{{ID: 4001, MaxConcurrency: 1}})
++	require.NoError(t, err)
++	require.Equal(t, 0, loads[4001].WaitingCount)
++	require.Equal(t, 0, loads[4001].LoadRate)
++}
+diff --git a/backend/internal/repository/hotpath_benchmark_test.go b/backend/internal/repository/hotpath_benchmark_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..46a88732b1ba9958225a6b70aeaa1ae388405bd7
+--- /dev/null
++++ b/backend/internal/repository/hotpath_benchmark_test.go
+@@ -0,0 +1,166 @@
++package repository
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"strconv"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/alicebob/miniredis/v2"
++	"github.com/redis/go-redis/v9"
++)
++
++func BenchmarkConcurrencyCacheHotPath(b *testing.B) {
++	rdb := newHotPathBenchmarkRedisClient(b)
++	defer func() { _ = rdb.Close() }()
++
++	cases := []struct {
++		name  string
++		cache service.ConcurrencyCache
++	}{
++		{name: "redis_zset", cache: NewConcurrencyCache(rdb, benchSlotTTLMinutes, int(benchSlotTTL.Seconds()))},
++		{name: "local_memory", cache: NewLocalConcurrencyCache(benchSlotTTLMinutes, int(benchSlotTTL.Seconds()))},
++	}
++
++	for _, tc := range cases {
++		tc := tc
++		b.Run(tc.name+"/acquire_release", func(b *testing.B) {
++			benchmarkHotPathAcquireRelease(b, tc.cache)
++		})
++		b.Run(tc.name+"/acquire_release_parallel", func(b *testing.B) {
++			benchmarkHotPathAcquireReleaseParallel(b, tc.cache)
++		})
++		b.Run(tc.name+"/load_batch_100", func(b *testing.B) {
++			benchmarkHotPathLoadBatch(b, tc.cache, 100)
++		})
++	}
++}
++
++func benchmarkHotPathAcquireRelease(b *testing.B, cache service.ConcurrencyCache) {
++	ctx := context.Background()
++	accountID := time.Now().UnixNano()
++	requestID := "bench-request"
++
++	b.ReportAllocs()
++	b.ResetTimer()
++	for i := 0; i < b.N; i++ {
++		acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1_000_000, requestID)
++		if err != nil {
++			b.Fatalf("acquire account slot: %v", err)
++		}
++		if !acquired {
++			b.Fatal("account slot was not acquired")
++		}
++		if err := cache.ReleaseAccountSlot(ctx, accountID, requestID); err != nil {
++			b.Fatalf("release account slot: %v", err)
++		}
++	}
++	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "qps")
++}
++
++func benchmarkHotPathAcquireReleaseParallel(b *testing.B, cache service.ConcurrencyCache) {
++	ctx := context.Background()
++	accountID := time.Now().UnixNano()
++	var seq atomic.Uint64
++
++	b.ReportAllocs()
++	b.ResetTimer()
++	b.RunParallel(func(pb *testing.PB) {
++		for pb.Next() {
++			requestID := "bench-" + strconv.FormatUint(seq.Add(1), 36)
++			acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1_000_000, requestID)
++			if err != nil {
++				b.Fatalf("acquire account slot: %v", err)
++			}
++			if !acquired {
++				b.Fatal("account slot was not acquired")
++			}
++			if err := cache.ReleaseAccountSlot(ctx, accountID, requestID); err != nil {
++				b.Fatalf("release account slot: %v", err)
++			}
++		}
++	})
++	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "qps")
++}
++
++func benchmarkHotPathLoadBatch(b *testing.B, cache service.ConcurrencyCache, size int) {
++	ctx := context.Background()
++	accounts := makeBenchmarkAccounts(size)
++	seedBenchmarkAccountLoads(b, cache, accounts)
++
++	b.ReportAllocs()
++	b.ResetTimer()
++	for i := 0; i < b.N; i++ {
++		loadMap, err := cache.GetAccountsLoadBatch(ctx, accounts)
++		if err != nil {
++			b.Fatalf("get accounts load batch: %v", err)
++		}
++		if len(loadMap) != len(accounts) {
++			b.Fatalf("load map size = %d, want %d", len(loadMap), len(accounts))
++		}
++	}
++	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "qps")
++}
++
++func makeBenchmarkAccounts(size int) []service.AccountWithConcurrency {
++	baseID := time.Now().UnixNano()
++	accounts := make([]service.AccountWithConcurrency, 0, size)
++	for i := 0; i < size; i++ {
++		accounts = append(accounts, service.AccountWithConcurrency{
++			ID:             baseID + int64(i),
++			MaxConcurrency: 20,
++		})
++	}
++	return accounts
++}
++
++func seedBenchmarkAccountLoads(b *testing.B, cache service.ConcurrencyCache, accounts []service.AccountWithConcurrency) {
++	b.Helper()
++
++	ctx := context.Background()
++	for _, account := range accounts {
++		for slot := 0; slot < 3; slot++ {
++			requestID := fmt.Sprintf("seed-%d-%d", account.ID, slot)
++			acquired, err := cache.AcquireAccountSlot(ctx, account.ID, account.MaxConcurrency, requestID)
++			if err != nil {
++				b.Fatalf("seed account slot: %v", err)
++			}
++			if !acquired {
++				b.Fatalf("seed account slot was not acquired for account %d", account.ID)
++			}
++		}
++		ok, err := cache.IncrementAccountWaitCount(ctx, account.ID, account.MaxConcurrency)
++		if err != nil {
++			b.Fatalf("seed account wait count: %v", err)
++		}
++		if !ok {
++			b.Fatalf("seed account wait count was not allowed for account %d", account.ID)
++		}
++	}
++}
++
++func newHotPathBenchmarkRedisClient(b *testing.B) *redis.Client {
++	b.Helper()
++
++	if redisURL := os.Getenv("TEST_REDIS_URL"); redisURL != "" {
++		opt, err := redis.ParseURL(redisURL)
++		if err != nil {
++			b.Fatalf("parse TEST_REDIS_URL: %v", err)
++		}
++		client := redis.NewClient(opt)
++		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer cancel()
++		if err := client.Ping(ctx).Err(); err != nil {
++			b.Fatalf("redis ping: %v", err)
++		}
++		return client
++	}
++
++	mr := miniredis.RunT(b)
++	b.Cleanup(mr.Close)
++	return redis.NewClient(&redis.Options{Addr: mr.Addr()})
++}
+diff --git a/backend/internal/repository/idempotency_repo_integration_test.go b/backend/internal/repository/idempotency_repo_integration_test.go
+index f163c2f05b11227625e6f49d9c043bbf0cb43eeb..60fd48125a9fcffcb48993c5886acf1a14af0a82 100644
+--- a/backend/internal/repository/idempotency_repo_integration_test.go
++++ b/backend/internal/repository/idempotency_repo_integration_test.go
+@@ -13,6 +13,10 @@ import (
+ 	"github.com/stretchr/testify/require"
+ )
+ 
++func ptrTime(t time.Time) *time.Time {
++	return &t
++}
++
+ // hashedTestValue returns a unique SHA-256 hex string (64 chars) that fits VARCHAR(64) columns.
+ func hashedTestValue(t *testing.T, prefix string) string {
+ 	t.Helper()
+diff --git a/backend/internal/repository/migrations_runner_notx_test.go b/backend/internal/repository/migrations_runner_notx_test.go
+index c9f6a2cdf1d07635757c149a3ba30996209e4829..d642cd353812ed1d4064e09ad95fec8e4fde8311 100644
+--- a/backend/internal/repository/migrations_runner_notx_test.go
++++ b/backend/internal/repository/migrations_runner_notx_test.go
+@@ -162,9 +162,9 @@ func TestApplyMigrationsFS_PaymentOrdersOutTradeNoUniqueMigration_DropsInvalidIn
+ 	mock.ExpectQuery("SELECT out_trade_no, COUNT\\(\\*\\) AS duplicate_count FROM payment_orders").
+ 		WillReturnRows(sqlmock.NewRows([]string{"out_trade_no", "duplicate_count"}))
+ 	mock.ExpectQuery("SELECT EXISTS \\(").
+-		WithArgs("paymentorder_out_trade_no_unique").
++		WithArgs("public", "paymentorder_out_trade_no_unique").
+ 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+-	mock.ExpectExec("DROP INDEX CONCURRENTLY IF EXISTS paymentorder_out_trade_no_unique").
++	mock.ExpectExec("DROP INDEX CONCURRENTLY IF EXISTS \"public\"\\.\"paymentorder_out_trade_no_unique\"").
+ 		WillReturnResult(sqlmock.NewResult(0, 0))
+ 	mock.ExpectExec("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS paymentorder_out_trade_no_unique").
+ 		WillReturnResult(sqlmock.NewResult(0, 0))
+@@ -204,9 +204,9 @@ func TestApplyMigrationsFS_SchedulerOutboxPendingDedupKeyMigration_DropsInvalidI
+ 		WithArgs("153_scheduler_outbox_pending_dedup_key_index_notx.sql").
+ 		WillReturnError(sql.ErrNoRows)
+ 	mock.ExpectQuery("SELECT EXISTS \\(").
+-		WithArgs("idx_scheduler_outbox_pending_dedup_key").
++		WithArgs("public", "idx_scheduler_outbox_pending_dedup_key").
+ 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+-	mock.ExpectExec("DROP INDEX CONCURRENTLY IF EXISTS idx_scheduler_outbox_pending_dedup_key").
++	mock.ExpectExec("DROP INDEX CONCURRENTLY IF EXISTS \"public\"\\.\"idx_scheduler_outbox_pending_dedup_key\"").
+ 		WillReturnResult(sqlmock.NewResult(0, 0))
+ 	mock.ExpectExec("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_scheduler_outbox_pending_dedup_key").
+ 		WillReturnResult(sqlmock.NewResult(0, 0))
+@@ -232,6 +232,64 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_scheduler_outbox_pending_dedu
+ 	require.NoError(t, mock.ExpectationsWereMet())
+ }
+ 
++func TestApplyMigrationsFS_OpsSystemLogsAPIKeyIndexMigration_HandlesPartitionedTable(t *testing.T) {
++	db, mock, err := sqlmock.New()
++	require.NoError(t, err)
++	defer func() { _ = db.Close() }()
++
++	prepareMigrationsBootstrapExpectations(mock)
++	mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").
++		WithArgs("155_add_ops_system_logs_api_key_id_index_notx.sql").
++		WillReturnError(sql.ErrNoRows)
++	mock.ExpectQuery("SELECT EXISTS \\(").
++		WithArgs("ops_system_logs").
++		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
++	mock.ExpectExec("CREATE INDEX IF NOT EXISTS \"idx_ops_system_logs_api_key_id_created_at\" ON ONLY \"public\"\\.\"ops_system_logs\"").
++		WillReturnResult(sqlmock.NewResult(0, 0))
++	mock.ExpectQuery("WITH RECURSIVE partition_tree AS").
++		WithArgs("ops_system_logs").
++		WillReturnRows(sqlmock.NewRows([]string{"nspname", "relname"}).
++			AddRow("public", "ops_system_logs_202607").
++			AddRow("public", "ops_system_logs_202608"))
++	mock.ExpectQuery("SELECT EXISTS \\(").
++		WithArgs("public", "idx_ops_system_logs_api_key_id_created_at_202607").
++		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
++	mock.ExpectExec("CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_ops_system_logs_api_key_id_created_at_202607\" ON \"public\"\\.\"ops_system_logs_202607\"").
++		WillReturnResult(sqlmock.NewResult(0, 0))
++	mock.ExpectQuery("SELECT EXISTS \\(").
++		WithArgs("public", "idx_ops_system_logs_api_key_id_created_at", "public", "idx_ops_system_logs_api_key_id_created_at_202607").
++		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
++	mock.ExpectExec("ALTER INDEX \"public\"\\.\"idx_ops_system_logs_api_key_id_created_at\" ATTACH PARTITION \"public\"\\.\"idx_ops_system_logs_api_key_id_created_at_202607\"").
++		WillReturnResult(sqlmock.NewResult(0, 0))
++	mock.ExpectQuery("SELECT EXISTS \\(").
++		WithArgs("public", "idx_ops_system_logs_api_key_id_created_at_202608").
++		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
++	mock.ExpectExec("CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_ops_system_logs_api_key_id_created_at_202608\" ON \"public\"\\.\"ops_system_logs_202608\"").
++		WillReturnResult(sqlmock.NewResult(0, 0))
++	mock.ExpectQuery("SELECT EXISTS \\(").
++		WithArgs("public", "idx_ops_system_logs_api_key_id_created_at", "public", "idx_ops_system_logs_api_key_id_created_at_202608").
++		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
++	mock.ExpectExec("INSERT INTO schema_migrations \\(filename, checksum\\) VALUES \\(\\$1, \\$2\\)").
++		WithArgs("155_add_ops_system_logs_api_key_id_index_notx.sql", sqlmock.AnyArg()).
++		WillReturnResult(sqlmock.NewResult(1, 1))
++	mock.ExpectExec("SELECT pg_advisory_unlock\\(\\$1\\)").
++		WithArgs(migrationsAdvisoryLockID).
++		WillReturnResult(sqlmock.NewResult(0, 1))
++
++	fsys := fstest.MapFS{
++		"155_add_ops_system_logs_api_key_id_index_notx.sql": &fstest.MapFile{
++			Data: []byte(`
++CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ops_system_logs_api_key_id_created_at
++  ON ops_system_logs (api_key_id, created_at DESC);
++`),
++		},
++	}
++
++	err = applyMigrationsFS(context.Background(), db, fsys)
++	require.NoError(t, err)
++	require.NoError(t, mock.ExpectationsWereMet())
++}
++
+ func TestApplyMigrationsFS_TransactionalMigration(t *testing.T) {
+ 	db, mock, err := sqlmock.New()
+ 	require.NoError(t, err)
+diff --git a/backend/internal/repository/ops_error_where_test.go b/backend/internal/repository/ops_error_where_test.go
+index c997865ba4aa3ccd730463a5066fa7cefbbe9d00..e66b56c219ea3668c70157642518a527017b1f5d 100644
+--- a/backend/internal/repository/ops_error_where_test.go
++++ b/backend/internal/repository/ops_error_where_test.go
+@@ -1,9 +1,12 @@
+ package repository
+ 
+ import (
++	"context"
++	"regexp"
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/DATA-DOG/go-sqlmock"
+ 	"github.com/Wei-Shaw/sub2api/internal/service"
+ )
+ 
+@@ -74,22 +77,22 @@ func TestBuildOpsErrorLogsWhere_ModelFuzzy(t *testing.T) {
+ // cyber_policy hits (status_code=200) remain visible in admin + user error-request
+ // lists.  The repository filter must emit an OR exemption for error_type='cyber_policy'
+ // so that stream-path cyber rows (upstream delivers 200 with a failed SSE event) are
+-// not silently excluded by the COALESCE(status_code,0) >= 400 guard.
++// not silently excluded by the effective status >= 400 guard.
+ func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
+ 	// Default filter (no phase) must include the cyber_policy exemption.
+ 	where, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{})
+ 	if !strings.Contains(where, "e.error_type = 'cyber_policy'") {
+ 		t.Fatalf("default filter must exempt cyber_policy from status >= 400 guard\nfull: %s", where)
+ 	}
+-	if !strings.Contains(where, "COALESCE(e.status_code, 0) >= 400") {
+-		t.Fatalf("default filter must still include the status >= 400 guard for non-cyber rows\nfull: %s", where)
++	if !strings.Contains(where, "COALESCE(e.upstream_status_code, e.status_code, 0) >= 400") {
++		t.Fatalf("default filter must still include the effective status >= 400 guard for non-cyber rows\nfull: %s", where)
+ 	}
+ 
+ 	// phase=upstream WITHOUT the recovered-upstream opt-in keeps the status guard:
+ 	// request-error list endpoints filter by phase=upstream as a plain condition.
+ 	whereUpstream, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "upstream"})
+-	if !strings.Contains(whereUpstream, "COALESCE(e.status_code, 0) >= 400") {
+-		t.Fatalf("upstream phase without IncludeRecoveredUpstream must keep the status guard\nfull: %s", whereUpstream)
++	if !strings.Contains(whereUpstream, "COALESCE(e.upstream_status_code, e.status_code, 0) >= 400") {
++		t.Fatalf("upstream phase without IncludeRecoveredUpstream must keep the effective status guard\nfull: %s", whereUpstream)
+ 	}
+ 	if !strings.Contains(whereUpstream, "e.error_phase = $") {
+ 		t.Fatalf("upstream phase filter must emit the error_phase condition\nfull: %s", whereUpstream)
+@@ -103,6 +106,53 @@ func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
+ 	}
+ }
+ 
++func TestBuildOpsErrorLogsWhere_DefaultGuardUsesEffectiveStatus(t *testing.T) {
++	where, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{})
++	if !strings.Contains(where, "COALESCE(e.upstream_status_code, e.status_code, 0) >= 400") {
++		t.Fatalf("default visibility guard must include upstream_status_code\nfull: %s", where)
++	}
++	if strings.Contains(where, "COALESCE(e.status_code, 0) >= 400") {
++		t.Fatalf("default visibility guard must not fall back to client-only status_code\nfull: %s", where)
++	}
++}
++
++func TestBuildOpsErrorLogsWhere_ViewAllKeepsEffectiveStatusGuard(t *testing.T) {
++	where, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{View: "all"})
++	if !strings.Contains(where, "COALESCE(e.upstream_status_code, e.status_code, 0) >= 400") {
++		t.Fatalf("view=all must keep the effective status guard\nfull: %s", where)
++	}
++	if strings.Contains(where, "COALESCE(e.is_business_limited,false)") {
++		t.Fatalf("view=all must not add business-limited filtering\nfull: %s", where)
++	}
++}
++
++func TestListErrorLogs_DefaultQueriesUseEffectiveStatusGuard(t *testing.T) {
++	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
++	if err != nil {
++		t.Fatalf("sqlmock.New: %v", err)
++	}
++	defer func() { _ = db.Close() }()
++
++	effectiveGuard := regexp.QuoteMeta("COALESCE(e.upstream_status_code, e.status_code, 0) >= 400")
++	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM ops_error_logs e .*" + effectiveGuard).
++		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
++	mock.ExpectQuery("(?s)FROM ops_error_logs e.*"+effectiveGuard+".*LIMIT \\$1 OFFSET \\$2").
++		WithArgs(20, 0).
++		WillReturnRows(sqlmock.NewRows([]string{"id"}))
++
++	repo := &opsRepository{db: db}
++	list, err := repo.ListErrorLogs(context.Background(), &service.OpsErrorLogFilter{})
++	if err != nil {
++		t.Fatalf("ListErrorLogs: %v", err)
++	}
++	if list == nil || list.Total != 0 || len(list.Errors) != 0 {
++		t.Fatalf("unexpected list result: %#v", list)
++	}
++	if err := mock.ExpectationsWereMet(); err != nil {
++		t.Fatalf("unmet SQL expectations: %v", err)
++	}
++}
++
+ func TestBuildOpsErrorLogsWhere_MatchDeletedKeyOwner(t *testing.T) {
+ 	uid := int64(42)
+ 
+diff --git a/backend/internal/repository/scheduler_cache_integration_test.go b/backend/internal/repository/scheduler_cache_integration_test.go
+index 948c2c73e0b755a7ec596a01083d44166933f7aa..d0a07b8c245489761d22deba1ac3b119211bfa5a 100644
+--- a/backend/internal/repository/scheduler_cache_integration_test.go
++++ b/backend/internal/repository/scheduler_cache_integration_test.go
+@@ -76,6 +76,7 @@ func TestSchedulerCacheSnapshotUsesSlimMetadataButKeepsFullAccount(t *testing.T)
+ 
+ 	got := snapshot[0]
+ 	require.NotNil(t, got)
++	require.Nil(t, got.LastUsedAt)
+ 	require.Equal(t, "gemini-api-key", got.GetCredential("api_key"))
+ 	require.Equal(t, "proj-1", got.GetCredential("project_id"))
+ 	require.Equal(t, "ai_studio", got.GetCredential("oauth_type"))
+@@ -97,8 +98,23 @@ func TestSchedulerCacheSnapshotUsesSlimMetadataButKeepsFullAccount(t *testing.T)
+ 	full, err := cache.GetAccount(ctx, account.ID)
+ 	require.NoError(t, err)
+ 	require.NotNil(t, full)
++	require.Nil(t, full.LastUsedAt)
+ 	require.Equal(t, "secret-access-token", full.GetCredential("access_token"))
+ 	require.Equal(t, strings.Repeat("x", 4096), full.GetCredential("huge_blob"))
+ 	require.Len(t, full.AccountGroups, 1)
+ 	require.NotNil(t, full.AccountGroups[0].Group)
++
++	id := "101"
++	fullBefore, err := rdb.Get(ctx, schedulerAccountKey(id)).Result()
++	require.NoError(t, err)
++	metaBefore, err := rdb.Get(ctx, schedulerAccountMetaKey(id)).Result()
++	require.NoError(t, err)
++	updatedLastUsed := now.Add(time.Minute)
++	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: updatedLastUsed}))
++	fullAfter, err := rdb.Get(ctx, schedulerAccountKey(id)).Result()
++	require.NoError(t, err)
++	metaAfter, err := rdb.Get(ctx, schedulerAccountMetaKey(id)).Result()
++	require.NoError(t, err)
++	require.Equal(t, fullBefore, fullAfter)
++	require.Equal(t, metaBefore, metaAfter)
+ }
+diff --git a/backend/internal/repository/scheduler_snapshot_outbox_integration_test.go b/backend/internal/repository/scheduler_snapshot_outbox_integration_test.go
+index a88b74ef86b99e725cf72ab9cda9ca3a3c4eefb9..c3122db1ab3238d0ac482d27deef5d0e9a7a7131 100644
+--- a/backend/internal/repository/scheduler_snapshot_outbox_integration_test.go
++++ b/backend/internal/repository/scheduler_snapshot_outbox_integration_test.go
+@@ -47,6 +47,10 @@ func TestSchedulerSnapshotOutboxReplay(t *testing.T) {
+ 	}
+ 	require.NoError(t, accountRepo.Create(ctx, account))
+ 	require.NoError(t, cache.SetAccount(ctx, account))
++	fullBefore, err := cache.GetAccount(ctx, account.ID)
++	require.NoError(t, err)
++	require.NotNil(t, fullBefore)
++	require.Nil(t, fullBefore.LastUsedAt)
+ 
+ 	svc := service.NewSchedulerSnapshotService(cache, outboxRepo, accountRepo, nil, cfg)
+ 	svc.Start()
+@@ -56,13 +60,17 @@ func TestSchedulerSnapshotOutboxReplay(t *testing.T) {
+ 	updated, err := accountRepo.GetByID(ctx, account.ID)
+ 	require.NoError(t, err)
+ 	require.NotNil(t, updated.LastUsedAt)
+-	expectedUnix := updated.LastUsedAt.Unix()
+ 
+ 	require.Eventually(t, func() bool {
+-		cached, err := cache.GetAccount(ctx, account.ID)
+-		if err != nil || cached == nil || cached.LastUsedAt == nil {
++		watermark, err := cache.GetOutboxWatermark(ctx)
++		if err != nil {
+ 			return false
+ 		}
+-		return cached.LastUsedAt.Unix() == expectedUnix
++		return watermark > 0
+ 	}, 5*time.Second, 100*time.Millisecond)
++
++	cached, err := cache.GetAccount(ctx, account.ID)
++	require.NoError(t, err)
++	require.NotNil(t, cached)
++	require.Nil(t, cached.LastUsedAt)
+ }
+diff --git a/backend/internal/repository/usage_log_pending_repo_test.go b/backend/internal/repository/usage_log_pending_repo_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d2541eff9e8012e5ce4e4d6f0ef7cc935986707
+--- /dev/null
++++ b/backend/internal/repository/usage_log_pending_repo_test.go
+@@ -0,0 +1,64 @@
++package repository
++
++import (
++	"context"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++type usageLogPendingBaseStub struct {
++	service.UsageLogRepository
++
++	createCalls     int
++	bestEffortCalls int
++	logs            []*service.UsageLog
++	err             error
++}
++
++func (s *usageLogPendingBaseStub) Create(ctx context.Context, log *service.UsageLog) (bool, error) {
++	s.createCalls++
++	s.logs = append(s.logs, log)
++	return true, s.err
++}
++
++func (s *usageLogPendingBaseStub) CreateBestEffort(ctx context.Context, log *service.UsageLog) error {
++	s.bestEffortCalls++
++	s.logs = append(s.logs, log)
++	return s.err
++}
++
++func TestUsageLogPendingRepository_CreateBestEffortQueuesUntilFlush(t *testing.T) {
++	base := &usageLogPendingBaseStub{}
++	repo := &usageLogPendingRepository{
++		next:    base,
++		pending: make([]*service.UsageLog, 0),
++		stopCh:  make(chan struct{}),
++	}
++	log := &service.UsageLog{
++		RequestID: "usage-pending",
++		UserID:    42,
++		APIKeyID:  7,
++		AccountID: 99,
++		Model:     "gpt-4.1",
++	}
++
++	require.NoError(t, repo.CreateBestEffort(context.Background(), log))
++	log.Model = "mutated-after-enqueue"
++
++	stats := repo.Stats()
++	require.Equal(t, 1, stats.PendingL1Entries)
++	require.Equal(t, uint64(1), stats.EnqueuedTotal)
++	require.Equal(t, 0, base.bestEffortCalls)
++
++	repo.Flush(context.Background())
++
++	require.Equal(t, 1, base.bestEffortCalls)
++	require.Equal(t, 0, base.createCalls)
++	require.Len(t, base.logs, 1)
++	require.Equal(t, "gpt-4.1", base.logs[0].Model)
++	stats = repo.Stats()
++	require.Equal(t, 0, stats.PendingL1Entries)
++	require.Equal(t, uint64(1), stats.FlushedTotal)
++}
+diff --git a/backend/internal/server/middleware/api_key_auth_google_test.go b/backend/internal/server/middleware/api_key_auth_google_test.go
+index 746d238ca51fbf3b4deb5d214114611ace98e0de..c8443980f617e95f7905eb7fde0d858ee7fc8686 100644
+--- a/backend/internal/server/middleware/api_key_auth_google_test.go
++++ b/backend/internal/server/middleware/api_key_auth_google_test.go
+@@ -512,7 +512,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_DisabledKey(t *testing.T) {
+ 	require.Equal(t, "UNAUTHENTICATED", resp.Error.Status)
+ }
+ 
+-func TestApiKeyAuthWithSubscriptionGoogle_InsufficientBalance(t *testing.T) {
++func TestApiKeyAuthWithSubscriptionGoogle_AllowsZeroBalanceSnapshot(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 
+ 	r := gin.New()
+@@ -538,12 +538,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_InsufficientBalance(t *testing.T) {
+ 	rec := httptest.NewRecorder()
+ 	r.ServeHTTP(rec, req)
+ 
+-	require.Equal(t, http.StatusForbidden, rec.Code)
+-	var resp googleErrorResponse
+-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+-	require.Equal(t, http.StatusForbidden, resp.Error.Code)
+-	require.Equal(t, "Insufficient account balance", resp.Error.Message)
+-	require.Equal(t, "PERMISSION_DENIED", resp.Error.Status)
++	require.Equal(t, http.StatusOK, rec.Code)
+ }
+ 
+ func TestApiKeyAuthWithSubscriptionGoogle_BalanceBelowMinimumReserve(t *testing.T) {
+@@ -579,7 +574,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_BalanceBelowMinimumReserve(t *testing.
+ 	require.Equal(t, http.StatusOK, rec.Code)
+ }
+ 
+-func TestApiKeyAuthWithSubscriptionGoogle_RejectsExhaustedBalance(t *testing.T) {
++func TestApiKeyAuthWithSubscriptionGoogle_AllowsExhaustedBalanceSnapshot(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 
+ 	r := gin.New()
+@@ -606,12 +601,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_RejectsExhaustedBalance(t *testing.T)
+ 	rec := httptest.NewRecorder()
+ 	r.ServeHTTP(rec, req)
+ 
+-	require.Equal(t, http.StatusForbidden, rec.Code)
+-	var resp googleErrorResponse
+-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+-	require.Equal(t, http.StatusForbidden, resp.Error.Code)
+-	require.Equal(t, "Insufficient account balance", resp.Error.Message)
+-	require.Equal(t, "PERMISSION_DENIED", resp.Error.Status)
++	require.Equal(t, http.StatusOK, rec.Code)
+ }
+ 
+ func TestApiKeyAuthWithSubscriptionGoogle_TouchesLastUsedOnSuccess(t *testing.T) {
+diff --git a/backend/internal/service/auth_cache_invalidation_test.go b/backend/internal/service/auth_cache_invalidation_test.go
+index b6e5617731b3da93ae42ac39a54906c45e4b0539..68f36de0d266744c44f8029c7905644eb8eb2736 100644
+--- a/backend/internal/service/auth_cache_invalidation_test.go
++++ b/backend/internal/service/auth_cache_invalidation_test.go
+@@ -24,10 +24,10 @@ func TestRedeemService_InvalidateRedeemCaches_AuthCache(t *testing.T) {
+ 	invalidator := &authCacheInvalidatorStub{}
+ 	svc := &RedeemService{authCacheInvalidator: invalidator}
+ 
+-	svc.invalidateRedeemCaches(context.Background(), 11, &RedeemCode{Type: RedeemTypeBalance})
+-	svc.invalidateRedeemCaches(context.Background(), 11, &RedeemCode{Type: RedeemTypeConcurrency})
++	svc.invalidateRedeemCaches(context.Background(), 11, &RedeemCode{Type: RedeemTypeBalance}, 0)
++	svc.invalidateRedeemCaches(context.Background(), 11, &RedeemCode{Type: RedeemTypeConcurrency}, 0)
+ 	groupID := int64(3)
+-	svc.invalidateRedeemCaches(context.Background(), 11, &RedeemCode{Type: RedeemTypeSubscription, GroupID: &groupID})
++	svc.invalidateRedeemCaches(context.Background(), 11, &RedeemCode{Type: RedeemTypeSubscription, GroupID: &groupID}, 0)
+ 
+ 	require.Equal(t, []int64{11, 11, 11}, invalidator.userIDs)
+ }
+diff --git a/backend/internal/service/billing_cache_service_balance_test.go b/backend/internal/service/billing_cache_service_balance_test.go
+index 06deb7010c82fc9bdd4fe293b36eba7a1966fe1f..42f11f85cd83bc66f21082b798af310bf7e63682 100644
+--- a/backend/internal/service/billing_cache_service_balance_test.go
++++ b/backend/internal/service/billing_cache_service_balance_test.go
+@@ -7,7 +7,6 @@ import (
+ 	"errors"
+ 	"sync/atomic"
+ 	"testing"
+-	"time"
+ 
+ 	"github.com/Wei-Shaw/sub2api/internal/config"
+ 	"github.com/stretchr/testify/require"
+@@ -21,6 +20,8 @@ type balanceEligibilityCacheStub struct {
+ 	invalidated              atomic.Bool
+ 	deductCalls              atomic.Int64
+ 	invalidateCalls          atomic.Int64
++	setCalls                 atomic.Int64
++	lastSetBalance           float64
+ }
+ 
+ func (s *balanceEligibilityCacheStub) GetUserBalance(context.Context, int64) (float64, error) {
+@@ -35,6 +36,13 @@ func (s *balanceEligibilityCacheStub) DeductUserBalance(context.Context, int64,
+ 	return nil
+ }
+ 
++func (s *balanceEligibilityCacheStub) SetUserBalance(_ context.Context, _ int64, balance float64) error {
++	s.setCalls.Add(1)
++	s.lastSetBalance = balance
++	s.balance = balance
++	return nil
++}
++
+ func (s *balanceEligibilityCacheStub) InvalidateUserBalance(context.Context, int64) error {
+ 	s.invalidateCalls.Add(1)
+ 	s.invalidated.Store(true)
+@@ -83,12 +91,14 @@ func TestSyncBalanceCacheAfterDeduction_InvalidatesExhaustedBalance(t *testing.T
+ 		BalanceOverdrafted: true,
+ 	})
+ 
+-	require.Equal(t, int64(1), cache.invalidateCalls.Load())
++	require.Equal(t, int64(1), cache.setCalls.Load())
++	require.Equal(t, -0.25, cache.lastSetBalance)
++	require.Equal(t, int64(0), cache.invalidateCalls.Load())
+ 	require.Equal(t, int64(0), cache.deductCalls.Load())
+ 
+ 	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil, "")
+ 	require.ErrorIs(t, err, ErrInsufficientBalance)
+-	require.Equal(t, int64(1), userRepo.calls.Load())
++	require.Equal(t, int64(0), userRepo.calls.Load())
+ }
+ 
+ func TestSyncBalanceCacheAfterDeduction_InvalidatesWhenBalanceFallsBelowReserve(t *testing.T) {
+@@ -104,11 +114,13 @@ func TestSyncBalanceCacheAfterDeduction_InvalidatesWhenBalanceFallsBelowReserve(
+ 		User: &User{ID: 1},
+ 	}, &billingDeps{billingCacheService: svc}, &UsageBillingApplyResult{NewBalance: &newBalance})
+ 
+-	require.Equal(t, int64(1), cache.invalidateCalls.Load())
++	require.Equal(t, int64(1), cache.setCalls.Load())
++	require.Equal(t, 0.005, cache.lastSetBalance)
++	require.Equal(t, int64(0), cache.invalidateCalls.Load())
+ 	require.Equal(t, int64(0), cache.deductCalls.Load())
+ }
+ 
+-func TestSyncBalanceCacheAfterDeduction_QueuesDeductWhenBalanceStillEligible(t *testing.T) {
++func TestSyncBalanceCacheAfterDeduction_SetsFreshBalanceWhenStillEligible(t *testing.T) {
+ 	cache := &balanceEligibilityCacheStub{balance: 1}
+ 	cfg := &config.Config{}
+ 	cfg.Billing.MinimumBalanceReserve = 0.01
+@@ -121,8 +133,8 @@ func TestSyncBalanceCacheAfterDeduction_QueuesDeductWhenBalanceStillEligible(t *
+ 		User: &User{ID: 1},
+ 	}, &billingDeps{billingCacheService: svc}, &UsageBillingApplyResult{NewBalance: &newBalance})
+ 
++	require.Equal(t, int64(1), cache.setCalls.Load())
++	require.Equal(t, 0.75, cache.lastSetBalance)
+ 	require.Equal(t, int64(0), cache.invalidateCalls.Load())
+-	require.Eventually(t, func() bool {
+-		return cache.deductCalls.Load() == 1
+-	}, 2*time.Second, 10*time.Millisecond)
++	require.Equal(t, int64(0), cache.deductCalls.Load())
+ }
+diff --git a/backend/internal/service/deferred_service_test.go b/backend/internal/service/deferred_service_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b645b56d3a1bbc3799899f041f8c8951f60a01f8
+--- /dev/null
++++ b/backend/internal/service/deferred_service_test.go
+@@ -0,0 +1,31 @@
++package service
++
++import (
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestDeferredServiceDisabledDoesNotQueueLastUsed(t *testing.T) {
++	svc := NewDeferredServiceWithOptions(nil, nil, 10*time.Second, false)
++
++	svc.ScheduleLastUsedUpdate(123)
++	svc.flushLastUsed()
++
++	count := 0
++	svc.lastUsedUpdates.Range(func(_, _ any) bool {
++		count++
++		return true
++	})
++	require.Equal(t, 0, count)
++}
++
++func TestDeferredServiceEnabledQueuesLastUsed(t *testing.T) {
++	svc := NewDeferredServiceWithOptions(nil, nil, 10*time.Second, true)
++
++	svc.ScheduleLastUsedUpdate(123)
++
++	_, ok := svc.lastUsedUpdates.Load(int64(123))
++	require.True(t, ok)
++}
+diff --git a/backend/internal/service/gateway_account_selection_test.go b/backend/internal/service/gateway_account_selection_test.go
+index 0a82fade7a8e605ccd872c2900def80d54b18c5e..46a7edc6be4d4c34442e6426e1141224c277a1ce 100644
+--- a/backend/internal/service/gateway_account_selection_test.go
++++ b/backend/internal/service/gateway_account_selection_test.go
+@@ -152,55 +152,3 @@ func TestFilterByMinLoadRate_SelectsMinLoadRate(t *testing.T) {
+ }
+ 
+ // --- selectByLRU ---
+-
+-func TestSelectByLRU_Empty(t *testing.T) {
+-	result := selectByLRU(nil, false)
+-	require.Nil(t, result)
+-}
+-
+-func TestSelectByLRU_Single(t *testing.T) {
+-	accounts := []accountWithLoad{makeAccWithLoad(1, 1, 10, nil, AccountTypeAPIKey)}
+-	result := selectByLRU(accounts, false)
+-	require.NotNil(t, result)
+-	require.Equal(t, int64(1), result.account.ID)
+-}
+-
+-func TestSelectByLRU_NilLastUsedAtWins(t *testing.T) {
+-	now := time.Now()
+-	accounts := []accountWithLoad{
+-		makeAccWithLoad(1, 1, 10, testTimePtr(now), AccountTypeAPIKey),
+-		makeAccWithLoad(2, 1, 10, nil, AccountTypeAPIKey),
+-		makeAccWithLoad(3, 1, 10, testTimePtr(now.Add(-1*time.Hour)), AccountTypeAPIKey),
+-	}
+-	result := selectByLRU(accounts, false)
+-	require.NotNil(t, result)
+-	require.Equal(t, int64(2), result.account.ID)
+-}
+-
+-func TestSelectByLRU_EarliestTimeWins(t *testing.T) {
+-	now := time.Now()
+-	accounts := []accountWithLoad{
+-		makeAccWithLoad(1, 1, 10, testTimePtr(now), AccountTypeAPIKey),
+-		makeAccWithLoad(2, 1, 10, testTimePtr(now.Add(-1*time.Hour)), AccountTypeAPIKey),
+-		makeAccWithLoad(3, 1, 10, testTimePtr(now.Add(-2*time.Hour)), AccountTypeAPIKey),
+-	}
+-	result := selectByLRU(accounts, false)
+-	require.NotNil(t, result)
+-	require.Equal(t, int64(3), result.account.ID)
+-}
+-
+-func TestSelectByLRU_TiePreferOAuth(t *testing.T) {
+-	now := time.Now()
+-	// 账号 1/2 LastUsedAt 相同，且同为最小值。
+-	accounts := []accountWithLoad{
+-		makeAccWithLoad(1, 1, 10, testTimePtr(now), AccountTypeAPIKey),
+-		makeAccWithLoad(2, 1, 10, testTimePtr(now), AccountTypeOAuth),
+-		makeAccWithLoad(3, 1, 10, testTimePtr(now.Add(1*time.Hour)), AccountTypeAPIKey),
+-	}
+-	for i := 0; i < 50; i++ {
+-		result := selectByLRU(accounts, true)
+-		require.NotNil(t, result)
+-		require.Equal(t, AccountTypeOAuth, result.account.Type)
+-		require.Equal(t, int64(2), result.account.ID)
+-	}
+-}
+diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
+index bc1435039437ef109d1436beebd33674f2f860eb..969966d6fe97d6a8d46fda3591f721c7d7020848 100644
+--- a/backend/internal/service/openai_gateway_service_test.go
++++ b/backend/internal/service/openai_gateway_service_test.go
+@@ -1120,7 +1120,7 @@ func TestOpenAISelectAccountForModelWithExclusions_LeastRecentlyUsed(t *testing.
+ 	}
+ }
+ 
+-func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
++func TestOpenAISelectAccountWithLoadAwareness_SameLoadTieAllowsEitherAccount(t *testing.T) {
+ 	groupID := int64(1)
+ 	lastUsed := time.Now().Add(-1 * time.Hour)
+ 	repo := stubOpenAIAccountRepo{
+@@ -1147,8 +1147,11 @@ func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+ 	}
+-	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
+-		t.Fatalf("expected account 2")
++	if selection == nil || selection.Account == nil {
++		t.Fatalf("expected selected account")
++	}
++	if selection.Account.ID != 1 && selection.Account.ID != 2 {
++		t.Fatalf("expected account 1 or 2, got %d", selection.Account.ID)
+ 	}
+ }
+ 
+diff --git a/backend/internal/service/scheduler_layered_filter_test.go b/backend/internal/service/scheduler_layered_filter_test.go
+index d012cf09d21f2da889431408aebcb73cc574947f..d2c0c25530aa109396189e0bf17bb6c9f4af427a 100644
+--- a/backend/internal/service/scheduler_layered_filter_test.go
++++ b/backend/internal/service/scheduler_layered_filter_test.go
+@@ -4,7 +4,6 @@ package service
+ 
+ import (
+ 	"testing"
+-	"time"
+ 
+ 	"github.com/stretchr/testify/require"
+ )
+@@ -98,167 +97,3 @@ func TestFilterByMinLoadRate(t *testing.T) {
+ 		require.Equal(t, int64(3), result[1].account.ID)
+ 	})
+ }
+-
+-func TestSelectByLRU(t *testing.T) {
+-	now := time.Now()
+-	earlier := now.Add(-1 * time.Hour)
+-	muchEarlier := now.Add(-2 * time.Hour)
+-
+-	t.Run("empty slice", func(t *testing.T) {
+-		result := selectByLRU(nil, false)
+-		require.Nil(t, result)
+-	})
+-
+-	t.Run("single account", func(t *testing.T) {
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{}},
+-		}
+-		result := selectByLRU(accounts, false)
+-		require.NotNil(t, result)
+-		require.Equal(t, int64(1), result.account.ID)
+-	})
+-
+-	t.Run("selects least recently used", func(t *testing.T) {
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 2, LastUsedAt: &muchEarlier}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 3, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{}},
+-		}
+-		result := selectByLRU(accounts, false)
+-		require.NotNil(t, result)
+-		require.Equal(t, int64(2), result.account.ID)
+-	})
+-
+-	t.Run("nil LastUsedAt preferred over non-nil", func(t *testing.T) {
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 2, LastUsedAt: nil}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 3, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{}},
+-		}
+-		result := selectByLRU(accounts, false)
+-		require.NotNil(t, result)
+-		require.Equal(t, int64(2), result.account.ID)
+-	})
+-
+-	t.Run("multiple nil LastUsedAt random selection", func(t *testing.T) {
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, LastUsedAt: nil, Type: "session"}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 2, LastUsedAt: nil, Type: "session"}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 3, LastUsedAt: nil, Type: "session"}, loadInfo: &AccountLoadInfo{}},
+-		}
+-		// 多次调用应该随机选择，验证结果都在候选范围内
+-		validIDs := map[int64]bool{1: true, 2: true, 3: true}
+-		for i := 0; i < 10; i++ {
+-			result := selectByLRU(accounts, false)
+-			require.NotNil(t, result)
+-			require.True(t, validIDs[result.account.ID], "selected ID should be one of the candidates")
+-		}
+-	})
+-
+-	t.Run("multiple same LastUsedAt random selection", func(t *testing.T) {
+-		sameTime := now
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, LastUsedAt: &sameTime}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 2, LastUsedAt: &sameTime}, loadInfo: &AccountLoadInfo{}},
+-		}
+-		// 多次调用应该随机选择
+-		validIDs := map[int64]bool{1: true, 2: true}
+-		for i := 0; i < 10; i++ {
+-			result := selectByLRU(accounts, false)
+-			require.NotNil(t, result)
+-			require.True(t, validIDs[result.account.ID], "selected ID should be one of the candidates")
+-		}
+-	})
+-
+-	t.Run("preferOAuth selects from OAuth accounts when multiple nil", func(t *testing.T) {
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, LastUsedAt: nil, Type: "session"}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 2, LastUsedAt: nil, Type: AccountTypeOAuth}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 3, LastUsedAt: nil, Type: AccountTypeOAuth}, loadInfo: &AccountLoadInfo{}},
+-		}
+-		// preferOAuth 时，应该从 OAuth 类型中选择
+-		oauthIDs := map[int64]bool{2: true, 3: true}
+-		for i := 0; i < 10; i++ {
+-			result := selectByLRU(accounts, true)
+-			require.NotNil(t, result)
+-			require.True(t, oauthIDs[result.account.ID], "should select from OAuth accounts")
+-		}
+-	})
+-
+-	t.Run("preferOAuth falls back to all when no OAuth", func(t *testing.T) {
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, LastUsedAt: nil, Type: "session"}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 2, LastUsedAt: nil, Type: "session"}, loadInfo: &AccountLoadInfo{}},
+-		}
+-		// 没有 OAuth 时，从所有候选中选择
+-		validIDs := map[int64]bool{1: true, 2: true}
+-		for i := 0; i < 10; i++ {
+-			result := selectByLRU(accounts, true)
+-			require.NotNil(t, result)
+-			require.True(t, validIDs[result.account.ID])
+-		}
+-	})
+-
+-	t.Run("preferOAuth only affects same LastUsedAt accounts", func(t *testing.T) {
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, LastUsedAt: &earlier, Type: "session"}, loadInfo: &AccountLoadInfo{}},
+-			{account: &Account{ID: 2, LastUsedAt: &now, Type: AccountTypeOAuth}, loadInfo: &AccountLoadInfo{}},
+-		}
+-		result := selectByLRU(accounts, true)
+-		require.NotNil(t, result)
+-		// 有不同 LastUsedAt 时，按时间选择最早的，不受 preferOAuth 影响
+-		require.Equal(t, int64(1), result.account.ID)
+-	})
+-}
+-
+-func TestLayeredFilterIntegration(t *testing.T) {
+-	now := time.Now()
+-	earlier := now.Add(-1 * time.Hour)
+-	muchEarlier := now.Add(-2 * time.Hour)
+-
+-	t.Run("full layered selection", func(t *testing.T) {
+-		// 模拟真实场景：多个账号，不同优先级、负载率、最后使用时间
+-		accounts := []accountWithLoad{
+-			// 优先级 1，负载 50%
+-			{account: &Account{ID: 1, Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
+-			// 优先级 1，负载 20%（最低）
+-			{account: &Account{ID: 2, Priority: 1, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{LoadRate: 20}},
+-			// 优先级 1，负载 20%（最低），更早使用
+-			{account: &Account{ID: 3, Priority: 1, LastUsedAt: &muchEarlier}, loadInfo: &AccountLoadInfo{LoadRate: 20}},
+-			// 优先级 2（较低优先）
+-			{account: &Account{ID: 4, Priority: 2, LastUsedAt: &muchEarlier}, loadInfo: &AccountLoadInfo{LoadRate: 0}},
+-		}
+-
+-		// 1. 取优先级最小的集合 → ID: 1, 2, 3
+-		step1 := filterByMinPriority(accounts)
+-		require.Len(t, step1, 3)
+-
+-		// 2. 取负载率最低的集合 → ID: 2, 3
+-		step2 := filterByMinLoadRate(step1)
+-		require.Len(t, step2, 2)
+-
+-		// 3. LRU 选择 → ID: 3（muchEarlier 最早）
+-		selected := selectByLRU(step2, false)
+-		require.NotNil(t, selected)
+-		require.Equal(t, int64(3), selected.account.ID)
+-	})
+-
+-	t.Run("all same priority and load rate", func(t *testing.T) {
+-		accounts := []accountWithLoad{
+-			{account: &Account{ID: 1, Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
+-			{account: &Account{ID: 2, Priority: 1, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
+-			{account: &Account{ID: 3, Priority: 1, LastUsedAt: &muchEarlier}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
+-		}
+-
+-		step1 := filterByMinPriority(accounts)
+-		require.Len(t, step1, 3)
+-
+-		step2 := filterByMinLoadRate(step1)
+-		require.Len(t, step2, 3)
+-
+-		// LRU 选择最早的
+-		selected := selectByLRU(step2, false)
+-		require.NotNil(t, selected)
+-		require.Equal(t, int64(3), selected.account.ID)
+-	})
+-}
+diff --git a/backend/internal/service/scheduler_shuffle_test.go b/backend/internal/service/scheduler_shuffle_test.go
+index 0d82b2f39337c7dc724ed3aafcbf7992900c6c52..8a2428e61a735e3af0b2fb95b0175bd58b3f849d 100644
+--- a/backend/internal/service/scheduler_shuffle_test.go
++++ b/backend/internal/service/scheduler_shuffle_test.go
+@@ -9,119 +9,6 @@ import (
+ 	"github.com/stretchr/testify/require"
+ )
+ 
+-// ============ shuffleWithinSortGroups 测试 ============
+-
+-func TestShuffleWithinSortGroups_Empty(t *testing.T) {
+-	shuffleWithinSortGroups(nil)
+-	shuffleWithinSortGroups([]accountWithLoad{})
+-}
+-
+-func TestShuffleWithinSortGroups_SingleElement(t *testing.T) {
+-	accounts := []accountWithLoad{
+-		{account: &Account{ID: 1, Priority: 1}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+-	}
+-	shuffleWithinSortGroups(accounts)
+-	require.Equal(t, int64(1), accounts[0].account.ID)
+-}
+-
+-func TestShuffleWithinSortGroups_DifferentGroups_OrderPreserved(t *testing.T) {
+-	now := time.Now()
+-	earlier := now.Add(-1 * time.Hour)
+-
+-	accounts := []accountWithLoad{
+-		{account: &Account{ID: 1, Priority: 1, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+-		{account: &Account{ID: 2, Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 20}},
+-		{account: &Account{ID: 3, Priority: 2, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+-	}
+-
+-	// 每个元素都属于不同组（Priority 或 LoadRate 或 LastUsedAt 不同），顺序不变
+-	for i := 0; i < 20; i++ {
+-		cpy := make([]accountWithLoad, len(accounts))
+-		copy(cpy, accounts)
+-		shuffleWithinSortGroups(cpy)
+-		require.Equal(t, int64(1), cpy[0].account.ID)
+-		require.Equal(t, int64(2), cpy[1].account.ID)
+-		require.Equal(t, int64(3), cpy[2].account.ID)
+-	}
+-}
+-
+-func TestShuffleWithinSortGroups_SameGroup_Shuffled(t *testing.T) {
+-	now := time.Now()
+-	// 同一秒的时间戳视为同一组
+-	sameSecond := time.Unix(now.Unix(), 0)
+-	sameSecond2 := time.Unix(now.Unix(), 500_000_000) // 同一秒但不同纳秒
+-
+-	accounts := []accountWithLoad{
+-		{account: &Account{ID: 1, Priority: 1, LastUsedAt: &sameSecond}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+-		{account: &Account{ID: 2, Priority: 1, LastUsedAt: &sameSecond2}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+-		{account: &Account{ID: 3, Priority: 1, LastUsedAt: &sameSecond}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+-	}
+-
+-	// 多次执行，验证所有 ID 都出现在第一个位置（说明确实被打乱了）
+-	seen := map[int64]bool{}
+-	for i := 0; i < 100; i++ {
+-		cpy := make([]accountWithLoad, len(accounts))
+-		copy(cpy, accounts)
+-		shuffleWithinSortGroups(cpy)
+-		seen[cpy[0].account.ID] = true
+-		// 无论怎么打乱，所有 ID 都应在候选中
+-		ids := map[int64]bool{}
+-		for _, a := range cpy {
+-			ids[a.account.ID] = true
+-		}
+-		require.True(t, ids[1] && ids[2] && ids[3])
+-	}
+-	// 至少 2 个不同的 ID 出现在首位（随机性验证）
+-	require.GreaterOrEqual(t, len(seen), 2, "shuffle should produce different orderings")
+-}
+-
+-func TestShuffleWithinSortGroups_NilLastUsedAt_SameGroup(t *testing.T) {
+-	accounts := []accountWithLoad{
+-		{account: &Account{ID: 1, Priority: 1, LastUsedAt: nil}, loadInfo: &AccountLoadInfo{LoadRate: 0}},
+-		{account: &Account{ID: 2, Priority: 1, LastUsedAt: nil}, loadInfo: &AccountLoadInfo{LoadRate: 0}},
+-		{account: &Account{ID: 3, Priority: 1, LastUsedAt: nil}, loadInfo: &AccountLoadInfo{LoadRate: 0}},
+-	}
+-
+-	seen := map[int64]bool{}
+-	for i := 0; i < 100; i++ {
+-		cpy := make([]accountWithLoad, len(accounts))
+-		copy(cpy, accounts)
+-		shuffleWithinSortGroups(cpy)
+-		seen[cpy[0].account.ID] = true
+-	}
+-	require.GreaterOrEqual(t, len(seen), 2, "nil LastUsedAt accounts should be shuffled")
+-}
+-
+-func TestShuffleWithinSortGroups_MixedGroups(t *testing.T) {
+-	now := time.Now()
+-	earlier := now.Add(-1 * time.Hour)
+-	sameAsNow := time.Unix(now.Unix(), 0)
+-
+-	// 组1: Priority=1, LoadRate=10, LastUsedAt=earlier (ID 1)  — 单元素组
+-	// 组2: Priority=1, LoadRate=20, LastUsedAt=now (ID 2, 3)   — 双元素组
+-	// 组3: Priority=2, LoadRate=10, LastUsedAt=earlier (ID 4)  — 单元素组
+-	accounts := []accountWithLoad{
+-		{account: &Account{ID: 1, Priority: 1, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+-		{account: &Account{ID: 2, Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 20}},
+-		{account: &Account{ID: 3, Priority: 1, LastUsedAt: &sameAsNow}, loadInfo: &AccountLoadInfo{LoadRate: 20}},
+-		{account: &Account{ID: 4, Priority: 2, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+-	}
+-
+-	for i := 0; i < 20; i++ {
+-		cpy := make([]accountWithLoad, len(accounts))
+-		copy(cpy, accounts)
+-		shuffleWithinSortGroups(cpy)
+-
+-		// 组间顺序不变
+-		require.Equal(t, int64(1), cpy[0].account.ID, "group 1 position fixed")
+-		require.Equal(t, int64(4), cpy[3].account.ID, "group 3 position fixed")
+-
+-		// 组2 内部可以打乱，但仍在位置 1 和 2
+-		mid := map[int64]bool{cpy[1].account.ID: true, cpy[2].account.ID: true}
+-		require.True(t, mid[2] && mid[3], "group 2 elements should stay in positions 1-2")
+-	}
+-}
+-
+ // ============ shuffleWithinPriorityAndLastUsed 测试 ============
+ 
+ func TestShuffleWithinPriorityAndLastUsed_Empty(t *testing.T) {
+@@ -219,44 +106,6 @@ func TestSameLastUsedAt(t *testing.T) {
+ 	})
+ }
+ 
+-// ============ sameAccountWithLoadGroup 测试 ============
+-
+-func TestSameAccountWithLoadGroup(t *testing.T) {
+-	now := time.Now()
+-	sameSecond := time.Unix(now.Unix(), 0)
+-
+-	t.Run("same group", func(t *testing.T) {
+-		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
+-		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &sameSecond}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
+-		require.True(t, sameAccountWithLoadGroup(a, b))
+-	})
+-
+-	t.Run("different priority", func(t *testing.T) {
+-		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
+-		b := accountWithLoad{account: &Account{Priority: 2, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
+-		require.False(t, sameAccountWithLoadGroup(a, b))
+-	})
+-
+-	t.Run("different load rate", func(t *testing.T) {
+-		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
+-		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 20}}
+-		require.False(t, sameAccountWithLoadGroup(a, b))
+-	})
+-
+-	t.Run("different last used at", func(t *testing.T) {
+-		later := now.Add(1 * time.Second)
+-		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
+-		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &later}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
+-		require.False(t, sameAccountWithLoadGroup(a, b))
+-	})
+-
+-	t.Run("both nil LastUsedAt", func(t *testing.T) {
+-		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: nil}, loadInfo: &AccountLoadInfo{LoadRate: 0}}
+-		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: nil}, loadInfo: &AccountLoadInfo{LoadRate: 0}}
+-		require.True(t, sameAccountWithLoadGroup(a, b))
+-	})
+-}
+-
+ // ============ sameAccountGroup 测试 ============
+ 
+ func TestSameAccountGroup(t *testing.T) {
+diff --git a/backend/internal/service/scheduler_snapshot_outbox_cleanup_test.go b/backend/internal/service/scheduler_snapshot_outbox_cleanup_test.go
+index 535f8d54e26d2393821c41c6f600adb71cc8d780..6bd00d2978fed876c4d2f059d473a2c54b088b61 100644
+--- a/backend/internal/service/scheduler_snapshot_outbox_cleanup_test.go
++++ b/backend/internal/service/scheduler_snapshot_outbox_cleanup_test.go
+@@ -2,7 +2,6 @@ package service
+ 
+ import (
+ 	"context"
+-	"errors"
+ 	"reflect"
+ 	"testing"
+ 	"time"
+@@ -11,7 +10,6 @@ import (
+ type outboxCleanupCache struct {
+ 	watermark     int64
+ 	setWatermarks []int64
+-	updateErr     error
+ }
+ 
+ func (c *outboxCleanupCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
+@@ -35,7 +33,7 @@ func (c *outboxCleanupCache) DeleteAccount(ctx context.Context, accountID int64)
+ }
+ 
+ func (c *outboxCleanupCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
+-	return c.updateErr
++	return nil
+ }
+ 
+ func (c *outboxCleanupCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
+@@ -205,10 +203,8 @@ func TestSchedulerSnapshotServicePollOutboxSkipsCleanupWhenLockUnavailable(t *te
+ 	}
+ }
+ 
+-func TestSchedulerSnapshotServicePollOutboxDoesNotCleanupOnHandleFailure(t *testing.T) {
+-	cache := &outboxCleanupCache{
+-		updateErr: errors.New("cache update failed"),
+-	}
++func TestSchedulerSnapshotServicePollOutboxConsumesLastUsedWithoutCacheWrite(t *testing.T) {
++	cache := &outboxCleanupCache{}
+ 	repo := &outboxCleanupRepo{
+ 		events: []SchedulerOutboxEvent{
+ 			{
+@@ -226,17 +222,17 @@ func TestSchedulerSnapshotServicePollOutboxDoesNotCleanupOnHandleFailure(t *test
+ 
+ 	svc.pollOutbox()
+ 
+-	if len(cache.setWatermarks) != 0 {
+-		t.Fatalf("expected no watermark write on handle failure, got %#v", cache.setWatermarks)
++	if cache.watermark != 5 {
++		t.Fatalf("expected watermark 5, got %d", cache.watermark)
+ 	}
+-	if repo.lockAttempts != 0 {
+-		t.Fatalf("expected cleanup lock not to be attempted, got %d", repo.lockAttempts)
++	if !reflect.DeepEqual(cache.setWatermarks, []int64{5}) {
++		t.Fatalf("unexpected watermark writes: %#v", cache.setWatermarks)
+ 	}
+-	if len(repo.deleteCalls) != 0 {
+-		t.Fatalf("expected no delete calls, got %#v", repo.deleteCalls)
++	if repo.lockAttempts != 1 || repo.releaseCount != 1 {
++		t.Fatalf("expected one lock acquire/release, got acquire=%d release=%d", repo.lockAttempts, repo.releaseCount)
+ 	}
+-	if !reflect.DeepEqual(repo.rows, []int64{1, 2, 3, 4, 5, 6}) {
+-		t.Fatalf("expected rows unchanged, got %#v", repo.rows)
++	if !reflect.DeepEqual(repo.rows, []int64{6}) {
++		t.Fatalf("expected consumed rows to be cleaned, got %#v", repo.rows)
+ 	}
+ }
+ 
+diff --git a/backend/internal/service/usage_billing_write_behind_test.go b/backend/internal/service/usage_billing_write_behind_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a33d138b9f84f6deb8872be380f172ec1b02dab0
+--- /dev/null
++++ b/backend/internal/service/usage_billing_write_behind_test.go
+@@ -0,0 +1,544 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/stretchr/testify/require"
++)
++
++type usageBillingWriteBehindUserRepoStub struct {
++	UserRepository
++
++	calls      int
++	getCalls   int
++	lastUserID int64
++	lastAmount float64
++	balance    float64
++	err        error
++}
++
++func (s *usageBillingWriteBehindUserRepoStub) GetByID(ctx context.Context, id int64) (*User, error) {
++	s.getCalls++
++	if s.err != nil {
++		return nil, s.err
++	}
++	return &User{ID: id, Balance: s.balance}, nil
++}
++
++func (s *usageBillingWriteBehindUserRepoStub) DeductBalance(ctx context.Context, id int64, amount float64) error {
++	s.calls++
++	s.lastUserID = id
++	s.lastAmount = amount
++	return s.err
++}
++
++type usageBillingWriteBehindSubRepoStub struct {
++	UserSubscriptionRepository
++
++	calls  int
++	lastID int64
++	amount float64
++	err    error
++}
++
++func (s *usageBillingWriteBehindSubRepoStub) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {
++	s.calls++
++	s.lastID = id
++	s.amount = costUSD
++	return s.err
++}
++
++type usageBillingWriteBehindAccountRepoStub struct {
++	AccountRepository
++
++	calls  int
++	lastID int64
++	amount float64
++	err    error
++}
++
++func (s *usageBillingWriteBehindAccountRepoStub) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
++	s.calls++
++	s.lastID = id
++	s.amount = amount
++	return s.err
++}
++
++type usageBillingWriteBehindAPIKeyUpdaterStub struct {
++	quotaCalls     int
++	rateCalls      int
++	lastQuotaKeyID int64
++	lastRateKeyID  int64
++	quotaAmount    float64
++	rateAmount     float64
++	err            error
++}
++
++func (s *usageBillingWriteBehindAPIKeyUpdaterStub) UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cost float64) error {
++	s.quotaCalls++
++	s.lastQuotaKeyID = apiKeyID
++	s.quotaAmount = cost
++	return s.err
++}
++
++func (s *usageBillingWriteBehindAPIKeyUpdaterStub) UpdateRateLimitUsage(ctx context.Context, apiKeyID int64, cost float64) error {
++	s.rateCalls++
++	s.lastRateKeyID = apiKeyID
++	s.rateAmount = cost
++	return s.err
++}
++
++type usageBillingWriteBehindRepoStub struct {
++	calls   int
++	lastCmd *UsageBillingCommand
++	err     error
++}
++
++func (s *usageBillingWriteBehindRepoStub) Apply(ctx context.Context, cmd *UsageBillingCommand) (*UsageBillingApplyResult, error) {
++	s.calls++
++	s.lastCmd = cloneUsageBillingCommand(cmd)
++	if s.err != nil {
++		return nil, s.err
++	}
++	return &UsageBillingApplyResult{Applied: true}, nil
++}
++
++func (s *usageBillingWriteBehindRepoStub) ReserveBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
++	return nil, nil
++}
++
++func (s *usageBillingWriteBehindRepoStub) CaptureBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
++	return nil, nil
++}
++
++func (s *usageBillingWriteBehindRepoStub) ReleaseBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
++	return nil, nil
++}
++
++type usageBillingWriteBehindBalanceCacheStub struct {
++	BillingCache
++
++	mu       sync.Mutex
++	balances map[int64]float64
++	setCalls int
++}
++
++func newUsageBillingWriteBehindBalanceCacheStub(initial map[int64]float64) *usageBillingWriteBehindBalanceCacheStub {
++	balances := make(map[int64]float64, len(initial))
++	for userID, balance := range initial {
++		balances[userID] = balance
++	}
++	return &usageBillingWriteBehindBalanceCacheStub{balances: balances}
++}
++
++func (s *usageBillingWriteBehindBalanceCacheStub) GetUserBalance(_ context.Context, userID int64) (float64, error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	balance, ok := s.balances[userID]
++	if !ok {
++		return 0, errors.New("balance cache miss")
++	}
++	return balance, nil
++}
++
++func (s *usageBillingWriteBehindBalanceCacheStub) GetUserBalanceForTest(userID int64) (float64, bool) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	balance, ok := s.balances[userID]
++	return balance, ok
++}
++
++func (s *usageBillingWriteBehindBalanceCacheStub) SetUserBalance(_ context.Context, userID int64, balance float64) error {
++	s.mu.Lock()
++	s.balances[userID] = balance
++	s.setCalls++
++	s.mu.Unlock()
++	return nil
++}
++
++func (s *usageBillingWriteBehindBalanceCacheStub) SetCallsForTest() int {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return s.setCalls
++}
++
++func (s *usageBillingWriteBehindBalanceCacheStub) LocalBillingWriteThroughEnabled() bool {
++	return false
++}
++
++func (s *usageBillingWriteBehindBalanceCacheStub) ApplyUserBalanceDeltaLocal(userID int64, delta float64) bool {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	balance, ok := s.balances[userID]
++	if !ok {
++		return false
++	}
++	s.balances[userID] = balance + delta
++	return true
++}
++
++func newUsageBillingWriteBehindForTest() *UsageBillingWriteBehind {
++	cfg := &config.Config{}
++	cfg.Gateway.HotPath.UsageBillingWriteBehind = true
++	cfg.Gateway.HotPath.UsageBillingFlushIntervalMs = 30000
++	cfg.Idempotency.DefaultTTLSeconds = 60
++	cfg.APIKeyAuth.L2TTLSeconds = 60
++	return NewUsageBillingWriteBehind(cfg)
++}
++
++func TestUsageBillingWriteBehind_DeductsSequentiallyFromL1(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	cache := newUsageBillingWriteBehindBalanceCacheStub(map[int64]float64{42: 10})
++	cacheService := &BillingCacheService{cache: cache}
++	deps := &billingDeps{billingCacheService: cacheService}
++	p := &postUsageBillingParams{
++		Cost: &CostBreakdown{ActualCost: 1},
++		User: &User{ID: 42, Balance: 999}, // Deliberately stale auth snapshot.
++	}
++
++	var balances []float64
++	for _, requestID := range []string{"sequential-1", "sequential-2"} {
++		result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
++			RequestID:   requestID,
++			UserID:      42,
++			BalanceCost: 1,
++		}, p, deps)
++		require.NoError(t, err)
++		require.True(t, handled)
++		require.NotNil(t, result.NewBalance)
++		balances = append(balances, *result.NewBalance)
++
++		// finalize must not apply the write-behind deduction a second time.
++		syncBalanceCacheAfterDeduction(context.Background(), p, deps, result)
++	}
++
++	require.Equal(t, []float64{9, 8}, balances)
++	balance, ok := cache.GetUserBalanceForTest(42)
++	require.True(t, ok)
++	require.Equal(t, 8.0, balance)
++	require.Equal(t, 0, cache.SetCallsForTest(), "write-behind must use atomic deltas, not absolute balance writes")
++}
++
++func TestUsageBillingWriteBehind_ConcurrentDeductionsAreSerializedAgainstL1(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	cache := newUsageBillingWriteBehindBalanceCacheStub(map[int64]float64{42: 10})
++	deps := &billingDeps{billingCacheService: &BillingCacheService{cache: cache}}
++	p := &postUsageBillingParams{User: &User{ID: 42, Balance: 999}}
++
++	const deductions = 8
++	start := make(chan struct{})
++	errCh := make(chan error, deductions)
++	var wg sync.WaitGroup
++	for i := 0; i < deductions; i++ {
++		wg.Add(1)
++		go func(request int) {
++			defer wg.Done()
++			<-start
++			result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
++				RequestID:   "concurrent-" + string(rune('a'+request)),
++				UserID:      42,
++				BalanceCost: 1,
++			}, p, deps)
++			if err == nil && (!handled || result == nil || result.NewBalance == nil) {
++				err = errors.New("deduction was not applied")
++			}
++			errCh <- err
++		}(i)
++	}
++	close(start)
++	wg.Wait()
++	close(errCh)
++
++	for err := range errCh {
++		require.NoError(t, err)
++	}
++	balance, ok := cache.GetUserBalanceForTest(42)
++	require.True(t, ok)
++	require.Equal(t, 2.0, balance)
++	require.Equal(t, 0, cache.SetCallsForTest())
++}
++
++func TestUsageBillingWriteBehind_L1MissLoadsBeforeDelta(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	cache := newUsageBillingWriteBehindBalanceCacheStub(nil)
++	userRepo := &usageBillingWriteBehindUserRepoStub{balance: 10}
++	deps := &billingDeps{
++		billingCacheService: &BillingCacheService{cache: cache, userRepo: userRepo},
++		userRepo:            userRepo,
++	}
++
++	result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
++		RequestID:   "cache-miss",
++		UserID:      42,
++		BalanceCost: 1,
++	}, &postUsageBillingParams{User: &User{ID: 42, Balance: 999}}, deps)
++	require.NoError(t, err)
++	require.True(t, handled)
++	require.NotNil(t, result.NewBalance)
++	require.Equal(t, 9.0, *result.NewBalance)
++	require.Equal(t, 1, userRepo.getCalls)
++	balance, ok := cache.GetUserBalanceForTest(42)
++	require.True(t, ok)
++	require.Equal(t, 9.0, balance)
++	require.Equal(t, 1, cache.SetCallsForTest(), "DB fallback must synchronously seed L1 before the delta")
++}
++
++func TestUsageBillingWriteBehind_AggregatesAndFlushesOnce(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	userRepo := &usageBillingWriteBehindUserRepoStub{}
++	subRepo := &usageBillingWriteBehindSubRepoStub{}
++	accountRepo := &usageBillingWriteBehindAccountRepoStub{}
++	apiKeyUpdater := &usageBillingWriteBehindAPIKeyUpdaterStub{}
++	subID := int64(88)
++	deps := &billingDeps{
++		userRepo:    userRepo,
++		userSubRepo: subRepo,
++		accountRepo: accountRepo,
++	}
++
++	for _, cmd := range []*UsageBillingCommand{
++		{
++			RequestID:           "req-balance-1",
++			APIKeyID:            7,
++			UserID:              42,
++			AccountID:           99,
++			BalanceCost:         1.25,
++			APIKeyQuotaCost:     1.25,
++			APIKeyRateLimitCost: 1.25,
++			AccountQuotaCost:    0.50,
++		},
++		{
++			RequestID:           "req-balance-2",
++			APIKeyID:            7,
++			UserID:              42,
++			AccountID:           99,
++			BalanceCost:         2.75,
++			APIKeyQuotaCost:     2.75,
++			APIKeyRateLimitCost: 2.75,
++			AccountQuotaCost:    0.75,
++		},
++		{
++			RequestID:        "req-sub-1",
++			APIKeyID:         7,
++			UserID:           42,
++			AccountID:        99,
++			SubscriptionID:   &subID,
++			SubscriptionCost: 3.50,
++		},
++	} {
++		result, handled, err := wb.Apply(context.Background(), cmd, &postUsageBillingParams{
++			User:          &User{ID: 42, Balance: 10},
++			APIKey:        &APIKey{ID: 7, Quota: 100},
++			Account:       &Account{ID: 99, Type: AccountTypeAPIKey},
++			APIKeyService: apiKeyUpdater,
++		}, deps)
++		require.NoError(t, err)
++		require.True(t, handled)
++		require.True(t, result.Applied)
++	}
++
++	stats := wb.Stats()
++	require.Equal(t, 1, stats.PendingBalanceKeys)
++	require.Equal(t, 1, stats.PendingSubscriptionKeys)
++	require.Equal(t, 1, stats.PendingAPIKeyQuotaKeys)
++	require.Equal(t, 1, stats.PendingAPIKeyRateKeys)
++	require.Equal(t, 1, stats.PendingAccountQuotaKeys)
++	require.Equal(t, uint64(3), stats.AppliedTotal)
++	require.Equal(t, 0, userRepo.calls)
++
++	wb.Flush(context.Background(), deps)
++
++	require.Equal(t, 1, userRepo.calls)
++	require.Equal(t, int64(42), userRepo.lastUserID)
++	require.InDelta(t, 4.0, userRepo.lastAmount, 1e-12)
++	require.Equal(t, 1, subRepo.calls)
++	require.Equal(t, subID, subRepo.lastID)
++	require.InDelta(t, 3.5, subRepo.amount, 1e-12)
++	require.Equal(t, 1, apiKeyUpdater.quotaCalls)
++	require.InDelta(t, 4.0, apiKeyUpdater.quotaAmount, 1e-12)
++	require.Equal(t, 1, apiKeyUpdater.rateCalls)
++	require.InDelta(t, 4.0, apiKeyUpdater.rateAmount, 1e-12)
++	require.Equal(t, 1, accountRepo.calls)
++	require.InDelta(t, 1.25, accountRepo.amount, 1e-12)
++	require.Equal(t, 0, wb.Stats().PendingBalanceKeys)
++}
++
++func TestApplyUsageBilling_ResolvesWriteBehindFromAPIKeyService(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	apiKeyService := &APIKeyService{}
++	apiKeyService.SetUsageBillingWriteBehind(wb)
++
++	applied, err := applyUsageBilling(context.Background(), "provider-request", nil, &postUsageBillingParams{
++		Cost:          &CostBreakdown{},
++		User:          &User{ID: 42, Balance: 10},
++		APIKey:        &APIKey{ID: 7},
++		Account:       &Account{ID: 99},
++		APIKeyService: apiKeyService,
++	}, &billingDeps{deferredService: &DeferredService{}}, nil)
++
++	require.NoError(t, err)
++	require.True(t, applied)
++	require.Equal(t, 1, wb.Stats().PendingL1Entries)
++}
++
++func TestUsageBillingWriteBehind_FlushesL1CommandsThroughRepository(t *testing.T) {
++	cfg := &config.Config{}
++	cfg.Gateway.HotPath.UsageBillingWriteBehind = true
++	cfg.Gateway.HotPath.UsageBillingFlushIntervalMs = 30000
++	cfg.Idempotency.DefaultTTLSeconds = 60
++	cfg.APIKeyAuth.L2TTLSeconds = 60
++	repo := &usageBillingWriteBehindRepoStub{}
++	wb := NewUsageBillingWriteBehindWithRedis(cfg, nil, repo)
++
++	result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
++		RequestID: "zero-cost-request",
++		APIKeyID:  7,
++		UserID:    42,
++		AccountID: 99,
++	}, &postUsageBillingParams{
++		User:    &User{ID: 42, Balance: 10},
++		APIKey:  &APIKey{ID: 7},
++		Account: &Account{ID: 99},
++	}, &billingDeps{})
++	require.NoError(t, err)
++	require.True(t, handled)
++	require.True(t, result.Applied)
++	require.Equal(t, 1, wb.Stats().PendingL1Entries)
++	require.Equal(t, 0, wb.Stats().PendingBalanceKeys)
++	require.Equal(t, 0, repo.calls)
++
++	wb.Flush(context.Background(), nil)
++
++	require.Equal(t, 1, repo.calls)
++	require.NotNil(t, repo.lastCmd)
++	require.Equal(t, "zero-cost-request", repo.lastCmd.RequestID)
++	stats := wb.Stats()
++	require.Equal(t, 0, stats.PendingL1Entries)
++	require.Equal(t, uint64(1), stats.FlushSuccessTotal)
++}
++
++func TestUsageBillingWriteBehind_DeduplicatesRequestID(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	deps := &billingDeps{userRepo: &usageBillingWriteBehindUserRepoStub{}}
++	cmd := &UsageBillingCommand{
++		RequestID:   "same-request",
++		APIKeyID:    7,
++		UserID:      42,
++		BalanceCost: 1,
++	}
++	p := &postUsageBillingParams{
++		User:    &User{ID: 42, Balance: 10},
++		APIKey:  &APIKey{ID: 7},
++		Account: &Account{ID: 99},
++	}
++
++	result, handled, err := wb.Apply(context.Background(), cmd, p, deps)
++	require.NoError(t, err)
++	require.True(t, handled)
++	require.True(t, result.Applied)
++
++	result, handled, err = wb.Apply(context.Background(), cmd, p, deps)
++	require.NoError(t, err)
++	require.True(t, handled)
++	require.False(t, result.Applied)
++	require.Equal(t, 1, wb.Stats().PendingBalanceKeys)
++	require.Equal(t, uint64(1), wb.Stats().DedupSkippedTotal)
++}
++
++func TestUsageBillingWriteBehind_ConflictingDuplicateFails(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	deps := &billingDeps{userRepo: &usageBillingWriteBehindUserRepoStub{}}
++	p := &postUsageBillingParams{
++		User:    &User{ID: 42, Balance: 10},
++		APIKey:  &APIKey{ID: 7},
++		Account: &Account{ID: 99},
++	}
++
++	_, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
++		RequestID:          "same-request",
++		APIKeyID:           7,
++		UserID:             42,
++		BalanceCost:        1,
++		RequestFingerprint: "fingerprint-a",
++	}, p, deps)
++	require.NoError(t, err)
++	require.True(t, handled)
++
++	_, handled, err = wb.Apply(context.Background(), &UsageBillingCommand{
++		RequestID:          "same-request",
++		APIKeyID:           7,
++		UserID:             42,
++		BalanceCost:        1,
++		RequestFingerprint: "fingerprint-b",
++	}, p, deps)
++	require.True(t, handled)
++	require.ErrorIs(t, err, ErrUsageBillingRequestConflict)
++}
++
++func TestUsageBillingWriteBehind_APIKeyQuotaShadowExhaustsBeforeFlush(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	apiKeyUpdater := &usageBillingWriteBehindAPIKeyUpdaterStub{}
++	deps := &billingDeps{}
++	apiKey := &APIKey{ID: 7, Quota: 5, QuotaUsed: 3}
++
++	result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
++		RequestID:       "quota-request",
++		APIKeyID:        7,
++		UserID:          42,
++		AccountID:       99,
++		APIKeyQuotaCost: 2,
++	}, &postUsageBillingParams{
++		User:          &User{ID: 42, Balance: 10},
++		APIKey:        apiKey,
++		Account:       &Account{ID: 99},
++		APIKeyService: apiKeyUpdater,
++	}, deps)
++	require.NoError(t, err)
++	require.True(t, handled)
++	require.True(t, result.APIKeyQuotaExhausted)
++	require.True(t, wb.APIKeyQuotaExhausted(apiKey))
++	require.Equal(t, 0, apiKeyUpdater.quotaCalls)
++}
++
++func TestUsageBillingWriteBehind_RequeuesOnlyUnflushedRemainder(t *testing.T) {
++	wb := newUsageBillingWriteBehindForTest()
++	userRepo := &usageBillingWriteBehindUserRepoStub{}
++	accountRepo := &usageBillingWriteBehindAccountRepoStub{err: errors.New("account quota failed")}
++	deps := &billingDeps{userRepo: userRepo, accountRepo: accountRepo}
++
++	_, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
++		RequestID:        "partial-failure",
++		APIKeyID:         7,
++		UserID:           42,
++		AccountID:        99,
++		BalanceCost:      1,
++		AccountQuotaCost: 2,
++	}, &postUsageBillingParams{
++		User:    &User{ID: 42, Balance: 10},
++		APIKey:  &APIKey{ID: 7},
++		Account: &Account{ID: 99, Type: AccountTypeAPIKey},
++	}, deps)
++	require.NoError(t, err)
++	require.True(t, handled)
++
++	wb.Flush(context.Background(), deps)
++	require.Equal(t, 1, userRepo.calls)
++	require.Equal(t, 1, accountRepo.calls)
++	stats := wb.Stats()
++	require.Equal(t, 0, stats.PendingBalanceKeys)
++	require.Equal(t, 1, stats.PendingAccountQuotaKeys)
++	require.Equal(t, uint64(1), stats.FlushErrorTotal)
++
++	accountRepo.err = nil
++	wb.Flush(context.Background(), deps)
++	require.Equal(t, 1, userRepo.calls)
++	require.Equal(t, 2, accountRepo.calls)
++	require.Eventually(t, func() bool {
++		return wb.Stats().PendingAccountQuotaKeys == 0
++	}, time.Second, 10*time.Millisecond)
++}
+diff --git a/backend/internal/service/user_platform_quota_flusher_test.go b/backend/internal/service/user_platform_quota_flusher_test.go
+index 4f7344819ae0ffd0515f40559a2129159c3cc27b..2a24882fae76408ed153844f55a9bf7b9ce936a5 100644
+--- a/backend/internal/service/user_platform_quota_flusher_test.go
++++ b/backend/internal/service/user_platform_quota_flusher_test.go
+@@ -23,8 +23,9 @@ type mockQuotaDirtyCache struct {
+ 	getErr     error
+ 
+ 	// readdCalled: 记录 Readd 收到的 keys（累积所有次调用）
+-	readdCalled [][]UserPlatformQuotaKey
+-	readdErr    error
++	readdCalled  [][]UserPlatformQuotaKey
++	readdErr     error
++	acknowledged [][]UserPlatformQuotaKey
+ }
+ 
+ func (m *mockQuotaDirtyCache) PopDirtyUserPlatformQuotaKeys(_ context.Context, _ int) ([]UserPlatformQuotaKey, error) {
+@@ -49,6 +50,10 @@ func (m *mockQuotaDirtyCache) BatchGetUserPlatformQuotaCache(_ context.Context,
+ 	return m.getEntries, nil
+ }
+ 
++func (m *mockQuotaDirtyCache) AcknowledgeUserPlatformQuotaFlush(keys []UserPlatformQuotaKey) {
++	m.acknowledged = append(m.acknowledged, keys)
++}
++
+ // ---------------------------------------------------------------------------
+ // Mock: quotaSnapshotWriter
+ // ---------------------------------------------------------------------------
+@@ -130,6 +135,9 @@ func TestFlusher_PopSnapshotUpsert(t *testing.T) {
+ 	if f.metrics.FlushErrorTotal.Load() != 0 {
+ 		t.Errorf("FlushErrorTotal = %d, want 0", f.metrics.FlushErrorTotal.Load())
+ 	}
++	if len(cache.acknowledged) != 1 || len(cache.acknowledged[0]) != len(keys) {
++		t.Errorf("successful flush ACK calls = %v, want all keys once", cache.acknowledged)
++	}
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -208,6 +216,9 @@ func TestFlusher_UpsertFailReadds(t *testing.T) {
+ 	if f.metrics.FlushSuccessTotal.Load() != 0 {
+ 		t.Errorf("FlushSuccessTotal = %d, want 0", f.metrics.FlushSuccessTotal.Load())
+ 	}
++	if len(cache.acknowledged) != 0 {
++		t.Errorf("failed flush must stay protected until re-add, got ACK %v", cache.acknowledged)
++	}
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -241,6 +252,9 @@ func TestFlusher_FKViolationDropsNoReadd(t *testing.T) {
+ 	if f.metrics.DirtyReaddTotal.Load() != 0 {
+ 		t.Errorf("DirtyReaddTotal = %d, want 0 (FK violation drops)", f.metrics.DirtyReaddTotal.Load())
+ 	}
++	if len(cache.acknowledged) != 1 || len(cache.acknowledged[0]) != len(keys) {
++		t.Errorf("terminal FK drop ACK calls = %v, want all keys once", cache.acknowledged)
++	}
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -320,7 +334,7 @@ func TestScenario_ZeroPercentCompany(t *testing.T) {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// P1: IntervalFallback — flush_interval_ms ≤0 时回退 2s；正常值保留
++// P1: IntervalFallback — flush_interval_ms ≤0 时回退 30s；正常值保留
+ // ---------------------------------------------------------------------------
+ 
+ func TestNewUserPlatformQuotaUsageFlusher_IntervalFallback(t *testing.T) {
+@@ -329,9 +343,9 @@ func TestNewUserPlatformQuotaUsageFlusher_IntervalFallback(t *testing.T) {
+ 		inMs   int
+ 		wantDu time.Duration
+ 	}{
+-		{"零值回退 2s", 0, 2 * time.Second},
+-		{"负数回退 2s", -100, 2 * time.Second},
+-		{"正常 2000ms 保留", 2000, 2 * time.Second},
++		{"零值回退 30s", 0, 30 * time.Second},
++		{"负数回退 30s", -100, 30 * time.Second},
++		{"正常 30000ms 保留", 30000, 30 * time.Second},
+ 		{"正常 500ms 保留", 500, 500 * time.Millisecond},
+ 	}
+ 	for _, tc := range cases {
+diff --git a/frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts b/frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts
+index 4f3110f7896a3d60ecf697cc226c7fd925b75aba..03892760ae47903947c8b6d3899ecf7b80f8fcd2 100644
+--- a/frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts
++++ b/frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts
+@@ -19,6 +19,15 @@ const messages: Record<string, string> = {
+   'admin.usage.outputCost': 'Output Cost',
+   'admin.usage.cacheCreationCost': 'Cache Creation Cost',
+   'admin.usage.cacheReadCost': 'Cache Read Cost',
++  'admin.usage.inputTokens': 'Input Tokens',
++  'admin.usage.outputTokens': 'Output Tokens',
++  'admin.usage.cacheCreationTokens': 'Cache Creation Tokens',
++  'admin.usage.cacheCreation5mTokens': 'Cache Creation 5m Tokens',
++  'admin.usage.cacheCreation1hTokens': 'Cache Creation 1h Tokens',
++  'admin.usage.cacheReadTokens': 'Cache Read Tokens',
++  'usage.tokenDetails': 'Token Breakdown',
++  'usage.totalTokens': 'Total Tokens',
++  'usage.cacheHitRate': 'Cache hit rate',
+   'usage.inputTokenPrice': 'Input price',
+   'usage.outputTokenPrice': 'Output price',
+   'usage.perMillionTokens': '/ 1M tokens',
+@@ -169,6 +178,52 @@ describe('admin UsageTable tooltip', () => {
+     expect(text).toContain('$30.0000 / 1M tokens')
+     expect(text).toContain('$0.069568')
+   })
++  it('shows cache hit rate in token tooltip', async () => {
++    const row = {
++      request_id: 'req-cache-rate-1',
++      model: 'gpt-5',
++      actual_cost: 0,
++      total_cost: 0,
++      account_rate_multiplier: 1,
++      rate_multiplier: 1,
++      service_tier: null,
++      input_cost: 0,
++      output_cost: 0,
++      cache_creation_cost: 0,
++      cache_read_cost: 0,
++      input_tokens: 200,
++      output_tokens: 50,
++      cache_creation_tokens: 300,
++      cache_read_tokens: 500,
++      cache_creation_5m_tokens: 0,
++      cache_creation_1h_tokens: 0,
++      cache_ttl_overridden: false,
++    }
++
++    const wrapper = mount(UsageTable, {
++      props: {
++        data: [row],
++        loading: false,
++        columns: [],
++      },
++      global: {
++        stubs: {
++          DataTable: DataTableStub,
++          EmptyState: true,
++          Icon: true,
++          Teleport: true,
++        },
++      },
++    })
++
++    await wrapper.findAll('.group.relative')[0].trigger('mouseenter')
++    await nextTick()
++
++    const text = wrapper.text()
++    expect(text).toContain('Token Breakdown')
++    expect(text).toContain('Cache hit rate')
++    expect(text).toContain('50.00%')
++  })
+ 
+   it('shows requested and upstream models separately for admin rows', () => {
+     const row = {
+

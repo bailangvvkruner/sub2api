@@ -1,0 +1,4542 @@
+From 08cdea42f59e319d767dadab4dea2c2c42d7cf81 Mon Sep 17 00:00:00 2001
+From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
+Date: Mon, 13 Jul 2026 10:33:15 +0800
+Subject: [PATCH 2/7] fork: restore L1 hotpath and write-behind runtime
+
+---
+diff --git a/backend/cmd/server/main.go b/backend/cmd/server/main.go
+index 784f309fce8ba1c2045b2fb63c4ede1dc8208379..da37a62b7c2cffc1a9565fd7aef7f0d3ebdc870a 100644
+--- a/backend/cmd/server/main.go
++++ b/backend/cmd/server/main.go
+@@ -170,11 +170,11 @@ func runMainServer() {
+ 
+ 	log.Println("Shutting down server...")
+ 
+-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+ 	defer cancel()
+ 
+ 	if err := app.Server.Shutdown(ctx); err != nil {
+-		log.Fatalf("Server forced to shutdown: %v", err)
++		log.Printf("Server forced to shutdown: %v", err)
+ 	}
+ 
+ 	log.Println("Server exited")
+diff --git a/backend/cmd/server/wire.go b/backend/cmd/server/wire.go
+index 496473bc88bc2196ac59ea930e4e45b95aa51287..7df9621f8c9e4cca42612545b9e094bcd32988d9 100644
+--- a/backend/cmd/server/wire.go
++++ b/backend/cmd/server/wire.go
+@@ -103,9 +103,11 @@ func provideCleanup(
+ 	paymentOrderExpiry *service.PaymentOrderExpiryService,
+ 	channelMonitorRunner *service.ChannelMonitorRunner,
+ 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
++	usageLogRepo service.UsageLogRepository,
++	usageBillingWriteBehind *service.UsageBillingWriteBehind,
+ ) func() {
+ 	return func() {
+-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+ 		defer cancel()
+ 
+ 		type cleanupStep struct {
+@@ -279,6 +281,18 @@ func provideCleanup(
+ 				}
+ 				return nil
+ 			}},
++			{"UsageLogPendingRepository", func() error {
++				if stopper, ok := usageLogRepo.(interface{ Stop() }); ok {
++					stopper.Stop()
++				}
++				return nil
++			}},
++			{"UsageBillingWriteBehind", func() error {
++				if usageBillingWriteBehind != nil {
++					usageBillingWriteBehind.Stop(nil)
++				}
++				return nil
++			}},
+ 		}
+ 
+ 		infraSteps := []cleanupStep{
+@@ -330,7 +344,7 @@ func provideCleanup(
+ 		// Check if context timed out
+ 		select {
+ 		case <-ctx.Done():
+-			log.Printf("[Cleanup] Warning: cleanup timed out after 10 seconds")
++			log.Printf("[Cleanup] Warning: cleanup timed out after 45 seconds")
+ 		default:
+ 			log.Printf("[Cleanup] All cleanup steps completed")
+ 		}
+diff --git a/backend/go.sum b/backend/go.sum
+index 4738443bb91e36a20b02f5c68adcf7de0057a49e..c4dbfa60c3cafef6bdc878b413fc531d1683df37 100644
+--- a/backend/go.sum
++++ b/backend/go.sum
+@@ -166,6 +166,8 @@ github.com/google/go-querystring v1.1.0/go.mod h1:Kcdr2DB4koayq7X8pmAG4sNG59So17
+ github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
+ github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e h1:ijClszYn+mADRFY17kjQEVQ1XRhq2/JR1M3sGqeJoxs=
+ github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e/go.mod h1:boTsfXsheKC2y+lKOCMpSfarhxDeIzfZG1jqGcPl3cA=
++github.com/google/subcommands v1.2.0 h1:vWQspBTo2nEqTUFita5/KeEWlUL8kQObDFbub/EN9oE=
++github.com/google/subcommands v1.2.0/go.mod h1:ZjhPrFU+Olkh9WazFPsl27BQ4UPiG37m3yTrtFlrHVk=
+ github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+ github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+ github.com/google/wire v0.7.0 h1:JxUKI6+CVBgCO2WToKy/nQk0sS+amI9z9EjVmdaocj4=
+diff --git a/backend/internal/config/config.go b/backend/internal/config/config.go
+index df3afb6c7ecc9cabe5c49342ced7b1aa2c7356c4..9bbdc2539756429d9ebcefef6cd51b4fd9803ebb 100644
+--- a/backend/internal/config/config.go
++++ b/backend/internal/config/config.go
+@@ -843,6 +843,9 @@ type GatewayConfig struct {
+ 	// Scheduling: 账号调度相关配置
+ 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
+ 
++	// HotPath: fork-only switches for reducing request-path Redis/DB writes.
++	HotPath GatewayHotPathConfig `mapstructure:"hotpath"`
++
+ 	// TLSFingerprint: TLS指纹伪装配置
+ 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
+ 
+@@ -1068,6 +1071,16 @@ type GatewayUsageRecordConfig struct {
+ 	AutoScaleCooldownSeconds int `mapstructure:"auto_scale_cooldown_seconds"`
+ }
+ 
++type GatewayHotPathConfig struct {
++	LocalConcurrencySlots         bool `mapstructure:"local_concurrency_slots"`
++	PersistAccountLastUsed        bool `mapstructure:"persist_account_last_used"`
++	LocalBillingCache             bool `mapstructure:"local_billing_cache"`
++	LocalBillingCacheMaxEntries   int  `mapstructure:"local_billing_cache_max_entries"`
++	LocalBillingCacheWriteThrough bool `mapstructure:"local_billing_cache_write_through"`
++	UsageBillingWriteBehind       bool `mapstructure:"usage_billing_write_behind"`
++	UsageBillingFlushIntervalMs   int  `mapstructure:"usage_billing_flush_interval_ms"`
++}
++
+ // TLSFingerprintConfig TLS指纹伪装配置
+ // 用于模拟 Claude CLI (Node.js) 的 TLS 握手特征，避免被识别为非官方客户端
+ type TLSFingerprintConfig struct {
+@@ -1118,12 +1131,12 @@ type GatewaySchedulingConfig struct {
+ 	FallbackWaitTimeout time.Duration `mapstructure:"fallback_wait_timeout"`
+ 	FallbackMaxWaiting  int           `mapstructure:"fallback_max_waiting"`
+ 
+-	// 兜底层账户选择策略: "last_used"(按最后使用时间排序，默认) 或 "random"(随机)
++	// 兜底层账户选择策略: "random"(随机，默认) 或 "last_used"(按最后使用时间排序)
+ 	FallbackSelectionMode string `mapstructure:"fallback_selection_mode"`
+ 
+ 	// PreferSoonestReset 开启后，负载感知选择会优先选用「会话窗口最早重置」的账号
+ 	// （use-it-or-lose-it：先用尽即将重置的账号，保留重置时间还很久的账号）。
+-	// 默认 false，保持原有「优先级 → 负载率 → LRU」行为不变。
++	// 默认 false，保持「优先级 → 负载率 → 随机」行为。
+ 	PreferSoonestReset bool `mapstructure:"prefer_soonest_reset"`
+ 
+ 	// 负载计算
+@@ -1767,8 +1780,8 @@ func setDefaults() {
+ 	viper.SetDefault("database.max_idle_conns", 128)
+ 	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
+ 	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
+-	viper.SetDefault("database.user_platform_quota_flusher_enabled", false)
+-	viper.SetDefault("database.user_platform_quota_flush_interval_ms", 2000)
++	viper.SetDefault("database.user_platform_quota_flusher_enabled", true)
++	viper.SetDefault("database.user_platform_quota_flush_interval_ms", 30000)
+ 	viper.SetDefault("database.user_platform_quota_flush_batch_size", 1000)
+ 
+ 	// Redis
+@@ -2029,7 +2042,7 @@ func setDefaults() {
+ 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
+ 	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 30*time.Second)
+ 	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 100)
+-	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
++	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "random")
+ 	viper.SetDefault("gateway.scheduling.prefer_soonest_reset", false)
+ 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
+ 	viper.SetDefault("gateway.scheduling.load_batch_cache_ttl_ms", 200)
+@@ -2062,6 +2075,13 @@ func setDefaults() {
+ 	viper.SetDefault("gateway.usage_record.auto_scale_down_step", 16)
+ 	viper.SetDefault("gateway.usage_record.auto_scale_check_interval_seconds", 3)
+ 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
++	viper.SetDefault("gateway.hotpath.local_concurrency_slots", true)
++	viper.SetDefault("gateway.hotpath.persist_account_last_used", false)
++	viper.SetDefault("gateway.hotpath.local_billing_cache", true)
++	viper.SetDefault("gateway.hotpath.local_billing_cache_max_entries", 262144)
++	viper.SetDefault("gateway.hotpath.local_billing_cache_write_through", false)
++	viper.SetDefault("gateway.hotpath.usage_billing_write_behind", true)
++	viper.SetDefault("gateway.hotpath.usage_billing_flush_interval_ms", 30000)
+ 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
+ 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
+ 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
+@@ -2861,6 +2881,12 @@ func (c *Config) Validate() error {
+ 	if c.Gateway.UsageRecord.WorkerCount <= 0 {
+ 		return fmt.Errorf("gateway.usage_record.worker_count must be positive")
+ 	}
++	if c.Gateway.HotPath.LocalBillingCacheMaxEntries < 0 {
++		return fmt.Errorf("gateway.hotpath.local_billing_cache_max_entries must be non-negative")
++	}
++	if c.Gateway.HotPath.UsageBillingWriteBehind && c.Gateway.HotPath.UsageBillingFlushIntervalMs <= 0 {
++		return fmt.Errorf("gateway.hotpath.usage_billing_flush_interval_ms must be positive")
++	}
+ 	if c.Gateway.UsageRecord.QueueSize <= 0 {
+ 		return fmt.Errorf("gateway.usage_record.queue_size must be positive")
+ 	}
+diff --git a/backend/internal/handler/admin/usage_handler.go b/backend/internal/handler/admin/usage_handler.go
+index 11a4aeb8f6017e8ccfef9279095d4a1f0266d19f..16cc2593a25213862a88a44e4f5ccda9e1b16dd4 100644
+--- a/backend/internal/handler/admin/usage_handler.go
++++ b/backend/internal/handler/admin/usage_handler.go
+@@ -27,6 +27,12 @@ type UsageHandler struct {
+ 	cleanupService *service.UsageCleanupService
+ }
+ 
++type UsagePendingStatsResponse struct {
++	UsageLog     service.UsageLogPendingStats         `json:"usage_log"`
++	UsageBilling service.UsageBillingWriteBehindStats `json:"usage_billing"`
++	UpdatedAt    time.Time                            `json:"updated_at"`
++}
++
+ // NewUsageHandler creates a new admin usage handler
+ func NewUsageHandler(
+ 	usageService *service.UsageService,
+@@ -42,6 +48,26 @@ func NewUsageHandler(
+ 	}
+ }
+ 
++// PendingStats handles getting hot-path L1/L2 pending counts.
++// GET /api/v1/admin/usage/pending
++func (h *UsageHandler) PendingStats(c *gin.Context) {
++	var usageLogStats service.UsageLogPendingStats
++	if h != nil && h.usageService != nil {
++		usageLogStats = h.usageService.PendingStats()
++	}
++	var billingStats service.UsageBillingWriteBehindStats
++	if h != nil && h.apiKeyService != nil {
++		if wb := h.apiKeyService.UsageBillingWriteBehind(); wb != nil {
++			billingStats = wb.Stats()
++		}
++	}
++	c.JSON(http.StatusOK, UsagePendingStatsResponse{
++		UsageLog:     usageLogStats,
++		UsageBilling: billingStats,
++		UpdatedAt:    time.Now(),
++	})
++}
++
+ // CreateUsageCleanupTaskRequest represents cleanup task creation request
+ type CreateUsageCleanupTaskRequest struct {
+ 	StartDate   string  `json:"start_date"`
+diff --git a/backend/internal/hotpath/billing_cache.go b/backend/internal/hotpath/billing_cache.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..8c2b8e9ea6ea94b21c3f31c60603f8e76b04da51
+--- /dev/null
++++ b/backend/internal/hotpath/billing_cache.go
+@@ -0,0 +1,762 @@
++package hotpath
++
++import (
++	"context"
++	"math"
++	"sync"
++	"sync/atomic"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/redis/go-redis/v9"
++)
++
++const (
++	defaultLocalBillingCacheMaxEntries = 262144
++	minLocalBillingCacheMaxEntries     = 1024
++	billingCacheTTL                    = 5 * time.Minute
++	rateLimitCacheTTL                  = 7 * 24 * time.Hour
++)
++
++type localBillingCache struct {
++	next service.BillingCache
++
++	maxEntries   int
++	writeThrough bool
++	clock        func() time.Time
++
++	balanceMu sync.Mutex
++	balances  map[int64]localBalanceEntry
++
++	subMu         sync.Mutex
++	subscriptions map[localSubscriptionKey]localSubscriptionEntry
++
++	rateMu     sync.Mutex
++	rateLimits map[int64]localRateLimitEntry
++
++	quotaMu    sync.Mutex
++	quotas     map[localQuotaKey]localQuotaEntry
++	quotaDirty map[localQuotaKey]struct{}
++	// quotaInFlight protects popped snapshots until the flusher explicitly
++	// acknowledges success/drop or re-adds them after a failure.
++	quotaInFlight map[localQuotaKey]struct{}
++
++	accessSeq atomic.Uint64
++}
++
++type localBalanceEntry struct {
++	value    float64
++	expires  time.Time
++	accessed uint64
++}
++
++type localSubscriptionKey struct {
++	userID  int64
++	groupID int64
++}
++
++type localSubscriptionEntry struct {
++	value    *service.SubscriptionCacheData
++	expires  time.Time
++	accessed uint64
++}
++
++type localRateLimitEntry struct {
++	value    *service.APIKeyRateLimitCacheData
++	expires  time.Time
++	accessed uint64
++}
++
++type localQuotaKey struct {
++	userID   int64
++	platform string
++}
++
++type localQuotaEntry struct {
++	value    *service.UserPlatformQuotaCacheEntry
++	expires  time.Time
++	accessed uint64
++}
++
++// NewLocalBillingCache creates a write-behind process-local billing L1.
++func NewLocalBillingCache(next service.BillingCache, maxEntries int) service.BillingCache {
++	return NewLocalBillingCacheWithOptions(next, maxEntries, false)
++}
++
++// NewLocalBillingCacheWithOptions creates a process-local billing L1 and
++// optionally forwards mutations to the next cache synchronously.
++func NewLocalBillingCacheWithOptions(next service.BillingCache, maxEntries int, writeThrough bool) service.BillingCache {
++	if maxEntries <= 0 {
++		maxEntries = defaultLocalBillingCacheMaxEntries
++	}
++	if maxEntries < minLocalBillingCacheMaxEntries {
++		maxEntries = minLocalBillingCacheMaxEntries
++	}
++	return &localBillingCache{
++		next:          next,
++		maxEntries:    maxEntries,
++		writeThrough:  writeThrough,
++		clock:         time.Now,
++		balances:      make(map[int64]localBalanceEntry),
++		subscriptions: make(map[localSubscriptionKey]localSubscriptionEntry),
++		rateLimits:    make(map[int64]localRateLimitEntry),
++		quotas:        make(map[localQuotaKey]localQuotaEntry),
++		quotaDirty:    make(map[localQuotaKey]struct{}),
++		quotaInFlight: make(map[localQuotaKey]struct{}),
++	}
++}
++
++func (c *localBillingCache) LocalBillingWriteThroughEnabled() bool {
++	return c != nil && c.writeThrough
++}
++
++func (c *localBillingCache) ApplyUserBalanceDeltaLocal(userID int64, delta float64) bool {
++	if c == nil {
++		return false
++	}
++	c.balanceMu.Lock()
++	defer c.balanceMu.Unlock()
++	entry, ok := c.balances[userID]
++	if !ok || !entry.expires.After(c.clock()) {
++		if ok {
++			delete(c.balances, userID)
++		}
++		return false
++	}
++	entry.value += delta
++	entry.expires = c.clock().Add(billingCacheTTL)
++	entry.accessed = c.nextAccess()
++	c.balances[userID] = entry
++	return true
++}
++
++func (c *localBillingCache) nextAccess() uint64 {
++	return c.accessSeq.Add(1)
++}
++
++func localBillingTTL(ttl time.Duration) time.Duration {
++	if ttl <= 0 {
++		return billingCacheTTL
++	}
++	return ttl
++}
++
++func (c *localBillingCache) evictBalancesLocked(now time.Time) {
++	if len(c.balances) <= c.maxEntries {
++		return
++	}
++	for key, entry := range c.balances {
++		if !entry.expires.After(now) {
++			delete(c.balances, key)
++		}
++	}
++	for len(c.balances) > c.maxEntries {
++		var victim int64
++		var victimAccess uint64 = math.MaxUint64
++		for key, entry := range c.balances {
++			if entry.accessed < victimAccess {
++				victim = key
++				victimAccess = entry.accessed
++			}
++		}
++		delete(c.balances, victim)
++	}
++}
++
++func (c *localBillingCache) evictSubscriptionsLocked(now time.Time) {
++	if len(c.subscriptions) <= c.maxEntries {
++		return
++	}
++	for key, entry := range c.subscriptions {
++		if !entry.expires.After(now) {
++			delete(c.subscriptions, key)
++		}
++	}
++	for len(c.subscriptions) > c.maxEntries {
++		var victim localSubscriptionKey
++		var victimAccess uint64 = math.MaxUint64
++		for key, entry := range c.subscriptions {
++			if entry.accessed < victimAccess {
++				victim = key
++				victimAccess = entry.accessed
++			}
++		}
++		delete(c.subscriptions, victim)
++	}
++}
++
++func (c *localBillingCache) evictRateLimitsLocked(now time.Time) {
++	if len(c.rateLimits) <= c.maxEntries {
++		return
++	}
++	for key, entry := range c.rateLimits {
++		if !entry.expires.After(now) {
++			delete(c.rateLimits, key)
++		}
++	}
++	for len(c.rateLimits) > c.maxEntries {
++		var victim int64
++		var victimAccess uint64 = math.MaxUint64
++		for key, entry := range c.rateLimits {
++			if entry.accessed < victimAccess {
++				victim = key
++				victimAccess = entry.accessed
++			}
++		}
++		delete(c.rateLimits, victim)
++	}
++}
++
++func (c *localBillingCache) evictQuotasLocked(now time.Time) {
++	if len(c.quotas) <= c.maxEntries {
++		return
++	}
++	for key, entry := range c.quotas {
++		if !entry.expires.After(now) && !c.quotaProtectedLocked(key) {
++			delete(c.quotas, key)
++		}
++	}
++	for len(c.quotas) > c.maxEntries {
++		var victim localQuotaKey
++		var victimAccess uint64 = math.MaxUint64
++		found := false
++		for key, entry := range c.quotas {
++			if c.quotaProtectedLocked(key) {
++				continue
++			}
++			if entry.accessed < victimAccess {
++				victim = key
++				victimAccess = entry.accessed
++				found = true
++			}
++		}
++		if !found {
++			// Dirty and in-flight entries are authoritative write-behind state.
++			// Let the quota cache temporarily exceed capacity instead of losing it.
++			return
++		}
++		delete(c.quotas, victim)
++	}
++}
++
++func (c *localBillingCache) quotaProtectedLocked(key localQuotaKey) bool {
++	if _, ok := c.quotaDirty[key]; ok {
++		return true
++	}
++	_, ok := c.quotaInFlight[key]
++	return ok
++}
++
++func (c *localBillingCache) GetUserBalance(ctx context.Context, userID int64) (float64, error) {
++	now := c.clock()
++	c.balanceMu.Lock()
++	if entry, ok := c.balances[userID]; ok {
++		if entry.expires.After(now) {
++			entry.accessed = c.nextAccess()
++			c.balances[userID] = entry
++			c.balanceMu.Unlock()
++			return entry.value, nil
++		}
++		delete(c.balances, userID)
++	}
++	c.balanceMu.Unlock()
++
++	if c.next == nil {
++		return 0, redis.Nil
++	}
++	balance, err := c.next.GetUserBalance(ctx, userID)
++	if err != nil {
++		return 0, err
++	}
++	c.setBalanceLocal(userID, balance, billingCacheTTL)
++	return balance, nil
++}
++
++func (c *localBillingCache) SetUserBalance(ctx context.Context, userID int64, balance float64) error {
++	c.setBalanceLocal(userID, balance, billingCacheTTL)
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.SetUserBalance(ctx, userID, balance)
++}
++
++func (c *localBillingCache) setBalanceLocal(userID int64, balance float64, ttl time.Duration) {
++	now := c.clock()
++	c.balanceMu.Lock()
++	c.balances[userID] = localBalanceEntry{
++		value:    balance,
++		expires:  now.Add(localBillingTTL(ttl)),
++		accessed: c.nextAccess(),
++	}
++	c.evictBalancesLocked(now)
++	c.balanceMu.Unlock()
++}
++
++func (c *localBillingCache) DeductUserBalance(ctx context.Context, userID int64, amount float64) error {
++	c.balanceMu.Lock()
++	if entry, ok := c.balances[userID]; ok {
++		entry.value -= amount
++		entry.expires = c.clock().Add(billingCacheTTL)
++		entry.accessed = c.nextAccess()
++		c.balances[userID] = entry
++	}
++	c.balanceMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.DeductUserBalance(ctx, userID, amount)
++}
++
++func (c *localBillingCache) InvalidateUserBalance(ctx context.Context, userID int64) error {
++	c.balanceMu.Lock()
++	delete(c.balances, userID)
++	c.balanceMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.InvalidateUserBalance(ctx, userID)
++}
++
++func (c *localBillingCache) GetSubscriptionCache(ctx context.Context, userID, groupID int64) (*service.SubscriptionCacheData, error) {
++	key := localSubscriptionKey{userID: userID, groupID: groupID}
++	now := c.clock()
++	c.subMu.Lock()
++	if entry, ok := c.subscriptions[key]; ok {
++		if entry.expires.After(now) {
++			entry.accessed = c.nextAccess()
++			c.subscriptions[key] = entry
++			out := cloneSubscriptionCacheData(entry.value)
++			c.subMu.Unlock()
++			return out, nil
++		}
++		delete(c.subscriptions, key)
++	}
++	c.subMu.Unlock()
++
++	if c.next == nil {
++		return nil, redis.Nil
++	}
++	data, err := c.next.GetSubscriptionCache(ctx, userID, groupID)
++	if err != nil {
++		return nil, err
++	}
++	c.setSubscriptionLocal(key, data, billingCacheTTL)
++	return cloneSubscriptionCacheData(data), nil
++}
++
++func (c *localBillingCache) SetSubscriptionCache(ctx context.Context, userID, groupID int64, data *service.SubscriptionCacheData) error {
++	if data != nil {
++		c.setSubscriptionLocal(localSubscriptionKey{userID: userID, groupID: groupID}, data, billingCacheTTL)
++	}
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.SetSubscriptionCache(ctx, userID, groupID, data)
++}
++
++func (c *localBillingCache) setSubscriptionLocal(key localSubscriptionKey, data *service.SubscriptionCacheData, ttl time.Duration) {
++	if data == nil {
++		return
++	}
++	now := c.clock()
++	c.subMu.Lock()
++	c.subscriptions[key] = localSubscriptionEntry{
++		value:    cloneSubscriptionCacheData(data),
++		expires:  now.Add(localBillingTTL(ttl)),
++		accessed: c.nextAccess(),
++	}
++	c.evictSubscriptionsLocked(now)
++	c.subMu.Unlock()
++}
++
++func (c *localBillingCache) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error {
++	key := localSubscriptionKey{userID: userID, groupID: groupID}
++	c.subMu.Lock()
++	if entry, ok := c.subscriptions[key]; ok && entry.value != nil {
++		entry.value.DailyUsage += cost
++		entry.value.WeeklyUsage += cost
++		entry.value.MonthlyUsage += cost
++		entry.expires = c.clock().Add(billingCacheTTL)
++		entry.accessed = c.nextAccess()
++		c.subscriptions[key] = entry
++	}
++	c.subMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.UpdateSubscriptionUsage(ctx, userID, groupID, cost)
++}
++
++func (c *localBillingCache) InvalidateSubscriptionCache(ctx context.Context, userID, groupID int64) error {
++	c.subMu.Lock()
++	delete(c.subscriptions, localSubscriptionKey{userID: userID, groupID: groupID})
++	c.subMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.InvalidateSubscriptionCache(ctx, userID, groupID)
++}
++
++func (c *localBillingCache) PublishSubscriptionCacheInvalidation(ctx context.Context, cacheKey string) error {
++	pubsub, ok := c.next.(interface {
++		PublishSubscriptionCacheInvalidation(context.Context, string) error
++	})
++	if !ok {
++		return nil
++	}
++	return pubsub.PublishSubscriptionCacheInvalidation(ctx, cacheKey)
++}
++
++func (c *localBillingCache) SubscribeSubscriptionCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error {
++	pubsub, ok := c.next.(interface {
++		SubscribeSubscriptionCacheInvalidation(context.Context, func(string)) error
++	})
++	if !ok {
++		return nil
++	}
++	return pubsub.SubscribeSubscriptionCacheInvalidation(ctx, handler)
++}
++
++func (c *localBillingCache) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*service.APIKeyRateLimitCacheData, error) {
++	now := c.clock()
++	c.rateMu.Lock()
++	if entry, ok := c.rateLimits[keyID]; ok {
++		if entry.expires.After(now) {
++			entry.accessed = c.nextAccess()
++			c.rateLimits[keyID] = entry
++			out := cloneRateLimitCacheData(entry.value)
++			c.rateMu.Unlock()
++			return out, nil
++		}
++		delete(c.rateLimits, keyID)
++	}
++	c.rateMu.Unlock()
++
++	if c.next == nil {
++		return nil, redis.Nil
++	}
++	data, err := c.next.GetAPIKeyRateLimit(ctx, keyID)
++	if err != nil {
++		return nil, err
++	}
++	c.setRateLimitLocal(keyID, data, rateLimitCacheTTL)
++	return cloneRateLimitCacheData(data), nil
++}
++
++func (c *localBillingCache) SetAPIKeyRateLimit(ctx context.Context, keyID int64, data *service.APIKeyRateLimitCacheData) error {
++	if data != nil {
++		c.setRateLimitLocal(keyID, data, rateLimitCacheTTL)
++	}
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.SetAPIKeyRateLimit(ctx, keyID, data)
++}
++
++func (c *localBillingCache) setRateLimitLocal(keyID int64, data *service.APIKeyRateLimitCacheData, ttl time.Duration) {
++	if data == nil {
++		return
++	}
++	now := c.clock()
++	c.rateMu.Lock()
++	c.rateLimits[keyID] = localRateLimitEntry{
++		value:    cloneRateLimitCacheData(data),
++		expires:  now.Add(localBillingTTL(ttl)),
++		accessed: c.nextAccess(),
++	}
++	c.evictRateLimitsLocked(now)
++	c.rateMu.Unlock()
++}
++
++func (c *localBillingCache) UpdateAPIKeyRateLimitUsage(ctx context.Context, keyID int64, cost float64) error {
++	now := c.clock()
++	c.rateMu.Lock()
++	if entry, ok := c.rateLimits[keyID]; ok && entry.value != nil {
++		updateLocalRateLimitWindow(&entry.value.Usage5h, &entry.value.Window5h, cost, now, service.RateLimitWindow5h)
++		updateLocalRateLimitWindow(&entry.value.Usage1d, &entry.value.Window1d, cost, now, service.RateLimitWindow1d)
++		updateLocalRateLimitWindow(&entry.value.Usage7d, &entry.value.Window7d, cost, now, service.RateLimitWindow7d)
++		entry.expires = now.Add(rateLimitCacheTTL)
++		entry.accessed = c.nextAccess()
++		c.rateLimits[keyID] = entry
++	}
++	c.rateMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.UpdateAPIKeyRateLimitUsage(ctx, keyID, cost)
++}
++
++func updateLocalRateLimitWindow(usage *float64, window *int64, cost float64, now time.Time, duration time.Duration) {
++	if window == nil || usage == nil {
++		return
++	}
++	if *window <= 0 || now.Unix()-*window >= int64(duration.Seconds()) {
++		*usage = cost
++		*window = now.Unix()
++		return
++	}
++	*usage += cost
++}
++
++func (c *localBillingCache) InvalidateAPIKeyRateLimit(ctx context.Context, keyID int64) error {
++	c.rateMu.Lock()
++	delete(c.rateLimits, keyID)
++	c.rateMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.InvalidateAPIKeyRateLimit(ctx, keyID)
++}
++
++func (c *localBillingCache) GetUserPlatformQuotaCache(ctx context.Context, userID int64, platform string) (*service.UserPlatformQuotaCacheEntry, bool, error) {
++	key := localQuotaKey{userID: userID, platform: platform}
++	now := c.clock()
++	c.quotaMu.Lock()
++	if entry, ok := c.quotas[key]; ok {
++		if entry.expires.After(now) || c.quotaProtectedLocked(key) {
++			entry.accessed = c.nextAccess()
++			c.quotas[key] = entry
++			out := cloneUserPlatformQuotaCacheEntry(entry.value)
++			c.quotaMu.Unlock()
++			return out, true, nil
++		}
++		delete(c.quotas, key)
++	}
++	c.quotaMu.Unlock()
++
++	if c.next == nil {
++		return nil, false, nil
++	}
++	entry, ok, err := c.next.GetUserPlatformQuotaCache(ctx, userID, platform)
++	if err != nil || !ok || entry == nil {
++		return entry, ok, err
++	}
++	c.setQuotaLocal(key, entry, billingCacheTTL)
++	return cloneUserPlatformQuotaCacheEntry(entry), true, nil
++}
++
++func (c *localBillingCache) SetUserPlatformQuotaCache(ctx context.Context, userID int64, platform string, entry *service.UserPlatformQuotaCacheEntry, ttl time.Duration) error {
++	if entry != nil {
++		c.setQuotaLocal(localQuotaKey{userID: userID, platform: platform}, entry, ttl)
++	}
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.SetUserPlatformQuotaCache(ctx, userID, platform, entry, ttl)
++}
++
++func (c *localBillingCache) setQuotaLocal(key localQuotaKey, entry *service.UserPlatformQuotaCacheEntry, ttl time.Duration) {
++	if entry == nil {
++		return
++	}
++	now := c.clock()
++	c.quotaMu.Lock()
++	c.quotas[key] = localQuotaEntry{
++		value:    cloneUserPlatformQuotaCacheEntry(entry),
++		expires:  now.Add(localBillingTTL(ttl)),
++		accessed: c.nextAccess(),
++	}
++	c.evictQuotasLocked(now)
++	c.quotaMu.Unlock()
++}
++
++func (c *localBillingCache) DeleteUserPlatformQuotaCache(ctx context.Context, userID int64, platform string) error {
++	key := localQuotaKey{userID: userID, platform: platform}
++	c.quotaMu.Lock()
++	delete(c.quotas, key)
++	delete(c.quotaDirty, key)
++	delete(c.quotaInFlight, key)
++	c.quotaMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.DeleteUserPlatformQuotaCache(ctx, userID, platform)
++}
++
++func (c *localBillingCache) IncrUserPlatformQuotaUsageCache(ctx context.Context, userID int64, platform string, cost float64, ttl time.Duration, markDirty bool) error {
++	key := localQuotaKey{userID: userID, platform: platform}
++	now := c.clock()
++	c.quotaMu.Lock()
++	if entry, ok := c.quotas[key]; ok && entry.value != nil && entry.value.SchemaVersion == service.UserPlatformQuotaCacheSchemaV1 {
++		entry.value.DailyUsageUSD += cost
++		entry.value.WeeklyUsageUSD += cost
++		entry.value.MonthlyUsageUSD += cost
++		entry.value.Version++
++		entry.expires = now.Add(localBillingTTL(ttl))
++		entry.accessed = c.nextAccess()
++		c.quotas[key] = entry
++		if markDirty {
++			c.quotaDirty[key] = struct{}{}
++			delete(c.quotaInFlight, key)
++		}
++	}
++	c.quotaMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.IncrUserPlatformQuotaUsageCache(ctx, userID, platform, cost, ttl, markDirty)
++}
++
++func (c *localBillingCache) PopDirtyUserPlatformQuotaKeys(ctx context.Context, n int) ([]service.UserPlatformQuotaKey, error) {
++	if n <= 0 {
++		return nil, nil
++	}
++	keys := make([]service.UserPlatformQuotaKey, 0, n)
++	seen := make(map[localQuotaKey]struct{}, n)
++	c.quotaMu.Lock()
++	for key := range c.quotaDirty {
++		delete(c.quotaDirty, key)
++		c.quotaInFlight[key] = struct{}{}
++		seen[key] = struct{}{}
++		keys = append(keys, service.UserPlatformQuotaKey{UserID: key.userID, Platform: key.platform})
++		if len(keys) >= n {
++			break
++		}
++	}
++	c.quotaMu.Unlock()
++	if len(keys) >= n || c.next == nil || !c.writeThrough {
++		return keys, nil
++	}
++	more, err := c.next.PopDirtyUserPlatformQuotaKeys(ctx, n-len(keys))
++	if err != nil {
++		if len(keys) > 0 {
++			_ = c.ReaddDirtyUserPlatformQuotaKeys(context.Background(), keys)
++		}
++		return nil, err
++	}
++	for _, key := range more {
++		localKey := localQuotaKey{userID: key.UserID, platform: key.Platform}
++		if _, ok := seen[localKey]; ok {
++			continue
++		}
++		seen[localKey] = struct{}{}
++		keys = append(keys, key)
++	}
++	return keys, nil
++}
++
++func (c *localBillingCache) ReaddDirtyUserPlatformQuotaKeys(ctx context.Context, keys []service.UserPlatformQuotaKey) error {
++	if len(keys) == 0 {
++		return nil
++	}
++	c.quotaMu.Lock()
++	for _, key := range keys {
++		localKey := localQuotaKey{userID: key.UserID, platform: key.Platform}
++		c.quotaDirty[localKey] = struct{}{}
++		delete(c.quotaInFlight, localKey)
++	}
++	c.quotaMu.Unlock()
++	if c.next == nil || !c.writeThrough {
++		return nil
++	}
++	return c.next.ReaddDirtyUserPlatformQuotaKeys(ctx, keys)
++}
++
++// AcknowledgeUserPlatformQuotaFlush releases local in-flight protection after
++// the flusher has reached a terminal outcome for the popped snapshot.
++func (c *localBillingCache) AcknowledgeUserPlatformQuotaFlush(keys []service.UserPlatformQuotaKey) {
++	if c == nil || len(keys) == 0 {
++		return
++	}
++	c.quotaMu.Lock()
++	for _, key := range keys {
++		delete(c.quotaInFlight, localQuotaKey{userID: key.UserID, platform: key.Platform})
++	}
++	c.evictQuotasLocked(c.clock())
++	c.quotaMu.Unlock()
++}
++
++func (c *localBillingCache) BatchGetUserPlatformQuotaCache(ctx context.Context, keys []service.UserPlatformQuotaKey) ([]*service.UserPlatformQuotaCacheEntry, error) {
++	if len(keys) == 0 {
++		return nil, nil
++	}
++	results := make([]*service.UserPlatformQuotaCacheEntry, len(keys))
++	missIndex := make([]int, 0)
++	missKeys := make([]service.UserPlatformQuotaKey, 0)
++	now := c.clock()
++
++	c.quotaMu.Lock()
++	for i, key := range keys {
++		localKey := localQuotaKey{userID: key.UserID, platform: key.Platform}
++		entry, ok := c.quotas[localKey]
++		if ok && (entry.expires.After(now) || c.quotaProtectedLocked(localKey)) {
++			entry.accessed = c.nextAccess()
++			c.quotas[localKey] = entry
++			results[i] = cloneUserPlatformQuotaCacheEntry(entry.value)
++			continue
++		}
++		if ok {
++			delete(c.quotas, localKey)
++		}
++		missIndex = append(missIndex, i)
++		missKeys = append(missKeys, key)
++	}
++	c.quotaMu.Unlock()
++
++	if len(missKeys) == 0 || c.next == nil || !c.writeThrough {
++		return results, nil
++	}
++	missResults, err := c.next.BatchGetUserPlatformQuotaCache(ctx, missKeys)
++	if err != nil {
++		return nil, err
++	}
++	for i, entry := range missResults {
++		if i >= len(missIndex) {
++			break
++		}
++		if entry == nil {
++			continue
++		}
++		target := missIndex[i]
++		key := localQuotaKey{userID: keys[target].UserID, platform: keys[target].Platform}
++		c.setQuotaLocal(key, entry, billingCacheTTL)
++		results[target] = cloneUserPlatformQuotaCacheEntry(entry)
++	}
++	return results, nil
++}
++
++func cloneSubscriptionCacheData(in *service.SubscriptionCacheData) *service.SubscriptionCacheData {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	return &out
++}
++
++func cloneRateLimitCacheData(in *service.APIKeyRateLimitCacheData) *service.APIKeyRateLimitCacheData {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	return &out
++}
++
++func cloneUserPlatformQuotaCacheEntry(in *service.UserPlatformQuotaCacheEntry) *service.UserPlatformQuotaCacheEntry {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	out.DailyLimitUSD = cloneFloat64Ptr(in.DailyLimitUSD)
++	out.WeeklyLimitUSD = cloneFloat64Ptr(in.WeeklyLimitUSD)
++	out.MonthlyLimitUSD = cloneFloat64Ptr(in.MonthlyLimitUSD)
++	out.DailyWindowStart = cloneTimePtr(in.DailyWindowStart)
++	out.WeeklyWindowStart = cloneTimePtr(in.WeeklyWindowStart)
++	out.MonthlyWindowStart = cloneTimePtr(in.MonthlyWindowStart)
++	return &out
++}
++
++func cloneFloat64Ptr(in *float64) *float64 {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	return &out
++}
++
++func cloneTimePtr(in *time.Time) *time.Time {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	return &out
++}
+diff --git a/backend/internal/hotpath/concurrency_cache.go b/backend/internal/hotpath/concurrency_cache.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..78ee85ec53a7800fc5a681016d85fc305c07ce81
+--- /dev/null
++++ b/backend/internal/hotpath/concurrency_cache.go
+@@ -0,0 +1,368 @@
++package hotpath
++
++import (
++	"context"
++	"sync"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++)
++
++type localConcurrencyCache struct {
++	mu                  sync.Mutex
++	slotTTL             time.Duration
++	waitQueueTTL        time.Duration
++	lastFullCleanup     time.Time
++	accountSlots        map[int64]map[string]time.Time
++	userSlots           map[int64]map[string]time.Time
++	accountWaitCounters map[int64]localWaitCounter
++	userWaitCounters    map[int64]localWaitCounter
++}
++
++type localWaitCounter struct {
++	count     int
++	expiresAt time.Time
++}
++
++const (
++	defaultSlotTTLMinutes               = 15
++	localConcurrencyFullCleanupInterval = time.Minute
++)
++
++// NewLocalConcurrencyCache creates a process-local concurrency and wait L1.
++func NewLocalConcurrencyCache(slotTTLMinutes int, waitQueueTTLSeconds int) service.ConcurrencyCache {
++	if slotTTLMinutes <= 0 {
++		slotTTLMinutes = defaultSlotTTLMinutes
++	}
++	if waitQueueTTLSeconds <= 0 {
++		waitQueueTTLSeconds = slotTTLMinutes * 60
++	}
++	return &localConcurrencyCache{
++		slotTTL:             time.Duration(slotTTLMinutes) * time.Minute,
++		waitQueueTTL:        time.Duration(waitQueueTTLSeconds) * time.Second,
++		accountSlots:        make(map[int64]map[string]time.Time),
++		userSlots:           make(map[int64]map[string]time.Time),
++		accountWaitCounters: make(map[int64]localWaitCounter),
++		userWaitCounters:    make(map[int64]localWaitCounter),
++	}
++}
++
++func (c *localConcurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
++	if err := ctx.Err(); err != nil {
++		return false, err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.acquireSlot(c.accountSlots, accountID, maxConcurrency, requestID, time.Now()), nil
++}
++
++func (c *localConcurrencyCache) ReleaseAccountSlot(ctx context.Context, accountID int64, requestID string) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.releaseSlot(c.accountSlots, accountID, requestID)
++	return nil
++}
++
++func (c *localConcurrencyCache) GetAccountConcurrency(ctx context.Context, accountID int64) (int, error) {
++	if err := ctx.Err(); err != nil {
++		return 0, err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.slotCount(c.accountSlots, accountID, time.Now()), nil
++}
++
++func (c *localConcurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error) {
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
++	now := time.Now()
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	result := make(map[int64]int, len(accountIDs))
++	for _, accountID := range accountIDs {
++		result[accountID] = c.slotCount(c.accountSlots, accountID, now)
++	}
++	return result, nil
++}
++
++func (c *localConcurrencyCache) IncrementAccountWaitCount(ctx context.Context, accountID int64, maxWait int) (bool, error) {
++	if err := ctx.Err(); err != nil {
++		return false, err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.incrementWaitCounter(c.accountWaitCounters, accountID, maxWait, time.Now()), nil
++}
++
++func (c *localConcurrencyCache) DecrementAccountWaitCount(ctx context.Context, accountID int64) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.decrementWaitCounter(c.accountWaitCounters, accountID, time.Now())
++	return nil
++}
++
++func (c *localConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
++	if err := ctx.Err(); err != nil {
++		return 0, err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.waitCount(c.accountWaitCounters, accountID, time.Now()), nil
++}
++
++func (c *localConcurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
++	if err := ctx.Err(); err != nil {
++		return false, err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.acquireSlot(c.userSlots, userID, maxConcurrency, requestID, time.Now()), nil
++}
++
++func (c *localConcurrencyCache) ReleaseUserSlot(ctx context.Context, userID int64, requestID string) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.releaseSlot(c.userSlots, userID, requestID)
++	return nil
++}
++
++func (c *localConcurrencyCache) GetUserConcurrency(ctx context.Context, userID int64) (int, error) {
++	if err := ctx.Err(); err != nil {
++		return 0, err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.slotCount(c.userSlots, userID, time.Now()), nil
++}
++
++func (c *localConcurrencyCache) IncrementWaitCount(ctx context.Context, userID int64, maxWait int) (bool, error) {
++	if err := ctx.Err(); err != nil {
++		return false, err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.incrementWaitCounter(c.userWaitCounters, userID, maxWait, time.Now()), nil
++}
++
++func (c *localConcurrencyCache) DecrementWaitCount(ctx context.Context, userID int64) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.decrementWaitCounter(c.userWaitCounters, userID, time.Now())
++	return nil
++}
++
++func (c *localConcurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts []service.AccountWithConcurrency) (map[int64]*service.AccountLoadInfo, error) {
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
++	now := time.Now()
++	c.mu.Lock()
++	defer c.mu.Unlock()
++
++	loadMap := make(map[int64]*service.AccountLoadInfo, len(accounts))
++	for _, account := range accounts {
++		currentConcurrency := c.slotCount(c.accountSlots, account.ID, now)
++		waitingCount := c.waitCount(c.accountWaitCounters, account.ID, now)
++		loadRate := 0
++		if account.MaxConcurrency > 0 {
++			loadRate = (currentConcurrency + waitingCount) * 100 / account.MaxConcurrency
++		}
++		loadMap[account.ID] = &service.AccountLoadInfo{
++			AccountID:          account.ID,
++			CurrentConcurrency: currentConcurrency,
++			WaitingCount:       waitingCount,
++			LoadRate:           loadRate,
++		}
++	}
++	return loadMap, nil
++}
++
++func (c *localConcurrencyCache) GetUsersLoadBatch(ctx context.Context, users []service.UserWithConcurrency) (map[int64]*service.UserLoadInfo, error) {
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
++	now := time.Now()
++	c.mu.Lock()
++	defer c.mu.Unlock()
++
++	loadMap := make(map[int64]*service.UserLoadInfo, len(users))
++	for _, user := range users {
++		currentConcurrency := c.slotCount(c.userSlots, user.ID, now)
++		waitingCount := c.waitCount(c.userWaitCounters, user.ID, now)
++		loadRate := 0
++		if user.MaxConcurrency > 0 {
++			loadRate = (currentConcurrency + waitingCount) * 100 / user.MaxConcurrency
++		}
++		loadMap[user.ID] = &service.UserLoadInfo{
++			UserID:             user.ID,
++			CurrentConcurrency: currentConcurrency,
++			WaitingCount:       waitingCount,
++			LoadRate:           loadRate,
++		}
++	}
++	return loadMap, nil
++}
++
++func (c *localConcurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, accountID int64) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.cleanupSlots(c.accountSlots, accountID, time.Now())
++	return nil
++}
++
++func (c *localConcurrencyCache) CleanupExpiredAccountSlotKeys(ctx context.Context) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.cleanupSlotOwners(c.accountSlots, time.Now())
++	return nil
++}
++
++func (c *localConcurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.cleanupAllExpired(time.Now())
++	return nil
++}
++
++func (c *localConcurrencyCache) acquireSlot(slotsByOwner map[int64]map[string]time.Time, ownerID int64, maxConcurrency int, requestID string, now time.Time) bool {
++	if maxConcurrency <= 0 {
++		return false
++	}
++	c.maybeCleanupAllExpired(now)
++	c.cleanupSlots(slotsByOwner, ownerID, now)
++	slots := slotsByOwner[ownerID]
++	if slots == nil {
++		slots = make(map[string]time.Time)
++		slotsByOwner[ownerID] = slots
++	}
++	expiresAt := now.Add(c.slotTTL)
++	if _, exists := slots[requestID]; exists {
++		slots[requestID] = expiresAt
++		return true
++	}
++	if len(slots) >= maxConcurrency {
++		return false
++	}
++	slots[requestID] = expiresAt
++	return true
++}
++
++func (c *localConcurrencyCache) releaseSlot(slotsByOwner map[int64]map[string]time.Time, ownerID int64, requestID string) {
++	slots := slotsByOwner[ownerID]
++	if slots == nil {
++		return
++	}
++	delete(slots, requestID)
++	if len(slots) == 0 {
++		delete(slotsByOwner, ownerID)
++	}
++}
++
++func (c *localConcurrencyCache) slotCount(slotsByOwner map[int64]map[string]time.Time, ownerID int64, now time.Time) int {
++	c.maybeCleanupAllExpired(now)
++	c.cleanupSlots(slotsByOwner, ownerID, now)
++	return len(slotsByOwner[ownerID])
++}
++
++func (c *localConcurrencyCache) cleanupSlots(slotsByOwner map[int64]map[string]time.Time, ownerID int64, now time.Time) {
++	slots := slotsByOwner[ownerID]
++	for requestID, expiresAt := range slots {
++		if !expiresAt.After(now) {
++			delete(slots, requestID)
++		}
++	}
++	if len(slots) == 0 {
++		delete(slotsByOwner, ownerID)
++	}
++}
++
++func (c *localConcurrencyCache) incrementWaitCounter(counters map[int64]localWaitCounter, ownerID int64, maxWait int, now time.Time) bool {
++	if maxWait <= 0 {
++		return false
++	}
++	c.maybeCleanupAllExpired(now)
++	counter := c.liveWaitCounter(counters, ownerID, now)
++	if counter.count >= maxWait {
++		return false
++	}
++	counter.count++
++	counter.expiresAt = now.Add(c.waitQueueTTL)
++	counters[ownerID] = counter
++	return true
++}
++
++func (c *localConcurrencyCache) decrementWaitCounter(counters map[int64]localWaitCounter, ownerID int64, now time.Time) {
++	counter := c.liveWaitCounter(counters, ownerID, now)
++	if counter.count <= 1 {
++		delete(counters, ownerID)
++		return
++	}
++	counter.count--
++	counters[ownerID] = counter
++}
++
++func (c *localConcurrencyCache) waitCount(counters map[int64]localWaitCounter, ownerID int64, now time.Time) int {
++	c.maybeCleanupAllExpired(now)
++	counter := c.liveWaitCounter(counters, ownerID, now)
++	return counter.count
++}
++
++func (c *localConcurrencyCache) liveWaitCounter(counters map[int64]localWaitCounter, ownerID int64, now time.Time) localWaitCounter {
++	counter := counters[ownerID]
++	if counter.count <= 0 || !counter.expiresAt.After(now) {
++		delete(counters, ownerID)
++		return localWaitCounter{}
++	}
++	return counter
++}
++
++func (c *localConcurrencyCache) maybeCleanupAllExpired(now time.Time) {
++	if !c.lastFullCleanup.IsZero() && now.Sub(c.lastFullCleanup) < localConcurrencyFullCleanupInterval {
++		return
++	}
++	c.lastFullCleanup = now
++	c.cleanupAllExpired(now)
++}
++
++func (c *localConcurrencyCache) cleanupAllExpired(now time.Time) {
++	c.cleanupSlotOwners(c.accountSlots, now)
++	c.cleanupSlotOwners(c.userSlots, now)
++	c.cleanupWaitCounters(c.accountWaitCounters, now)
++	c.cleanupWaitCounters(c.userWaitCounters, now)
++}
++
++func (c *localConcurrencyCache) cleanupSlotOwners(slotsByOwner map[int64]map[string]time.Time, now time.Time) {
++	for ownerID := range slotsByOwner {
++		c.cleanupSlots(slotsByOwner, ownerID, now)
++	}
++}
++
++func (c *localConcurrencyCache) cleanupWaitCounters(counters map[int64]localWaitCounter, now time.Time) {
++	for ownerID, counter := range counters {
++		if counter.count <= 0 || !counter.expiresAt.After(now) {
++			delete(counters, ownerID)
++		}
++	}
++}
+diff --git a/backend/internal/hotpath/doc.go b/backend/internal/hotpath/doc.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..5539f1b7d55ff76d0970a34c093c9f8c21323cd3
+--- /dev/null
++++ b/backend/internal/hotpath/doc.go
+@@ -0,0 +1,8 @@
++// Package hotpath owns process-local mutable state used by the request data
++// plane. Implementations in this package serve L1 before delegating misses or
++// configured write-through operations to service interfaces supplied by the
++// application composition root.
++//
++// Administrative writes remain authoritative outside this package and must
++// explicitly invalidate or refresh their corresponding L1 state.
++package hotpath
+diff --git a/backend/internal/repository/account_repo.go b/backend/internal/repository/account_repo.go
+index c3c2f6708aef7a0bb3f6b169b42c6cb572607ef6..05383889ca9834b974d042e163953d57c4d0a37d 100644
+--- a/backend/internal/repository/account_repo.go
++++ b/backend/internal/repository/account_repo.go
+@@ -795,14 +795,6 @@ func (r *accountRepository) UpdateLastUsed(ctx context.Context, id int64) error
+ 	if err != nil {
+ 		return err
+ 	}
+-	payload := map[string]any{
+-		"last_used": map[string]int64{
+-			strconv.FormatInt(id, 10): now.Unix(),
+-		},
+-	}
+-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountLastUsed, &id, nil, payload); err != nil {
+-		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue last used failed: account=%d err=%v", id, err)
+-	}
+ 	return nil
+ }
+ 
+@@ -830,14 +822,6 @@ func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map
+ 	if err != nil {
+ 		return err
+ 	}
+-	lastUsedPayload := make(map[string]int64, len(updates))
+-	for id, ts := range updates {
+-		lastUsedPayload[strconv.FormatInt(id, 10)] = ts.Unix()
+-	}
+-	payload := map[string]any{"last_used": lastUsedPayload}
+-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountLastUsed, nil, nil, payload); err != nil {
+-		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue batch last used failed: err=%v", err)
+-	}
+ 	return nil
+ }
+ 
+diff --git a/backend/internal/repository/billing_cache.go b/backend/internal/repository/billing_cache.go
+index af8ec49c08e1f14c85a9e1fe2f9c3a652a5b86f5..8339ff5f1e70068d790edddd228fd41ba9db45e4 100644
+--- a/backend/internal/repository/billing_cache.go
++++ b/backend/internal/repository/billing_cache.go
+@@ -10,6 +10,7 @@ import (
+ 	"strings"
+ 	"time"
+ 
++	"github.com/Wei-Shaw/sub2api/internal/config"
+ 	"github.com/Wei-Shaw/sub2api/internal/service"
+ 	"github.com/redis/go-redis/v9"
+ )
+@@ -144,6 +145,14 @@ func NewBillingCache(rdb *redis.Client) service.BillingCache {
+ 	return &billingCache{rdb: rdb}
+ }
+ 
++func ProvideBillingCache(rdb *redis.Client, cfg *config.Config) service.BillingCache {
++	base := NewBillingCache(rdb)
++	if cfg == nil || !cfg.Gateway.HotPath.LocalBillingCache {
++		return base
++	}
++	return newLocalBillingCacheWithOptions(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries, cfg.Gateway.HotPath.LocalBillingCacheWriteThrough)
++}
++
+ func (c *billingCache) GetUserBalance(ctx context.Context, userID int64) (float64, error) {
+ 	key := billingBalanceKey(userID)
+ 	val, err := c.rdb.Get(ctx, key).Result()
+diff --git a/backend/internal/repository/local_billing_cache.go b/backend/internal/repository/local_billing_cache.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..44cbb16cd158371952334c28996ec32642a37202
+--- /dev/null
++++ b/backend/internal/repository/local_billing_cache.go
+@@ -0,0 +1,10 @@
++package repository
++
++import (
++	"github.com/Wei-Shaw/sub2api/internal/hotpath"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++)
++
++func newLocalBillingCacheWithOptions(next service.BillingCache, maxEntries int, writeThrough bool) service.BillingCache {
++	return hotpath.NewLocalBillingCacheWithOptions(next, maxEntries, writeThrough)
++}
+diff --git a/backend/internal/repository/local_concurrency_cache.go b/backend/internal/repository/local_concurrency_cache.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..327edb20d5d5fbe796e6205ca20c03e525860b12
+--- /dev/null
++++ b/backend/internal/repository/local_concurrency_cache.go
+@@ -0,0 +1,10 @@
++package repository
++
++import (
++	"github.com/Wei-Shaw/sub2api/internal/hotpath"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++)
++
++func NewLocalConcurrencyCache(slotTTLMinutes int, waitQueueTTLSeconds int) service.ConcurrencyCache {
++	return hotpath.NewLocalConcurrencyCache(slotTTLMinutes, waitQueueTTLSeconds)
++}
+diff --git a/backend/internal/repository/scheduler_cache.go b/backend/internal/repository/scheduler_cache.go
+index c8e1fe14e0a5027141941deaac4ec99cecec0bca..d94c2840c5b4c2243d94cbe1f205219088f48cb0 100644
+--- a/backend/internal/repository/scheduler_cache.go
++++ b/backend/internal/repository/scheduler_cache.go
+@@ -236,45 +236,7 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
+ }
+ 
+ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
+-	if len(updates) == 0 {
+-		return nil
+-	}
+-
+-	keys := make([]string, 0, len(updates))
+-	ids := make([]int64, 0, len(updates))
+-	for id := range updates {
+-		keys = append(keys, schedulerAccountKey(strconv.FormatInt(id, 10)))
+-		ids = append(ids, id)
+-	}
+-
+-	values, err := c.mgetChunked(ctx, keys)
+-	if err != nil {
+-		return err
+-	}
+-
+-	pipe := c.rdb.Pipeline()
+-	for i, val := range values {
+-		if val == nil {
+-			continue
+-		}
+-		account, err := decodeCachedAccount(val)
+-		if err != nil {
+-			return err
+-		}
+-		account.LastUsedAt = ptrTime(updates[ids[i]])
+-		updated, err := json.Marshal(account)
+-		if err != nil {
+-			return err
+-		}
+-		metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(*account))
+-		if err != nil {
+-			return err
+-		}
+-		pipe.Set(ctx, keys[i], updated, 0)
+-		pipe.Set(ctx, schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)), metaPayload, 0)
+-	}
+-	_, err = pipe.Exec(ctx)
+-	return err
++	return nil
+ }
+ 
+ func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
+@@ -338,10 +300,6 @@ func schedulerAccountMetaKey(id string) string {
+ 	return schedulerAccountMetaPrefix + id
+ }
+ 
+-func ptrTime(t time.Time) *time.Time {
+-	return &t
+-}
+-
+ func decodeCachedAccount(val any) (*service.Account, error) {
+ 	var payload []byte
+ 	switch raw := val.(type) {
+@@ -379,6 +337,9 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
+ 	}
+ 
+ 	for _, account := range accounts {
++		// last_used is intentionally ephemeral in this fork. Scrub it at the
++		// only account write boundary so startup/full rebuilds cannot restore it.
++		account.LastUsedAt = nil
+ 		fullPayload, err := json.Marshal(account)
+ 		if err != nil {
+ 			return err
+diff --git a/backend/internal/repository/usage_log_pending_repo.go b/backend/internal/repository/usage_log_pending_repo.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a3e3052120e0883c60b66a9b3d9c0c3de22edd2f
+--- /dev/null
++++ b/backend/internal/repository/usage_log_pending_repo.go
+@@ -0,0 +1,701 @@
++package repository
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"os"
++	"strconv"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/redis/go-redis/v9"
++)
++
++const (
++	defaultUsageLogPendingFlushInterval = 30 * time.Second
++	usageLogPendingRedisTimeout         = 250 * time.Millisecond
++	usageLogPendingL2TTL                = 24 * time.Hour
++	usageLogPendingMaxDrain             = 4096
++)
++
++type usageLogPendingRepository struct {
++	next     service.UsageLogRepository
++	rdb      *redis.Client
++	l2Key    string
++	interval time.Duration
++
++	mu      sync.Mutex
++	pending []*service.UsageLog
++
++	stopCh  chan struct{}
++	started atomic.Bool
++	stopped atomic.Bool
++	wg      sync.WaitGroup
++
++	enqueuedTotal       atomic.Uint64
++	flushedTotal        atomic.Uint64
++	flushErrorTotal     atomic.Uint64
++	l2PendingEntries    atomic.Int64
++	l2MirrorErrorTotal  atomic.Uint64
++	l2TrimErrorTotal    atomic.Uint64
++	droppedAfterStopped atomic.Uint64
++}
++
++type usageLogPendingRecord struct {
++	UserID                int64               `json:"user_id"`
++	APIKeyID              int64               `json:"api_key_id"`
++	AccountID             int64               `json:"account_id"`
++	RequestID             string              `json:"request_id,omitempty"`
++	Model                 string              `json:"model,omitempty"`
++	RequestedModel        string              `json:"requested_model,omitempty"`
++	UpstreamModel         *string             `json:"upstream_model,omitempty"`
++	ChannelID             *int64              `json:"channel_id,omitempty"`
++	ModelMappingChain     *string             `json:"model_mapping_chain,omitempty"`
++	BillingTier           *string             `json:"billing_tier,omitempty"`
++	BillingMode           *string             `json:"billing_mode,omitempty"`
++	ServiceTier           *string             `json:"service_tier,omitempty"`
++	ReasoningEffort       *string             `json:"reasoning_effort,omitempty"`
++	InboundEndpoint       *string             `json:"inbound_endpoint,omitempty"`
++	UpstreamEndpoint      *string             `json:"upstream_endpoint,omitempty"`
++	GroupID               *int64              `json:"group_id,omitempty"`
++	SubscriptionID        *int64              `json:"subscription_id,omitempty"`
++	InputTokens           int                 `json:"input_tokens"`
++	OutputTokens          int                 `json:"output_tokens"`
++	CacheCreationTokens   int                 `json:"cache_creation_tokens"`
++	CacheReadTokens       int                 `json:"cache_read_tokens"`
++	CacheCreation5mTokens int                 `json:"cache_creation_5m_tokens"`
++	CacheCreation1hTokens int                 `json:"cache_creation_1h_tokens"`
++	ImageOutputTokens     int                 `json:"image_output_tokens"`
++	ImageOutputCost       float64             `json:"image_output_cost,omitempty"`
++	InputCost             float64             `json:"input_cost,omitempty"`
++	OutputCost            float64             `json:"output_cost,omitempty"`
++	CacheCreationCost     float64             `json:"cache_creation_cost,omitempty"`
++	CacheReadCost         float64             `json:"cache_read_cost,omitempty"`
++	TotalCost             float64             `json:"total_cost,omitempty"`
++	ActualCost            float64             `json:"actual_cost,omitempty"`
++	RateMultiplier        float64             `json:"rate_multiplier,omitempty"`
++	AccountRateMultiplier *float64            `json:"account_rate_multiplier,omitempty"`
++	AccountStatsCost      *float64            `json:"account_stats_cost,omitempty"`
++	BillingType           int8                `json:"billing_type"`
++	RequestType           service.RequestType `json:"request_type"`
++	Stream                bool                `json:"stream"`
++	OpenAIWSMode          bool                `json:"openai_ws_mode"`
++	DurationMs            *int                `json:"duration_ms,omitempty"`
++	FirstTokenMs          *int                `json:"first_token_ms,omitempty"`
++	UserAgent             *string             `json:"user_agent,omitempty"`
++	IPAddress             *string             `json:"ip_address,omitempty"`
++	CacheTTLOverridden    bool                `json:"cache_ttl_overridden"`
++	ImageCount            int                 `json:"image_count"`
++	ImageSize             *string             `json:"image_size,omitempty"`
++	ImageInputSize        *string             `json:"image_input_size,omitempty"`
++	ImageOutputSize       *string             `json:"image_output_size,omitempty"`
++	ImageSizeSource       *string             `json:"image_size_source,omitempty"`
++	ImageSizeBreakdown    map[string]int      `json:"image_size_breakdown,omitempty"`
++	MediaType             *string             `json:"media_type,omitempty"`
++	CreatedAtUnixNano     int64               `json:"created_at_unix_nano"`
++}
++
++func NewUsageLogRepositoryWithPending(base service.UsageLogRepository, rdb *redis.Client, cfg *config.Config) service.UsageLogRepository {
++	if base == nil {
++		return nil
++	}
++	interval := defaultUsageLogPendingFlushInterval
++	if cfg != nil && cfg.Gateway.HotPath.UsageBillingFlushIntervalMs > 0 {
++		interval = time.Duration(cfg.Gateway.HotPath.UsageBillingFlushIntervalMs) * time.Millisecond
++	}
++	repo := &usageLogPendingRepository{
++		next:     base,
++		rdb:      rdb,
++		l2Key:    usageLogPendingInstanceKey(),
++		interval: interval,
++		stopCh:   make(chan struct{}),
++		pending:  make([]*service.UsageLog, 0),
++	}
++	repo.Start()
++	return repo
++}
++
++func (r *usageLogPendingRepository) Start() {
++	if r == nil || !r.started.CompareAndSwap(false, true) {
++		return
++	}
++	r.wg.Add(1)
++	go func() {
++		defer r.wg.Done()
++		ticker := time.NewTicker(r.interval)
++		defer ticker.Stop()
++		for {
++			select {
++			case <-ticker.C:
++				r.Flush(context.Background())
++			case <-r.stopCh:
++				return
++			}
++		}
++	}()
++	logger.LegacyPrintf("repository.usage_log_pending", "[UsageLogPending] started interval=%s", r.interval)
++}
++
++func (r *usageLogPendingRepository) Stop() {
++	if r == nil {
++		return
++	}
++	if r.stopped.CompareAndSwap(false, true) {
++		close(r.stopCh)
++	}
++	r.wg.Wait()
++	r.Flush(context.Background())
++}
++
++func (r *usageLogPendingRepository) Stats() service.UsageLogPendingStats {
++	if r == nil {
++		return service.UsageLogPendingStats{}
++	}
++	r.mu.Lock()
++	pending := len(r.pending)
++	r.mu.Unlock()
++	return service.UsageLogPendingStats{
++		PendingL1Entries:    pending,
++		PendingL2Entries:    r.l2PendingEntries.Load(),
++		EnqueuedTotal:       r.enqueuedTotal.Load(),
++		FlushedTotal:        r.flushedTotal.Load(),
++		FlushErrorTotal:     r.flushErrorTotal.Load(),
++		L2MirrorErrorTotal:  r.l2MirrorErrorTotal.Load(),
++		L2TrimErrorTotal:    r.l2TrimErrorTotal.Load(),
++		DroppedAfterStopped: r.droppedAfterStopped.Load(),
++	}
++}
++
++func (r *usageLogPendingRepository) Create(ctx context.Context, log *service.UsageLog) (bool, error) {
++	return r.next.Create(ctx, log)
++}
++
++func (r *usageLogPendingRepository) CreateBestEffort(ctx context.Context, log *service.UsageLog) error {
++	if log == nil {
++		return nil
++	}
++	if r.stopped.Load() {
++		r.droppedAfterStopped.Add(1)
++		if writer, ok := r.next.(interface {
++			CreateBestEffort(context.Context, *service.UsageLog) error
++		}); ok {
++			return writer.CreateBestEffort(ctx, log)
++		}
++		_, err := r.next.Create(ctx, log)
++		return err
++	}
++	cloned := cloneUsageLog(log)
++	r.mu.Lock()
++	r.pending = append(r.pending, cloned)
++	r.mu.Unlock()
++	r.enqueuedTotal.Add(1)
++	if err := r.mirrorPendingToL2(ctx, cloned); err != nil {
++		r.l2MirrorErrorTotal.Add(1)
++		logger.LegacyPrintf("repository.usage_log_pending", "[UsageLogPending] L2 mirror failed, continuing L1-only: %v", err)
++	}
++	return nil
++}
++
++func (r *usageLogPendingRepository) Flush(ctx context.Context) {
++	if r == nil {
++		return
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	for {
++		batch := r.takeBatch(usageLogPendingMaxDrain)
++		if len(batch) == 0 {
++			return
++		}
++		if err := r.flushBatch(ctx, batch); err != nil {
++			r.requeue(batch)
++			r.flushErrorTotal.Add(1)
++			logger.LegacyPrintf("repository.usage_log_pending", "[UsageLogPending] ALERT flush failed: %v", err)
++			return
++		}
++		r.flushedTotal.Add(uint64(len(batch)))
++		if err := r.trimPendingL2(ctx, int64(len(batch))); err != nil {
++			r.l2TrimErrorTotal.Add(1)
++			logger.LegacyPrintf("repository.usage_log_pending", "[UsageLogPending] L2 trim failed after DB flush: %v", err)
++		}
++		if len(batch) < usageLogPendingMaxDrain {
++			return
++		}
++	}
++}
++
++func (r *usageLogPendingRepository) takeBatch(limit int) []*service.UsageLog {
++	if limit <= 0 {
++		return nil
++	}
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if len(r.pending) == 0 {
++		return nil
++	}
++	if len(r.pending) <= limit {
++		batch := r.pending
++		r.pending = make([]*service.UsageLog, 0)
++		return batch
++	}
++	batch := append([]*service.UsageLog(nil), r.pending[:limit]...)
++	remaining := append([]*service.UsageLog(nil), r.pending[limit:]...)
++	r.pending = remaining
++	return batch
++}
++
++func (r *usageLogPendingRepository) requeue(batch []*service.UsageLog) {
++	if len(batch) == 0 {
++		return
++	}
++	r.mu.Lock()
++	r.pending = append(batch, r.pending...)
++	r.mu.Unlock()
++}
++
++func (r *usageLogPendingRepository) flushBatch(ctx context.Context, batch []*service.UsageLog) error {
++	if len(batch) == 0 {
++		return nil
++	}
++	writer, hasBestEffort := r.next.(interface {
++		CreateBestEffort(context.Context, *service.UsageLog) error
++	})
++	for _, log := range batch {
++		if log == nil {
++			continue
++		}
++		if hasBestEffort {
++			if err := writer.CreateBestEffort(ctx, log); err != nil {
++				return err
++			}
++			continue
++		}
++		if _, err := r.next.Create(ctx, log); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++func (r *usageLogPendingRepository) mirrorPendingToL2(ctx context.Context, log *service.UsageLog) error {
++	if r == nil || r.rdb == nil || log == nil {
++		return nil
++	}
++	payload, err := json.Marshal(usageLogToPendingRecord(log))
++	if err != nil {
++		return err
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	mirrorCtx, cancel := context.WithTimeout(ctx, usageLogPendingRedisTimeout)
++	defer cancel()
++	pipe := r.rdb.Pipeline()
++	pipe.RPush(mirrorCtx, r.l2Key, payload)
++	pipe.Expire(mirrorCtx, r.l2Key, usageLogPendingL2TTL)
++	if _, err := pipe.Exec(mirrorCtx); err != nil {
++		return err
++	}
++	r.l2PendingEntries.Add(1)
++	return nil
++}
++
++func (r *usageLogPendingRepository) trimPendingL2(ctx context.Context, n int64) error {
++	if r == nil || r.rdb == nil || n <= 0 {
++		return nil
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	trimCtx, cancel := context.WithTimeout(ctx, usageLogPendingRedisTimeout)
++	defer cancel()
++	if err := r.rdb.LTrim(trimCtx, r.l2Key, n, -1).Err(); err != nil && !errors.Is(err, redis.Nil) {
++		return err
++	}
++	for {
++		current := r.l2PendingEntries.Load()
++		next := current - n
++		if next < 0 {
++			next = 0
++		}
++		if r.l2PendingEntries.CompareAndSwap(current, next) {
++			return nil
++		}
++	}
++}
++
++func usageLogToPendingRecord(log *service.UsageLog) usageLogPendingRecord {
++	createdAt := log.CreatedAt
++	if createdAt.IsZero() {
++		createdAt = time.Now()
++	}
++	return usageLogPendingRecord{
++		UserID:                log.UserID,
++		APIKeyID:              log.APIKeyID,
++		AccountID:             log.AccountID,
++		RequestID:             log.RequestID,
++		Model:                 log.Model,
++		RequestedModel:        log.RequestedModel,
++		UpstreamModel:         cloneStringPtr(log.UpstreamModel),
++		ChannelID:             cloneInt64Ptr(log.ChannelID),
++		ModelMappingChain:     cloneStringPtr(log.ModelMappingChain),
++		BillingTier:           cloneStringPtr(log.BillingTier),
++		BillingMode:           cloneStringPtr(log.BillingMode),
++		ServiceTier:           cloneStringPtr(log.ServiceTier),
++		ReasoningEffort:       cloneStringPtr(log.ReasoningEffort),
++		InboundEndpoint:       cloneStringPtr(log.InboundEndpoint),
++		UpstreamEndpoint:      cloneStringPtr(log.UpstreamEndpoint),
++		GroupID:               cloneInt64Ptr(log.GroupID),
++		SubscriptionID:        cloneInt64Ptr(log.SubscriptionID),
++		InputTokens:           log.InputTokens,
++		OutputTokens:          log.OutputTokens,
++		CacheCreationTokens:   log.CacheCreationTokens,
++		CacheReadTokens:       log.CacheReadTokens,
++		CacheCreation5mTokens: log.CacheCreation5mTokens,
++		CacheCreation1hTokens: log.CacheCreation1hTokens,
++		ImageOutputTokens:     log.ImageOutputTokens,
++		ImageOutputCost:       log.ImageOutputCost,
++		InputCost:             log.InputCost,
++		OutputCost:            log.OutputCost,
++		CacheCreationCost:     log.CacheCreationCost,
++		CacheReadCost:         log.CacheReadCost,
++		TotalCost:             log.TotalCost,
++		ActualCost:            log.ActualCost,
++		RateMultiplier:        log.RateMultiplier,
++		AccountRateMultiplier: cloneFloat64Ptr(log.AccountRateMultiplier),
++		AccountStatsCost:      cloneFloat64Ptr(log.AccountStatsCost),
++		BillingType:           log.BillingType,
++		RequestType:           log.RequestType,
++		Stream:                log.Stream,
++		OpenAIWSMode:          log.OpenAIWSMode,
++		DurationMs:            cloneIntPtr(log.DurationMs),
++		FirstTokenMs:          cloneIntPtr(log.FirstTokenMs),
++		UserAgent:             cloneStringPtr(log.UserAgent),
++		IPAddress:             cloneStringPtr(log.IPAddress),
++		CacheTTLOverridden:    log.CacheTTLOverridden,
++		ImageCount:            log.ImageCount,
++		ImageSize:             cloneStringPtr(log.ImageSize),
++		ImageInputSize:        cloneStringPtr(log.ImageInputSize),
++		ImageOutputSize:       cloneStringPtr(log.ImageOutputSize),
++		ImageSizeSource:       cloneStringPtr(log.ImageSizeSource),
++		ImageSizeBreakdown:    cloneStringIntMap(log.ImageSizeBreakdown),
++		MediaType:             cloneStringPtr(log.MediaType),
++		CreatedAtUnixNano:     createdAt.UnixNano(),
++	}
++}
++
++func usageLogPendingInstanceKey() string {
++	host, _ := os.Hostname()
++	host = strings.TrimSpace(host)
++	if host == "" {
++		host = "unknown"
++	}
++	return "usage:pending:log:" + host + ":" + strconv.Itoa(os.Getpid())
++}
++
++func cloneUsageLog(in *service.UsageLog) *service.UsageLog {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	out.UpstreamModel = cloneStringPtr(in.UpstreamModel)
++	out.ChannelID = cloneInt64Ptr(in.ChannelID)
++	out.ModelMappingChain = cloneStringPtr(in.ModelMappingChain)
++	out.BillingTier = cloneStringPtr(in.BillingTier)
++	out.BillingMode = cloneStringPtr(in.BillingMode)
++	out.ServiceTier = cloneStringPtr(in.ServiceTier)
++	out.ReasoningEffort = cloneStringPtr(in.ReasoningEffort)
++	out.InboundEndpoint = cloneStringPtr(in.InboundEndpoint)
++	out.UpstreamEndpoint = cloneStringPtr(in.UpstreamEndpoint)
++	out.GroupID = cloneInt64Ptr(in.GroupID)
++	out.SubscriptionID = cloneInt64Ptr(in.SubscriptionID)
++	out.AccountRateMultiplier = cloneFloat64Ptr(in.AccountRateMultiplier)
++	out.AccountStatsCost = cloneFloat64Ptr(in.AccountStatsCost)
++	out.DurationMs = cloneIntPtr(in.DurationMs)
++	out.FirstTokenMs = cloneIntPtr(in.FirstTokenMs)
++	out.UserAgent = cloneStringPtr(in.UserAgent)
++	out.IPAddress = cloneStringPtr(in.IPAddress)
++	out.ImageSize = cloneStringPtr(in.ImageSize)
++	out.ImageInputSize = cloneStringPtr(in.ImageInputSize)
++	out.ImageOutputSize = cloneStringPtr(in.ImageOutputSize)
++	out.ImageSizeSource = cloneStringPtr(in.ImageSizeSource)
++	out.ImageSizeBreakdown = cloneStringIntMap(in.ImageSizeBreakdown)
++	out.MediaType = cloneStringPtr(in.MediaType)
++	out.User = nil
++	out.APIKey = nil
++	out.Account = nil
++	out.Group = nil
++	out.Subscription = nil
++	return &out
++}
++
++func cloneStringPtr(in *string) *string {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	return &out
++}
++
++func cloneIntPtr(in *int) *int {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	return &out
++}
++
++func cloneInt64Ptr(in *int64) *int64 {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	return &out
++}
++
++func cloneFloat64Ptr(in *float64) *float64 {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	return &out
++}
++
++func cloneStringIntMap(in map[string]int) map[string]int {
++	if len(in) == 0 {
++		return nil
++	}
++	out := make(map[string]int, len(in))
++	for k, v := range in {
++		out[k] = v
++	}
++	return out
++}
++
++func (r *usageLogPendingRepository) GetByID(ctx context.Context, id int64) (*service.UsageLog, error) {
++	return r.next.GetByID(ctx, id)
++}
++
++func (r *usageLogPendingRepository) Delete(ctx context.Context, id int64) error {
++	return r.next.Delete(ctx, id)
++}
++
++func (r *usageLogPendingRepository) ListByUser(ctx context.Context, userID int64, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
++	return r.next.ListByUser(ctx, userID, params)
++}
++
++func (r *usageLogPendingRepository) ListByAPIKey(ctx context.Context, apiKeyID int64, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
++	return r.next.ListByAPIKey(ctx, apiKeyID, params)
++}
++
++func (r *usageLogPendingRepository) ListByAccount(ctx context.Context, accountID int64, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
++	return r.next.ListByAccount(ctx, accountID, params)
++}
++
++func (r *usageLogPendingRepository) ListByUserAndTimeRange(ctx context.Context, userID int64, startTime, endTime time.Time) ([]service.UsageLog, *pagination.PaginationResult, error) {
++	return r.next.ListByUserAndTimeRange(ctx, userID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) ListByAPIKeyAndTimeRange(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) ([]service.UsageLog, *pagination.PaginationResult, error) {
++	return r.next.ListByAPIKeyAndTimeRange(ctx, apiKeyID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) ListByAccountAndTimeRange(ctx context.Context, accountID int64, startTime, endTime time.Time) ([]service.UsageLog, *pagination.PaginationResult, error) {
++	return r.next.ListByAccountAndTimeRange(ctx, accountID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) ListByModelAndTimeRange(ctx context.Context, modelName string, startTime, endTime time.Time) ([]service.UsageLog, *pagination.PaginationResult, error) {
++	return r.next.ListByModelAndTimeRange(ctx, modelName, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetAccountWindowStats(ctx context.Context, accountID int64, startTime time.Time) (*usagestats.AccountStats, error) {
++	return r.next.GetAccountWindowStats(ctx, accountID, startTime)
++}
++
++func (r *usageLogPendingRepository) GetAccountWindowStatsBatch(ctx context.Context, accountIDs []int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error) {
++	if batchReader, ok := r.next.(interface {
++		GetAccountWindowStatsBatch(context.Context, []int64, time.Time) (map[int64]*usagestats.AccountStats, error)
++	}); ok {
++		return batchReader.GetAccountWindowStatsBatch(ctx, accountIDs, startTime)
++	}
++	result := make(map[int64]*usagestats.AccountStats, len(accountIDs))
++	for _, accountID := range accountIDs {
++		stats, err := r.next.GetAccountWindowStats(ctx, accountID, startTime)
++		if err != nil {
++			return nil, err
++		}
++		result[accountID] = stats
++	}
++	return result, nil
++}
++
++func (r *usageLogPendingRepository) GetAccountTodayStats(ctx context.Context, accountID int64) (*usagestats.AccountStats, error) {
++	return r.next.GetAccountTodayStats(ctx, accountID)
++}
++
++func (r *usageLogPendingRepository) GetDashboardStats(ctx context.Context) (*usagestats.DashboardStats, error) {
++	return r.next.GetDashboardStats(ctx)
++}
++
++func (r *usageLogPendingRepository) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.TrendDataPoint, error) {
++	return r.next.GetUsageTrendWithFilters(ctx, startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
++}
++
++func (r *usageLogPendingRepository) GetUsageTrendWithUsageFilters(ctx context.Context, startTime, endTime time.Time, granularity string, filters usagestats.UsageLogFilters) ([]usagestats.TrendDataPoint, error) {
++	if filterRepo, ok := r.next.(interface {
++		GetUsageTrendWithUsageFilters(context.Context, time.Time, time.Time, string, usagestats.UsageLogFilters) ([]usagestats.TrendDataPoint, error)
++	}); ok {
++		return filterRepo.GetUsageTrendWithUsageFilters(ctx, startTime, endTime, granularity, filters)
++	}
++	return r.next.GetUsageTrendWithFilters(ctx, startTime, endTime, granularity, filters.UserID, filters.APIKeyID, filters.AccountID, filters.GroupID, filters.Model, filters.RequestType, filters.Stream, filters.BillingType)
++}
++
++func (r *usageLogPendingRepository) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) ([]usagestats.ModelStat, error) {
++	return r.next.GetModelStatsWithFilters(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
++}
++
++func (r *usageLogPendingRepository) GetModelStatsWithFiltersBySource(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8, source string) ([]usagestats.ModelStat, error) {
++	if sourceRepo, ok := r.next.(interface {
++		GetModelStatsWithFiltersBySource(context.Context, time.Time, time.Time, int64, int64, int64, int64, *int16, *bool, *int8, string) ([]usagestats.ModelStat, error)
++	}); ok {
++		return sourceRepo.GetModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType, source)
++	}
++	return r.next.GetModelStatsWithFilters(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
++}
++
++func (r *usageLogPendingRepository) GetModelStatsWithUsageFiltersBySource(ctx context.Context, startTime, endTime time.Time, filters usagestats.UsageLogFilters, source string) ([]usagestats.ModelStat, error) {
++	if filterRepo, ok := r.next.(interface {
++		GetModelStatsWithUsageFiltersBySource(context.Context, time.Time, time.Time, usagestats.UsageLogFilters, string) ([]usagestats.ModelStat, error)
++	}); ok {
++		return filterRepo.GetModelStatsWithUsageFiltersBySource(ctx, startTime, endTime, filters, source)
++	}
++	return r.GetModelStatsWithFiltersBySource(ctx, startTime, endTime, filters.UserID, filters.APIKeyID, filters.AccountID, filters.GroupID, filters.RequestType, filters.Stream, filters.BillingType, source)
++}
++
++func (r *usageLogPendingRepository) GetEndpointStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.EndpointStat, error) {
++	return r.next.GetEndpointStatsWithFilters(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
++}
++
++func (r *usageLogPendingRepository) GetUpstreamEndpointStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.EndpointStat, error) {
++	return r.next.GetUpstreamEndpointStatsWithFilters(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
++}
++
++func (r *usageLogPendingRepository) GetGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) ([]usagestats.GroupStat, error) {
++	return r.next.GetGroupStatsWithFilters(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
++}
++
++func (r *usageLogPendingRepository) GetGroupStatsWithUsageFilters(ctx context.Context, startTime, endTime time.Time, filters usagestats.UsageLogFilters) ([]usagestats.GroupStat, error) {
++	if filterRepo, ok := r.next.(interface {
++		GetGroupStatsWithUsageFilters(context.Context, time.Time, time.Time, usagestats.UsageLogFilters) ([]usagestats.GroupStat, error)
++	}); ok {
++		return filterRepo.GetGroupStatsWithUsageFilters(ctx, startTime, endTime, filters)
++	}
++	return r.next.GetGroupStatsWithFilters(ctx, startTime, endTime, filters.UserID, filters.APIKeyID, filters.AccountID, filters.GroupID, filters.RequestType, filters.Stream, filters.BillingType)
++}
++
++func (r *usageLogPendingRepository) GetUserBreakdownStats(ctx context.Context, startTime, endTime time.Time, dim usagestats.UserBreakdownDimension, limit int) ([]usagestats.UserBreakdownItem, error) {
++	return r.next.GetUserBreakdownStats(ctx, startTime, endTime, dim, limit)
++}
++
++func (r *usageLogPendingRepository) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
++	return r.next.GetAllGroupUsageSummary(ctx, todayStart)
++}
++
++func (r *usageLogPendingRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]usagestats.APIKeyUsageTrendPoint, error) {
++	return r.next.GetAPIKeyUsageTrend(ctx, startTime, endTime, granularity, limit)
++}
++
++func (r *usageLogPendingRepository) GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]usagestats.UserUsageTrendPoint, error) {
++	return r.next.GetUserUsageTrend(ctx, startTime, endTime, granularity, limit)
++}
++
++func (r *usageLogPendingRepository) GetUserSpendingRanking(ctx context.Context, startTime, endTime time.Time, limit int) (*usagestats.UserSpendingRankingResponse, error) {
++	return r.next.GetUserSpendingRanking(ctx, startTime, endTime, limit)
++}
++
++func (r *usageLogPendingRepository) GetBatchUserUsageStats(ctx context.Context, userIDs []int64, startTime, endTime time.Time) (map[int64]*usagestats.BatchUserUsageStats, error) {
++	return r.next.GetBatchUserUsageStats(ctx, userIDs, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKeyIDs []int64, startTime, endTime time.Time) (map[int64]*usagestats.BatchAPIKeyUsageStats, error) {
++	return r.next.GetBatchAPIKeyUsageStats(ctx, apiKeyIDs, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetUserDashboardStats(ctx context.Context, userID int64) (*usagestats.UserDashboardStats, error) {
++	return r.next.GetUserDashboardStats(ctx, userID)
++}
++
++func (r *usageLogPendingRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKeyID int64) (*usagestats.UserDashboardStats, error) {
++	return r.next.GetAPIKeyDashboardStats(ctx, apiKeyID)
++}
++
++func (r *usageLogPendingRepository) GetUserUsageTrendByUserID(ctx context.Context, userID int64, startTime, endTime time.Time, granularity string) ([]usagestats.TrendDataPoint, error) {
++	return r.next.GetUserUsageTrendByUserID(ctx, userID, startTime, endTime, granularity)
++}
++
++func (r *usageLogPendingRepository) GetUserModelStats(ctx context.Context, userID int64, startTime, endTime time.Time) ([]usagestats.ModelStat, error) {
++	return r.next.GetUserModelStats(ctx, userID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters usagestats.UsageLogFilters) ([]service.UsageLog, *pagination.PaginationResult, error) {
++	return r.next.ListWithFilters(ctx, params, filters)
++}
++
++func (r *usageLogPendingRepository) GetGlobalStats(ctx context.Context, startTime, endTime time.Time) (*usagestats.UsageStats, error) {
++	return r.next.GetGlobalStats(ctx, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetDashboardStatsWithRange(ctx context.Context, startTime, endTime time.Time) (*usagestats.DashboardStats, error) {
++	if fetcher, ok := r.next.(interface {
++		GetDashboardStatsWithRange(context.Context, time.Time, time.Time) (*usagestats.DashboardStats, error)
++	}); ok {
++		return fetcher.GetDashboardStatsWithRange(ctx, startTime, endTime)
++	}
++	return r.next.GetDashboardStats(ctx)
++}
++
++func (r *usageLogPendingRepository) GetStatsWithFilters(ctx context.Context, filters usagestats.UsageLogFilters) (*usagestats.UsageStats, error) {
++	return r.next.GetStatsWithFilters(ctx, filters)
++}
++
++func (r *usageLogPendingRepository) GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountUsageStatsResponse, error) {
++	return r.next.GetAccountUsageStats(ctx, accountID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetUserStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) (*usagestats.UsageStats, error) {
++	return r.next.GetUserStatsAggregated(ctx, userID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetAPIKeyStatsAggregated(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) (*usagestats.UsageStats, error) {
++	return r.next.GetAPIKeyStatsAggregated(ctx, apiKeyID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetAccountStatsAggregated(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.UsageStats, error) {
++	return r.next.GetAccountStatsAggregated(ctx, accountID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetModelStatsAggregated(ctx context.Context, modelName string, startTime, endTime time.Time) (*usagestats.UsageStats, error) {
++	return r.next.GetModelStatsAggregated(ctx, modelName, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetDailyStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) ([]map[string]any, error) {
++	return r.next.GetDailyStatsAggregated(ctx, userID, startTime, endTime)
++}
++
++func (r *usageLogPendingRepository) GetGeminiUsageTotalsBatch(ctx context.Context, accountIDs []int64, startTime, endTime time.Time) (map[int64]service.GeminiUsageTotals, error) {
++	if batchReader, ok := r.next.(interface {
++		GetGeminiUsageTotalsBatch(context.Context, []int64, time.Time, time.Time) (map[int64]service.GeminiUsageTotals, error)
++	}); ok {
++		return batchReader.GetGeminiUsageTotalsBatch(ctx, accountIDs, startTime, endTime)
++	}
++	return make(map[int64]service.GeminiUsageTotals, len(accountIDs)), nil
++}
+diff --git a/backend/internal/repository/usage_log_repo.go b/backend/internal/repository/usage_log_repo.go
+index 4359edc2ca1e1c9816c09b316b5ec4ce5082284e..1f2cb1c1c16a142b398c328abd640df5b3d864b8 100644
+--- a/backend/internal/repository/usage_log_repo.go
++++ b/backend/internal/repository/usage_log_repo.go
+@@ -8,8 +8,10 @@ import (
+ 	"time"
+ 
+ 	dbent "github.com/Wei-Shaw/sub2api/ent"
++	"github.com/Wei-Shaw/sub2api/internal/config"
+ 	"github.com/Wei-Shaw/sub2api/internal/service"
+ 	gocache "github.com/patrickmn/go-cache"
++	"github.com/redis/go-redis/v9"
+ )
+ 
+ const rawUsageLogModelColumn = "model"
+@@ -152,6 +154,14 @@ func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLog
+ 	return newUsageLogRepositoryWithSQL(client, sqlDB)
+ }
+ 
++func ProvideUsageLogRepository(client *dbent.Client, sqlDB *sql.DB, rdb *redis.Client, cfg *config.Config) service.UsageLogRepository {
++	base := newUsageLogRepositoryWithSQL(client, sqlDB)
++	if cfg == nil || !cfg.Gateway.HotPath.UsageBillingWriteBehind {
++		return base
++	}
++	return NewUsageLogRepositoryWithPending(base, rdb, cfg)
++}
++
+ func newUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *usageLogRepository {
+ 	// 使用 scanSingleRow 替代 QueryRowContext，保证 ent.Tx 作为 sqlExecutor 可用。
+ 	repo := &usageLogRepository{client: client, sql: sqlq}
+diff --git a/backend/internal/repository/wire.go b/backend/internal/repository/wire.go
+index ec5078eac8960ea7c8ad82165884bcc24c7b1f92..eba519de25b7cf31c3f46b688f38aa99a235ceda 100644
+--- a/backend/internal/repository/wire.go
++++ b/backend/internal/repository/wire.go
+@@ -22,6 +22,9 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
+ 	if waitTTLSeconds <= 0 {
+ 		waitTTLSeconds = cfg.Gateway.ConcurrencySlotTTLMinutes * 60
+ 	}
++	if cfg.Gateway.HotPath.LocalConcurrencySlots {
++		return NewLocalConcurrencyCache(cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
++	}
+ 	return NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+ }
+ 
+@@ -75,7 +78,7 @@ var ProviderSet = wire.NewSet(
+ 	NewPromoCodeRepository,
+ 	NewAnnouncementRepository,
+ 	NewAnnouncementReadRepository,
+-	NewUsageLogRepository,
++	ProvideUsageLogRepository,
+ 	NewUsageBillingRepository,
+ 	NewBatchImageRepository,
+ 	NewIdempotencyRepository,
+@@ -99,7 +102,7 @@ var ProviderSet = wire.NewSet(
+ 
+ 	// Cache implementations
+ 	NewGatewayCache,
+-	NewBillingCache,
++	ProvideBillingCache,
+ 	NewAPIKeyCache,
+ 	NewTempUnschedCache,
+ 	NewTimeoutCounterCache,
+diff --git a/backend/internal/server/middleware/api_key_auth.go b/backend/internal/server/middleware/api_key_auth.go
+index 082766bfd5596a2559ce986b696052457a027e3a..279471527dfe8108c33cb7827b20f4e43923056c 100644
+--- a/backend/internal/server/middleware/api_key_auth.go
++++ b/backend/internal/server/middleware/api_key_auth.go
+@@ -187,7 +187,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
+ 				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+ 				return
+ 			}
+-			if apiKey.IsQuotaExhausted() {
++			if apiKeyService.IsQuotaExhausted(apiKey) {
+ 				AbortWithError(c, 429, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+ 				return
+ 			}
+@@ -218,6 +218,8 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
+ 				}
+ 			} else {
+ 				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
++				// Handler-level BillingCacheService remains the primary, freshest check.
++				// Keep the historical fail-closed fallback for an exhausted auth snapshot.
+ 				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
+ 					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+ 					return
+diff --git a/backend/internal/server/middleware/api_key_auth_google.go b/backend/internal/server/middleware/api_key_auth_google.go
+index b910dd9fa4d9a5bba169b982e9116574a08319b6..69c4a61ed9d2d0eb137ba4effb39564c248cae1c 100644
+--- a/backend/internal/server/middleware/api_key_auth_google.go
++++ b/backend/internal/server/middleware/api_key_auth_google.go
+@@ -56,6 +56,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
+ 			abortWithGoogleError(c, 401, "API key is disabled")
+ 			return
+ 		}
++		if apiKeyService.IsQuotaExhausted(apiKey) {
++			abortWithGoogleError(c, 429, "API key 额度已用完")
++			return
++		}
+ 
+ 		// 检查 IP 限制（白名单/黑名单）。与主中间件保持一致，避免 Gemini 端点绕过 Key 的 IP ACL。
+ 		if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
+@@ -162,10 +166,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
+ 			}
+ 
+ 			c.Set(string(ContextKeySubscription), subscription)
+-		} else {
+-			if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
+-				abortWithGoogleError(c, 403, "Insufficient account balance")
+-				return
++
++			if needsMaintenance {
++				maintenanceCopy := *subscription
++				subscriptionService.DoWindowMaintenance(&maintenanceCopy)
+ 			}
+ 		}
+ 
+diff --git a/backend/internal/server/routes/admin.go b/backend/internal/server/routes/admin.go
+index 0d7e2a505aa436134b345c0905c8bb7102d2a858..c73b84b4db129418aa7e59e87365afcd01ae3922 100644
+--- a/backend/internal/server/routes/admin.go
++++ b/backend/internal/server/routes/admin.go
+@@ -579,6 +579,7 @@ func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+ 	{
+ 		usage.GET("", h.Admin.Usage.List)
+ 		usage.GET("/stats", h.Admin.Usage.Stats)
++		usage.GET("/pending", h.Admin.Usage.PendingStats)
+ 		usage.GET("/search-users", h.Admin.Usage.SearchUsers)
+ 		usage.GET("/search-api-keys", h.Admin.Usage.SearchAPIKeys)
+ 		usage.GET("/cleanup-tasks", h.Admin.Usage.ListCleanupTasks)
+diff --git a/backend/internal/service/api_key_service.go b/backend/internal/service/api_key_service.go
+index b13ca6b3d045ba694f474f225dbc5aaebc399a0e..4b82ebea8a03a1ab3a433118ac70760ee416cefd 100644
+--- a/backend/internal/service/api_key_service.go
++++ b/backend/internal/service/api_key_service.go
+@@ -202,20 +202,21 @@ type RateLimitCacheInvalidator interface {
+ }
+ 
+ type APIKeyService struct {
+-	apiKeyRepo            APIKeyRepository
+-	userRepo              UserRepository
+-	groupRepo             GroupRepository
+-	userSubRepo           UserSubscriptionRepository
+-	userGroupRateRepo     UserGroupRateRepository
+-	cache                 APIKeyCache
+-	rateLimitCacheInvalid RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
+-	concurrencyService    *ConcurrencyService
+-	cfg                   *config.Config
+-	authCacheL1           *ristretto.Cache
+-	authCfg               apiKeyAuthCacheConfig
+-	authGroup             singleflight.Group
+-	lastUsedTouchL1       sync.Map // keyID -> nextAllowedAt(time.Time)
+-	lastUsedTouchSF       singleflight.Group
++	apiKeyRepo              APIKeyRepository
++	userRepo                UserRepository
++	groupRepo               GroupRepository
++	userSubRepo             UserSubscriptionRepository
++	userGroupRateRepo       UserGroupRateRepository
++	cache                   APIKeyCache
++	rateLimitCacheInvalid   RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
++	concurrencyService      *ConcurrencyService
++	cfg                     *config.Config
++	authCacheL1             *ristretto.Cache
++	authCfg                 apiKeyAuthCacheConfig
++	usageBillingWriteBehind *UsageBillingWriteBehind
++	authGroup               singleflight.Group
++	lastUsedTouchL1         sync.Map // keyID -> nextAllowedAt(time.Time)
++	lastUsedTouchSF         singleflight.Group
+ }
+ 
+ // NewAPIKeyService 创建API Key服务实例
+@@ -247,6 +248,17 @@ func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidat
+ 	s.rateLimitCacheInvalid = inv
+ }
+ 
++func (s *APIKeyService) SetUsageBillingWriteBehind(wb *UsageBillingWriteBehind) {
++	s.usageBillingWriteBehind = wb
++}
++
++func (s *APIKeyService) UsageBillingWriteBehind() *UsageBillingWriteBehind {
++	if s == nil {
++		return nil
++	}
++	return s.usageBillingWriteBehind
++}
++
+ func (s *APIKeyService) SetConcurrencyService(concurrencyService *ConcurrencyService) {
+ 	s.concurrencyService = concurrencyService
+ }
+@@ -937,13 +949,23 @@ func (s *APIKeyService) CheckAPIKeyQuotaAndExpiry(apiKey *APIKey) error {
+ 	}
+ 
+ 	// Check quota
+-	if apiKey.IsQuotaExhausted() {
++	if s.IsQuotaExhausted(apiKey) {
+ 		return ErrAPIKeyQuotaExhausted
+ 	}
+ 
+ 	return nil
+ }
+ 
++func (s *APIKeyService) IsQuotaExhausted(apiKey *APIKey) bool {
++	if apiKey == nil {
++		return false
++	}
++	if apiKey.IsQuotaExhausted() {
++		return true
++	}
++	return s != nil && s.usageBillingWriteBehind != nil && s.usageBillingWriteBehind.APIKeyQuotaExhausted(apiKey)
++}
++
+ // UpdateQuotaUsed updates the quota_used field after a request
+ // Also checks if quota is exhausted and updates status accordingly
+ func (s *APIKeyService) UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cost float64) error {
+diff --git a/backend/internal/service/billing_cache_service.go b/backend/internal/service/billing_cache_service.go
+index b1c6e0933ee7ab542ca8052ea0836fb3dc2b9261..938d9a17e6ff95eeed7b4b06a7681ec1e3c5e365 100644
+--- a/backend/internal/service/billing_cache_service.go
++++ b/backend/internal/service/billing_cache_service.go
+@@ -2,6 +2,7 @@ package service
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"strconv"
+ 	"sync"
+@@ -129,6 +130,14 @@ type BillingCacheService struct {
+ }
+ 
+ // NewBillingCacheService 创建计费缓存服务
++type localBillingCacheCapabilities interface {
++	LocalBillingWriteThroughEnabled() bool
++}
++
++type localBillingBalanceDeltaCache interface {
++	ApplyUserBalanceDeltaLocal(userID int64, delta float64) bool
++}
++
+ func NewBillingCacheService(
+ 	cache BillingCache,
+ 	userRepo UserRepository,
+@@ -154,6 +163,25 @@ func NewBillingCacheService(
+ 	return svc
+ }
+ 
++func (s *BillingCacheService) hasLocalBillingCache() bool {
++	if s == nil || s.cache == nil {
++		return false
++	}
++	_, ok := s.cache.(localBillingCacheCapabilities)
++	return ok
++}
++
++func (s *BillingCacheService) applyUserBalanceDeltaLocal(userID int64, delta float64) bool {
++	if s == nil || s.cache == nil {
++		return false
++	}
++	local, ok := s.cache.(localBillingBalanceDeltaCache)
++	if !ok {
++		return false
++	}
++	return local.ApplyUserBalanceDeltaLocal(userID, delta)
++}
++
+ // Stop 关闭缓存写入工作池
+ func (s *BillingCacheService) Stop() {
+ 	s.cacheWriteStopOnce.Do(func() {
+@@ -330,12 +358,11 @@ func (s *BillingCacheService) GetUserBalance(ctx context.Context, userID int64)
+ 			return nil, err
+ 		}
+ 
+-		// 异步建立缓存
+-		_ = s.enqueueCacheWrite(cacheWriteTask{
+-			kind:    cacheWriteSetBalance,
+-			userID:  userID,
+-			balance: balance,
+-		})
++		// Populate synchronously so a write-behind delta cannot be overwritten
++		// later by an asynchronously queued copy of this pre-deduction value.
++		if err := s.cache.SetUserBalance(loadCtx, userID, balance); err != nil {
++			return nil, err
++		}
+ 		return balance, nil
+ 	})
+ 	if err != nil {
+@@ -368,6 +395,47 @@ func (s *BillingCacheService) setBalanceCache(ctx context.Context, userID int64,
+ }
+ 
+ // DeductBalanceCache 扣减余额缓存（同步调用）
++func (s *BillingCacheService) RefreshUserBalance(ctx context.Context, userID int64) error {
++	if s == nil || s.cache == nil {
++		return nil
++	}
++	if s.userRepo == nil {
++		return s.InvalidateUserBalance(ctx, userID)
++	}
++	balance, err := s.getUserBalanceFromDB(ctx, userID)
++	if err != nil {
++		return err
++	}
++	return s.cache.SetUserBalance(ctx, userID, balance)
++}
++
++func (s *BillingCacheService) SetUserBalanceRealtime(ctx context.Context, userID int64, balance float64) error {
++	if s == nil || s.cache == nil {
++		return nil
++	}
++	return s.cache.SetUserBalance(ctx, userID, balance)
++}
++
++func (s *BillingCacheService) ApplyUserBalanceDeltaRealtime(ctx context.Context, userID int64, delta float64) error {
++	if s == nil || s.cache == nil || delta == 0 {
++		return nil
++	}
++	if s.applyUserBalanceDeltaLocal(userID, delta) {
++		return nil
++	}
++	return s.RefreshUserBalance(ctx, userID)
++}
++
++func (s *BillingCacheService) SyncBalanceAfterDeduction(ctx context.Context, userID int64, amount float64, newBalance *float64) error {
++	if s == nil || s.cache == nil || amount <= 0 {
++		return nil
++	}
++	if newBalance != nil {
++		return s.SetUserBalanceRealtime(ctx, userID, *newBalance)
++	}
++	return s.ApplyUserBalanceDeltaRealtime(ctx, userID, -amount)
++}
++
+ func (s *BillingCacheService) DeductBalanceCache(ctx context.Context, userID int64, amount float64) error {
+ 	if s.cache == nil {
+ 		return nil
+@@ -380,6 +448,14 @@ func (s *BillingCacheService) QueueDeductBalance(userID int64, amount float64) {
+ 	if s.cache == nil {
+ 		return
+ 	}
++	if s.hasLocalBillingCache() {
++		ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
++		defer cancel()
++		if err := s.DeductBalanceCache(ctx, userID, amount); err != nil {
++			logger.LegacyPrintf("service.billing_cache", "Warning: realtime deduct balance cache failed for user %d: %v", userID, err)
++		}
++		return
++	}
+ 	// 队列满时同步回退，避免关键扣减被静默丢弃。
+ 	if s.enqueueCacheWrite(cacheWriteTask{
+ 		kind:   cacheWriteDeductBalance,
+@@ -490,6 +566,39 @@ func (s *BillingCacheService) setSubscriptionCache(ctx context.Context, userID,
+ }
+ 
+ // UpdateSubscriptionUsage 更新订阅用量缓存（同步调用）
++func (s *BillingCacheService) RefreshSubscription(ctx context.Context, userID, groupID int64) error {
++	if s == nil || s.cache == nil {
++		return nil
++	}
++	if s.subRepo == nil {
++		return s.InvalidateSubscription(ctx, userID, groupID)
++	}
++	data, err := s.getSubscriptionFromDB(ctx, userID, groupID)
++	if err != nil {
++		if errors.Is(err, ErrSubscriptionNotFound) {
++			return s.SetSubscriptionRealtime(ctx, userID, groupID, expiredSubscriptionCacheData())
++		}
++		return err
++	}
++	return s.SetSubscriptionRealtime(ctx, userID, groupID, data)
++}
++
++func (s *BillingCacheService) SetSubscriptionRealtime(ctx context.Context, userID, groupID int64, data *subscriptionCacheData) error {
++	if s == nil || s.cache == nil || data == nil {
++		return nil
++	}
++	return s.cache.SetSubscriptionCache(ctx, userID, groupID, s.convertToPortsData(data))
++}
++
++func expiredSubscriptionCacheData() *subscriptionCacheData {
++	now := time.Now()
++	return &subscriptionCacheData{
++		Status:    SubscriptionStatusExpired,
++		ExpiresAt: now.Add(-time.Second),
++		Version:   now.Unix(),
++	}
++}
++
+ func (s *BillingCacheService) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, costUSD float64) error {
+ 	if s.cache == nil {
+ 		return nil
+@@ -502,6 +611,14 @@ func (s *BillingCacheService) QueueUpdateSubscriptionUsage(userID, groupID int64
+ 	if s.cache == nil {
+ 		return
+ 	}
++	if s.hasLocalBillingCache() {
++		ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
++		defer cancel()
++		if err := s.UpdateSubscriptionUsage(ctx, userID, groupID, costUSD); err != nil {
++			logger.LegacyPrintf("service.billing_cache", "Warning: realtime update subscription cache failed for user %d group %d: %v", userID, groupID, err)
++		}
++		return
++	}
+ 	// 队列满时同步回退，确保订阅用量及时更新。
+ 	if s.enqueueCacheWrite(cacheWriteTask{
+ 		kind:    cacheWriteUpdateSubscriptionUsage,
+@@ -692,6 +809,14 @@ func (s *BillingCacheService) QueueUpdateAPIKeyRateLimitUsage(apiKeyID int64, co
+ 	if s.cache == nil {
+ 		return
+ 	}
++	if s.hasLocalBillingCache() {
++		ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
++		defer cancel()
++		if err := s.cache.UpdateAPIKeyRateLimitUsage(ctx, apiKeyID, cost); err != nil {
++			logger.LegacyPrintf("service.billing_cache", "Warning: realtime update rate limit cache failed for api key %d: %v", apiKeyID, err)
++		}
++		return
++	}
+ 	s.enqueueCacheWrite(cacheWriteTask{
+ 		kind:     cacheWriteUpdateRateLimitUsage,
+ 		apiKeyID: apiKeyID,
+@@ -715,8 +840,8 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
+ 	}
+ 	ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
+ 	defer cancel()
+-	ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
+-	markDirty := s.cfg.Database.UserPlatformQuotaFlusherEnabled
++	ttl := s.userPlatformQuotaCacheTTL()
++	markDirty := s.cfg != nil && s.cfg.Database.UserPlatformQuotaFlusherEnabled
+ 	if err := s.cache.IncrUserPlatformQuotaUsageCache(ctx, userID, platform, cost, ttl, markDirty); err != nil {
+ 		logger.LegacyPrintf("service.billing_cache",
+ 			"ALERT: incr user platform quota cache failed user=%d platform=%s cost=%f: %v",
+@@ -724,6 +849,20 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
+ 	}
+ }
+ 
++func (s *BillingCacheService) userPlatformQuotaCacheTTL() time.Duration {
++	if s == nil || s.cfg == nil || s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds <= 0 {
++		return 24 * time.Hour
++	}
++	return time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
++}
++
++func (s *BillingCacheService) userPlatformQuotaSentinelTTL() time.Duration {
++	if s == nil || s.cfg == nil || s.cfg.Billing.UserPlatformQuotaSentinelTTLSeconds <= 0 {
++		return time.Hour
++	}
++	return time.Duration(s.cfg.Billing.UserPlatformQuotaSentinelTTLSeconds) * time.Second
++}
++
+ // ============================================
+ // 统一检查方法
+ // ============================================
+@@ -734,7 +873,7 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
+ // platform 为请求的目标平台（如 "anthropic"），传空串 "" 时跳过 user × platform quota 检查。
+ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user *User, apiKey *APIKey, group *Group, subscription *UserSubscription, platform string) error {
+ 	// 简易模式：跳过所有计费检查
+-	if s.cfg.RunMode == config.RunModeSimple {
++	if s != nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+ 		return nil
+ 	}
+ 	if s.circuitBreaker != nil && !s.circuitBreaker.Allow() {
+@@ -1157,7 +1296,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
+ 				WeeklyWindowStart:  newWeeklyStart,
+ 				MonthlyWindowStart: newMonthlyStart,
+ 			}
+-			ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
++			ttl := s.userPlatformQuotaCacheTTL()
+ 			setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+ 			if setErr := s.cache.SetUserPlatformQuotaCache(setCtx, userID, platform, refreshed, ttl); setErr != nil {
+ 				logger.LegacyPrintf("service.billing_cache",
+@@ -1221,7 +1360,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
+ 				MonthlyWindowStart: &now,
+ 				// limits 全 nil, usage 全 0(零值)
+ 			}
+-			sentinelTTL := time.Duration(s.cfg.Billing.UserPlatformQuotaSentinelTTLSeconds) * time.Second
++			sentinelTTL := s.userPlatformQuotaSentinelTTL()
+ 			if sentinelTTL <= 0 {
+ 				// 防御:TTL<=0 时 Redis EXPIRE 会立即删除整个 key(见 billing_cache.go 的 pipe.Expire),
+ 				// sentinel 不持久化 → 每请求击穿 DB。配置缺失/误配为 0 时 fallback 到 1h。
+@@ -1279,7 +1418,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
+ 		MonthlyWindowStart: rec.MonthlyWindowStart,
+ 	}
+ 	if s.cache != nil {
+-		ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
++		ttl := s.userPlatformQuotaCacheTTL()
+ 		// 与 HIT 过期回填路径（上文 SetCache 调用）保持一致：用 context.Background()+50ms,
+ 		// 避免请求 ctx 提前取消（客户端断连/上游超时）导致 cache 回填失败,
+ 		// 让下一次 preflight 仍然 MISS 并击穿到 DB（高并发下增大 DB 压力）。
+@@ -1358,7 +1497,7 @@ func monthlyQuotaWindowExpired(start *time.Time, now time.Time) bool {
+ // 写入点守卫:无 limit 直接跳过 Redis 写 + 脏集标记,消除无谓写入。
+ // fail-safe:任何不确定(simple 模式除外)都返回 true 维持写入。
+ func (s *BillingCacheService) HasUserPlatformQuotaLimit(ctx context.Context, userID int64, platform string) bool {
+-	if s.cfg.RunMode == config.RunModeSimple {
++	if s != nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+ 		return false
+ 	}
+ 	if s.cache == nil {
+diff --git a/backend/internal/service/deferred_service.go b/backend/internal/service/deferred_service.go
+index a3dfe00826d20e2ee2c2ac70d0efdeac396cbeed..107ee58c0dbc71146d1ba2dd9ee78c628521d842 100644
+--- a/backend/internal/service/deferred_service.go
++++ b/backend/internal/service/deferred_service.go
+@@ -13,36 +13,56 @@ type DeferredService struct {
+ 	timingWheel *TimingWheelService
+ 	interval    time.Duration
+ 
+-	lastUsedUpdates sync.Map
++	disableLastUsedPersistence bool
++	lastUsedUpdates            sync.Map
+ }
+ 
+ // NewDeferredService creates a new DeferredService instance
+ func NewDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService, interval time.Duration) *DeferredService {
++	return NewDeferredServiceWithOptions(accountRepo, timingWheel, interval, true)
++}
++
++func NewDeferredServiceWithOptions(accountRepo AccountRepository, timingWheel *TimingWheelService, interval time.Duration, persistLastUsed bool) *DeferredService {
+ 	return &DeferredService{
+-		accountRepo: accountRepo,
+-		timingWheel: timingWheel,
+-		interval:    interval,
++		accountRepo:                accountRepo,
++		timingWheel:                timingWheel,
++		interval:                   interval,
++		disableLastUsedPersistence: !persistLastUsed,
+ 	}
+ }
+ 
+ // Start starts the deferred service
+ func (s *DeferredService) Start() {
++	if s.disableLastUsedPersistence {
++		log.Printf("[DeferredService] Account last_used persistence disabled")
++		return
++	}
+ 	s.timingWheel.ScheduleRecurring("deferred:last_used", s.interval, s.flushLastUsed)
+ 	log.Printf("[DeferredService] Started (interval: %v)", s.interval)
+ }
+ 
+ // Stop stops the deferred service
+ func (s *DeferredService) Stop() {
++	if s.disableLastUsedPersistence {
++		log.Printf("[DeferredService] Service stopped")
++		return
++	}
+ 	s.timingWheel.Cancel("deferred:last_used")
+ 	s.flushLastUsed()
+ 	log.Printf("[DeferredService] Service stopped")
+ }
+ 
+ func (s *DeferredService) ScheduleLastUsedUpdate(accountID int64) {
++	if s == nil || s.disableLastUsedPersistence {
++		return
++	}
+ 	s.lastUsedUpdates.Store(accountID, time.Now())
+ }
+ 
+ func (s *DeferredService) flushLastUsed() {
++	if s == nil || s.disableLastUsedPersistence {
++		return
++	}
+ 	updates := make(map[int64]time.Time)
+ 	s.lastUsedUpdates.Range(func(key, value any) bool {
+ 		id, ok := key.(int64)
+diff --git a/backend/internal/service/gateway_scheduling.go b/backend/internal/service/gateway_scheduling.go
+index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1ed70ef52d 100644
+--- a/backend/internal/service/gateway_scheduling.go
++++ b/backend/internal/service/gateway_scheduling.go
+@@ -422,27 +422,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
+ 			}
+ 
+ 			if len(routingAvailable) > 0 {
+-				// 排序：优先级 > 负载率 > 最后使用时间
+-				sort.SliceStable(routingAvailable, func(i, j int) bool {
+-					a, b := routingAvailable[i], routingAvailable[j]
+-					if a.account.Priority != b.account.Priority {
+-						return a.account.Priority < b.account.Priority
+-					}
+-					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+-						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+-					}
+-					switch {
+-					case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+-						return true
+-					case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+-						return false
+-					case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+-						return false
+-					default:
+-						return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+-					}
+-				})
+-				shuffleWithinSortGroups(routingAvailable)
++				// 排序：优先级 > 负载率；同层随机避免依赖请求热路径的 LastUsedAt 同步。
++				sortAccountsByPriorityAndLoad(routingAvailable)
+ 
+ 				// 4. 尝试获取槽位
+ 				for _, item := range routingAvailable {
+@@ -691,8 +672,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
+ 			}
+ 			// 3. 取负载率最低的集合
+ 			candidates = filterByMinLoadRate(candidates)
+-			// 4. LRU 选择最久未用的账号
+-			selected := selectByLRU(candidates, preferOAuth)
++			// 4. 同层候选随机选择，避免依赖请求热路径的 LastUsedAt 同步。
++			selected := selectRandomAccountWithLoad(candidates, preferOAuth)
+ 			if selected == nil {
+ 				break
+ 			}
+@@ -741,7 +722,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
+ 
+ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
+ 	ordered := append([]*Account(nil), candidates...)
+-	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
++	if s.schedulingConfig().FallbackSelectionMode == "last_used" {
++		sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
++	} else {
++		sortAccountsByPriorityOnlyRandom(ordered, preferOAuth)
++	}
+ 
+ 	for _, acc := range ordered {
+ 		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
+@@ -1483,9 +1468,7 @@ func filterBySoonestReset(accounts []accountWithLoad) []accountWithLoad {
+ 	return result
+ }
+ 
+-// selectByLRU 从集合中选择最久未用的账号
+-// 如果有多个账号具有相同的最小 LastUsedAt，则随机选择一个
+-func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
++func selectRandomAccountWithLoad(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
+ 	if len(accounts) == 0 {
+ 		return nil
+ 	}
+@@ -1493,52 +1476,19 @@ func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad
+ 		return &accounts[0]
+ 	}
+ 
+-	// 1. 找到最小的 LastUsedAt（nil 被视为最小）
+-	var minTime *time.Time
+-	hasNil := false
+-	for _, acc := range accounts {
+-		if acc.account.LastUsedAt == nil {
+-			hasNil = true
+-			break
+-		}
+-		if minTime == nil || acc.account.LastUsedAt.Before(*minTime) {
+-			minTime = acc.account.LastUsedAt
+-		}
+-	}
+-
+-	// 2. 收集所有具有最小 LastUsedAt 的账号索引
+-	var candidateIdxs []int
+-	for i, acc := range accounts {
+-		if hasNil {
+-			if acc.account.LastUsedAt == nil {
+-				candidateIdxs = append(candidateIdxs, i)
+-			}
+-		} else {
+-			if acc.account.LastUsedAt != nil && acc.account.LastUsedAt.Equal(*minTime) {
++	candidateIdxs := make([]int, 0, len(accounts))
++	if preferOAuth {
++		for i := range accounts {
++			if accounts[i].account.Type == AccountTypeOAuth {
+ 				candidateIdxs = append(candidateIdxs, i)
+ 			}
+ 		}
+ 	}
+-
+-	// 3. 如果只有一个候选，直接返回
+-	if len(candidateIdxs) == 1 {
+-		return &accounts[candidateIdxs[0]]
+-	}
+-
+-	// 4. 如果有多个候选且 preferOAuth，优先选择 OAuth 类型
+-	if preferOAuth {
+-		var oauthIdxs []int
+-		for _, idx := range candidateIdxs {
+-			if accounts[idx].account.Type == AccountTypeOAuth {
+-				oauthIdxs = append(oauthIdxs, idx)
+-			}
+-		}
+-		if len(oauthIdxs) > 0 {
+-			candidateIdxs = oauthIdxs
++	if len(candidateIdxs) == 0 {
++		for i := range accounts {
++			candidateIdxs = append(candidateIdxs, i)
+ 		}
+ 	}
+-
+-	// 5. 随机选择一个
+ 	selectedIdx := candidateIdxs[mathrand.Intn(len(candidateIdxs))]
+ 	return &accounts[selectedIdx]
+ }
+@@ -1566,16 +1516,34 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
+ 	shuffleWithinPriorityAndLastUsed(accounts, preferOAuth)
+ }
+ 
+-// shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。
+-// 防止并发请求读取同一快照时，确定性排序导致所有请求命中相同账号。
+-func shuffleWithinSortGroups(accounts []accountWithLoad) {
++func sortAccountsByPriorityAndLoad(accounts []accountWithLoad) {
++	sort.SliceStable(accounts, func(i, j int) bool {
++		a, b := accounts[i], accounts[j]
++		if a.account.Priority != b.account.Priority {
++			return a.account.Priority < b.account.Priority
++		}
++		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
++			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
++		}
++		return false
++	})
++	shuffleWithinPriorityAndLoad(accounts)
++}
++
++func sortAccountsByPriorityOnlyRandom(accounts []*Account, preferOAuth bool) {
++	sortAccountsByPriorityOnly(accounts, preferOAuth)
++	shuffleWithinPriority(accounts)
++}
++
++func shuffleWithinPriorityAndLoad(accounts []accountWithLoad) {
+ 	if len(accounts) <= 1 {
+ 		return
+ 	}
+-	i := 0
+-	for i < len(accounts) {
++	for i := 0; i < len(accounts); {
+ 		j := i + 1
+-		for j < len(accounts) && sameAccountWithLoadGroup(accounts[i], accounts[j]) {
++		for j < len(accounts) &&
++			accounts[i].account.Priority == accounts[j].account.Priority &&
++			accounts[i].loadInfo.LoadRate == accounts[j].loadInfo.LoadRate {
+ 			j++
+ 		}
+ 		if j-i > 1 {
+@@ -1587,17 +1555,6 @@ func shuffleWithinSortGroups(accounts []accountWithLoad) {
+ 	}
+ }
+ 
+-// sameAccountWithLoadGroup 判断两个 accountWithLoad 是否属于同一排序组
+-func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
+-	if a.account.Priority != b.account.Priority {
+-		return false
+-	}
+-	if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+-		return false
+-	}
+-	return sameLastUsedAt(a.account.LastUsedAt, b.account.LastUsedAt)
+-}
+-
+ // shuffleWithinPriorityAndLastUsed 对排序后的 []*Account 切片，按 (Priority, LastUsedAt) 分组后组内随机打乱。
+ //
+ // 注意：当 preferOAuth=true 时，需要保证 OAuth 账号在同组内仍然优先，否则会把排序时的偏好打散掉。
+@@ -1668,8 +1625,7 @@ func sameLastUsedAt(a, b *time.Time) bool {
+ func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, preferOAuth bool, mode string) {
+ 	if mode == "random" {
+ 		// 先按优先级排序，然后在同优先级内随机打乱
+-		sortAccountsByPriorityOnly(accounts, preferOAuth)
+-		shuffleWithinPriority(accounts)
++		sortAccountsByPriorityOnlyRandom(accounts, preferOAuth)
+ 	} else {
+ 		// 默认按最后使用时间排序
+ 		sortAccountsByPriorityAndLastUsed(accounts, preferOAuth)
+diff --git a/backend/internal/service/gateway_service.go b/backend/internal/service/gateway_service.go
+index c15137562374a7ea76ace70ef99d4f6fa26944b8..b739bbb4da3e09ea65e45401477316263e9b0214 100644
+--- a/backend/internal/service/gateway_service.go
++++ b/backend/internal/service/gateway_service.go
+@@ -599,42 +599,43 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
+ 
+ // GatewayService handles API gateway operations
+ type GatewayService struct {
+-	accountRepo           AccountRepository
+-	groupRepo             GroupRepository
+-	usageLogRepo          UsageLogRepository
+-	usageBillingRepo      UsageBillingRepository
+-	userRepo              UserRepository
+-	userSubRepo           UserSubscriptionRepository
+-	userGroupRateRepo     UserGroupRateRepository
+-	cache                 GatewayCache
+-	digestStore           *DigestSessionStore
+-	cfg                   *config.Config
+-	schedulerSnapshot     *SchedulerSnapshotService
+-	billingService        *BillingService
+-	rateLimitService      *RateLimitService
+-	billingCacheService   *BillingCacheService
+-	identityService       *IdentityService
+-	httpUpstream          HTTPUpstream
+-	deferredService       *DeferredService
+-	concurrencyService    *ConcurrencyService
+-	claudeTokenProvider   *ClaudeTokenProvider
+-	sessionLimitCache     SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+-	rpmCache              RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
+-	userGroupRateResolver *userGroupRateResolver
+-	userGroupRateCache    *gocache.Cache
+-	userGroupRateSF       singleflight.Group
+-	modelsListCache       *gocache.Cache
+-	modelsListCacheTTL    time.Duration
+-	settingService        *SettingService
+-	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
+-	debugModelRouting     atomic.Bool
+-	debugClaudeMimic      atomic.Bool
+-	channelService        *ChannelService
+-	resolver              *ModelPricingResolver
+-	debugGatewayBodyFile  atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
+-	tlsFPProfileService   *TLSFingerprintProfileService
+-	balanceNotifyService  *BalanceNotifyService
+-	userPlatformQuotaRepo UserPlatformQuotaRepository
++	accountRepo             AccountRepository
++	groupRepo               GroupRepository
++	usageLogRepo            UsageLogRepository
++	usageBillingRepo        UsageBillingRepository
++	usageBillingWriteBehind *UsageBillingWriteBehind // optional override; production resolves it from APIKeyService
++	userRepo                UserRepository
++	userSubRepo             UserSubscriptionRepository
++	userGroupRateRepo       UserGroupRateRepository
++	cache                   GatewayCache
++	digestStore             *DigestSessionStore
++	cfg                     *config.Config
++	schedulerSnapshot       *SchedulerSnapshotService
++	billingService          *BillingService
++	rateLimitService        *RateLimitService
++	billingCacheService     *BillingCacheService
++	identityService         *IdentityService
++	httpUpstream            HTTPUpstream
++	deferredService         *DeferredService
++	concurrencyService      *ConcurrencyService
++	claudeTokenProvider     *ClaudeTokenProvider
++	sessionLimitCache       SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
++	rpmCache                RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
++	userGroupRateResolver   *userGroupRateResolver
++	userGroupRateCache      *gocache.Cache
++	userGroupRateSF         singleflight.Group
++	modelsListCache         *gocache.Cache
++	modelsListCacheTTL      time.Duration
++	settingService          *SettingService
++	responseHeaderFilter    *responseheaders.CompiledHeaderFilter
++	debugModelRouting       atomic.Bool
++	debugClaudeMimic        atomic.Bool
++	channelService          *ChannelService
++	resolver                *ModelPricingResolver
++	debugGatewayBodyFile    atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
++	tlsFPProfileService     *TLSFingerprintProfileService
++	balanceNotifyService    *BalanceNotifyService
++	userPlatformQuotaRepo   UserPlatformQuotaRepository
+ }
+ 
+ // NewGatewayService creates a new GatewayService
+@@ -671,37 +672,38 @@ func NewGatewayService(
+ 	modelsListTTL := resolveModelsListCacheTTL(cfg)
+ 
+ 	svc := &GatewayService{
+-		accountRepo:           accountRepo,
+-		groupRepo:             groupRepo,
+-		usageLogRepo:          usageLogRepo,
+-		usageBillingRepo:      usageBillingRepo,
+-		userRepo:              userRepo,
+-		userSubRepo:           userSubRepo,
+-		userGroupRateRepo:     userGroupRateRepo,
+-		cache:                 cache,
+-		digestStore:           digestStore,
+-		cfg:                   cfg,
+-		schedulerSnapshot:     schedulerSnapshot,
+-		concurrencyService:    concurrencyService,
+-		billingService:        billingService,
+-		rateLimitService:      rateLimitService,
+-		billingCacheService:   billingCacheService,
+-		identityService:       identityService,
+-		httpUpstream:          httpUpstream,
+-		deferredService:       deferredService,
+-		claudeTokenProvider:   claudeTokenProvider,
+-		sessionLimitCache:     sessionLimitCache,
+-		rpmCache:              rpmCache,
+-		userGroupRateCache:    gocache.New(userGroupRateTTL, time.Minute),
+-		settingService:        settingService,
+-		modelsListCache:       gocache.New(modelsListTTL, time.Minute),
+-		modelsListCacheTTL:    modelsListTTL,
+-		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
+-		tlsFPProfileService:   tlsFPProfileService,
+-		channelService:        channelService,
+-		resolver:              resolver,
+-		balanceNotifyService:  balanceNotifyService,
+-		userPlatformQuotaRepo: userPlatformQuotaRepo,
++		accountRepo:             accountRepo,
++		groupRepo:               groupRepo,
++		usageLogRepo:            usageLogRepo,
++		usageBillingRepo:        usageBillingRepo,
++		usageBillingWriteBehind: nil,
++		userRepo:                userRepo,
++		userSubRepo:             userSubRepo,
++		userGroupRateRepo:       userGroupRateRepo,
++		cache:                   cache,
++		digestStore:             digestStore,
++		cfg:                     cfg,
++		schedulerSnapshot:       schedulerSnapshot,
++		concurrencyService:      concurrencyService,
++		billingService:          billingService,
++		rateLimitService:        rateLimitService,
++		billingCacheService:     billingCacheService,
++		identityService:         identityService,
++		httpUpstream:            httpUpstream,
++		deferredService:         deferredService,
++		claudeTokenProvider:     claudeTokenProvider,
++		sessionLimitCache:       sessionLimitCache,
++		rpmCache:                rpmCache,
++		userGroupRateCache:      gocache.New(userGroupRateTTL, time.Minute),
++		settingService:          settingService,
++		modelsListCache:         gocache.New(modelsListTTL, time.Minute),
++		modelsListCacheTTL:      modelsListTTL,
++		responseHeaderFilter:    compileResponseHeaderFilter(cfg),
++		tlsFPProfileService:     tlsFPProfileService,
++		channelService:          channelService,
++		resolver:                resolver,
++		balanceNotifyService:    balanceNotifyService,
++		userPlatformQuotaRepo:   userPlatformQuotaRepo,
+ 	}
+ 	svc.userGroupRateResolver = newUserGroupRateResolver(
+ 		userGroupRateRepo,
+diff --git a/backend/internal/service/gateway_usage_billing.go b/backend/internal/service/gateway_usage_billing.go
+index 8a95915981e9c8d525929937356fb8617b1d2c0f..71c182fd068d80fa7b70b2d6a3fdde4a58111f74 100644
+--- a/backend/internal/service/gateway_usage_billing.go
++++ b/backend/internal/service/gateway_usage_billing.go
+@@ -59,6 +59,10 @@ type apiKeyAuthCacheInvalidator interface {
+ 	InvalidateAuthCacheByKey(ctx context.Context, key string)
+ }
+ 
++type usageBillingWriteBehindProvider interface {
++	UsageBillingWriteBehind() *UsageBillingWriteBehind
++}
++
+ type usageLogBestEffortWriter interface {
+ 	CreateBestEffort(ctx context.Context, log *UsageLog) error
+ }
+@@ -135,8 +139,8 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
+ 			if err := deps.userRepo.DeductBalance(billingCtx, p.User.ID, cost.ActualCost); err != nil {
+ 				slog.Error("deduct balance failed", "user_id", p.User.ID, "error", err)
+ 			} else if deps.billingCacheService != nil {
+-				if err := deps.billingCacheService.InvalidateUserBalance(billingCtx, p.User.ID); err != nil {
+-					slog.Warn("invalidate balance cache after legacy deduction failed", "user_id", p.User.ID, "error", err)
++				if err := deps.billingCacheService.SyncBalanceAfterDeduction(billingCtx, p.User.ID, cost.ActualCost, nil); err != nil {
++					slog.Warn("sync balance cache after legacy deduction failed", "user_id", p.User.ID, "error", err)
+ 				}
+ 			}
+ 		}
+@@ -280,7 +284,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
+ 	}
+ 
+ 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
+-	if cmd == nil || cmd.RequestID == "" || repo == nil {
++	if cmd == nil || cmd.RequestID == "" {
+ 		postUsageBilling(ctx, p, deps)
+ 		return true, nil
+ 	}
+@@ -288,6 +292,37 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
+ 	billingCtx, cancel := detachedBillingContext(ctx)
+ 	defer cancel()
+ 
++	usageBillingWriteBehind := deps.usageBillingWriteBehind
++	if usageBillingWriteBehind == nil && p != nil {
++		if provider, ok := p.APIKeyService.(usageBillingWriteBehindProvider); ok {
++			usageBillingWriteBehind = provider.UsageBillingWriteBehind()
++		}
++	}
++	if usageBillingWriteBehind != nil && usageBillingWriteBehind.Enabled() {
++		result, handled, err := usageBillingWriteBehind.Apply(billingCtx, cmd, p, deps)
++		if err != nil {
++			return false, err
++		}
++		if handled {
++			if result == nil || !result.Applied {
++				deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
++				return false, nil
++			}
++			if result.APIKeyQuotaExhausted {
++				if invalidator, ok := p.APIKeyService.(apiKeyAuthCacheInvalidator); ok && p.APIKey != nil && p.APIKey.Key != "" {
++					invalidator.InvalidateAuthCacheByKey(billingCtx, p.APIKey.Key)
++				}
++			}
++			finalizePostUsageBilling(billingCtx, p, deps, result)
++			return true, nil
++		}
++	}
++
++	if repo == nil {
++		postUsageBilling(billingCtx, p, deps)
++		return true, nil
++	}
++
+ 	result, err := repo.Apply(billingCtx, cmd)
+ 	if err != nil {
+ 		return false, err
+@@ -371,18 +406,22 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
+ 	if p == nil || p.Cost == nil || p.User == nil || deps == nil || deps.billingCacheService == nil {
+ 		return
+ 	}
+-	if result != nil && result.NewBalance != nil && deps.billingCacheService.balanceBelowEligibilityThreshold(*result.NewBalance) {
+-		if err := deps.billingCacheService.InvalidateUserBalance(ctx, p.User.ID); err != nil {
+-			slog.Warn("invalidate balance cache after exhausted deduction failed",
+-				"user_id", p.User.ID,
+-				"new_balance", *result.NewBalance,
+-				"balance_overdrafted", result.BalanceOverdrafted,
+-				"error", err,
+-			)
+-		}
++	if result != nil && result.balanceCacheSynced {
++		return
++	}
++	var newBalance *float64
++	if result != nil {
++		newBalance = result.NewBalance
++	}
++	if err := deps.billingCacheService.SyncBalanceAfterDeduction(ctx, p.User.ID, p.Cost.ActualCost, newBalance); err != nil {
++		slog.Warn("sync balance cache after deduction failed",
++			"user_id", p.User.ID,
++			"has_new_balance", newBalance != nil,
++			"balance_overdrafted", result != nil && result.BalanceOverdrafted,
++			"error", err,
++		)
+ 		return
+ 	}
+-	deps.billingCacheService.QueueDeductBalance(p.User.ID, p.Cost.ActualCost)
+ }
+ 
+ // notifyBalanceLow sends balance low notification after deduction.
+@@ -484,26 +523,28 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
+ 
+ // billingDeps 扣费逻辑依赖的服务（由各 gateway service 提供）
+ type billingDeps struct {
+-	accountRepo           AccountRepository
+-	userRepo              UserRepository
+-	userSubRepo           UserSubscriptionRepository
+-	billingCacheService   *BillingCacheService
+-	deferredService       *DeferredService
+-	balanceNotifyService  *BalanceNotifyService
+-	userPlatformQuotaRepo UserPlatformQuotaRepository
+-	cfg                   *config.Config
++	accountRepo             AccountRepository
++	userRepo                UserRepository
++	userSubRepo             UserSubscriptionRepository
++	billingCacheService     *BillingCacheService
++	usageBillingWriteBehind *UsageBillingWriteBehind
++	deferredService         *DeferredService
++	balanceNotifyService    *BalanceNotifyService
++	userPlatformQuotaRepo   UserPlatformQuotaRepository
++	cfg                     *config.Config
+ }
+ 
+ func (s *GatewayService) billingDeps() *billingDeps {
+ 	return &billingDeps{
+-		accountRepo:           s.accountRepo,
+-		userRepo:              s.userRepo,
+-		userSubRepo:           s.userSubRepo,
+-		billingCacheService:   s.billingCacheService,
+-		deferredService:       s.deferredService,
+-		balanceNotifyService:  s.balanceNotifyService,
+-		userPlatformQuotaRepo: s.userPlatformQuotaRepo,
+-		cfg:                   s.cfg,
++		accountRepo:             s.accountRepo,
++		userRepo:                s.userRepo,
++		userSubRepo:             s.userSubRepo,
++		billingCacheService:     s.billingCacheService,
++		usageBillingWriteBehind: s.usageBillingWriteBehind,
++		deferredService:         s.deferredService,
++		balanceNotifyService:    s.balanceNotifyService,
++		userPlatformQuotaRepo:   s.userPlatformQuotaRepo,
++		cfg:                     s.cfg,
+ 	}
+ }
+ 
+diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
+index 6ac0de47b4113f676817728a43c140c2da52f2c1..d74b10ed12c3135c3bfad1acd4f506d59872fddb 100644
+--- a/backend/internal/service/openai_gateway_scheduling.go
++++ b/backend/internal/service/openai_gateway_scheduling.go
+@@ -9,7 +9,6 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"log/slog"
+-	"sort"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -955,26 +954,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
+ 			return nil, false, nil
+ 		}
+ 
+-		sort.SliceStable(available, func(i, j int) bool {
+-			a, b := available[i], available[j]
+-			if a.account.Priority != b.account.Priority {
+-				return a.account.Priority < b.account.Priority
+-			}
+-			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+-				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+-			}
+-			switch {
+-			case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+-				return true
+-			case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+-				return false
+-			case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+-				return false
+-			default:
+-				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+-			}
+-		})
+-		shuffleWithinSortGroups(available)
++		sortAccountsByPriorityAndLoad(available)
+ 
+ 		selectionOrder := make([]accountWithLoad, 0, len(available))
+ 		if requireCompact {
+@@ -1025,7 +1005,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
+ 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
+ 	if err != nil {
+ 		ordered := append([]*Account(nil), candidates...)
+-		sortAccountsByPriorityAndLastUsed(ordered, false)
++		if cfg.FallbackSelectionMode == "last_used" {
++			sortAccountsByPriorityAndLastUsed(ordered, false)
++		} else {
++			sortAccountsByPriorityOnlyRandom(ordered, false)
++		}
+ 		if requireCompact {
+ 			ordered = prioritizeOpenAICompactAccounts(ordered)
+ 		}
+@@ -1070,7 +1054,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
+ 	}
+ 
+ 	// ============ Layer 3: Fallback wait ============
+-	sortAccountsByPriorityAndLastUsed(candidates, false)
++	if cfg.FallbackSelectionMode == "last_used" {
++		sortAccountsByPriorityAndLastUsed(candidates, false)
++	} else {
++		sortAccountsByPriorityOnlyRandom(candidates, false)
++	}
+ 	if requireCompact {
+ 		candidates = prioritizeOpenAICompactAccounts(candidates)
+ 	}
+diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
+index 0d03d83dcfdd52683ba0e6ccc39c2213d27f9b9d..7edc1fa78244577ed24cbb87de14b1a3f73434ae 100644
+--- a/backend/internal/service/openai_gateway_service.go
++++ b/backend/internal/service/openai_gateway_service.go
+@@ -326,31 +326,32 @@ var ErrNoAvailableCompactAccounts = errors.New("no available OpenAI accounts sup
+ 
+ // OpenAIGatewayService handles OpenAI API gateway operations
+ type OpenAIGatewayService struct {
+-	accountRepo           AccountRepository
+-	usageLogRepo          UsageLogRepository
+-	usageBillingRepo      UsageBillingRepository
+-	userRepo              UserRepository
+-	userSubRepo           UserSubscriptionRepository
+-	cache                 GatewayCache
+-	cfg                   *config.Config
+-	codexDetector         CodexClientRestrictionDetector
+-	schedulerSnapshot     *SchedulerSnapshotService
+-	concurrencyService    *ConcurrencyService
+-	billingService        *BillingService
+-	rateLimitService      *RateLimitService
+-	billingCacheService   *BillingCacheService
+-	userGroupRateResolver *userGroupRateResolver
+-	httpUpstream          HTTPUpstream
+-	deferredService       *DeferredService
+-	openAITokenProvider   *OpenAITokenProvider
+-	grokTokenProvider     *GrokTokenProvider
+-	toolCorrector         *CodexToolCorrector
+-	openaiWSResolver      OpenAIWSProtocolResolver
+-	resolver              *ModelPricingResolver
+-	channelService        *ChannelService
+-	balanceNotifyService  *BalanceNotifyService
+-	settingService        *SettingService
+-	userPlatformQuotaRepo UserPlatformQuotaRepository
++	accountRepo             AccountRepository
++	usageLogRepo            UsageLogRepository
++	usageBillingRepo        UsageBillingRepository
++	usageBillingWriteBehind *UsageBillingWriteBehind // optional override; production resolves it from APIKeyService
++	userRepo                UserRepository
++	userSubRepo             UserSubscriptionRepository
++	cache                   GatewayCache
++	cfg                     *config.Config
++	codexDetector           CodexClientRestrictionDetector
++	schedulerSnapshot       *SchedulerSnapshotService
++	concurrencyService      *ConcurrencyService
++	billingService          *BillingService
++	rateLimitService        *RateLimitService
++	billingCacheService     *BillingCacheService
++	userGroupRateResolver   *userGroupRateResolver
++	httpUpstream            HTTPUpstream
++	deferredService         *DeferredService
++	openAITokenProvider     *OpenAITokenProvider
++	grokTokenProvider       *GrokTokenProvider
++	toolCorrector           *CodexToolCorrector
++	openaiWSResolver        OpenAIWSProtocolResolver
++	resolver                *ModelPricingResolver
++	channelService          *ChannelService
++	balanceNotifyService    *BalanceNotifyService
++	settingService          *SettingService
++	userPlatformQuotaRepo   UserPlatformQuotaRepository
+ 
+ 	openaiWSPoolOnce              sync.Once
+ 	openaiWSStateStoreOnce        sync.Once
+@@ -399,19 +400,20 @@ func NewOpenAIGatewayService(
+ 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+ ) *OpenAIGatewayService {
+ 	svc := &OpenAIGatewayService{
+-		accountRepo:         accountRepo,
+-		usageLogRepo:        usageLogRepo,
+-		usageBillingRepo:    usageBillingRepo,
+-		userRepo:            userRepo,
+-		userSubRepo:         userSubRepo,
+-		cache:               cache,
+-		cfg:                 cfg,
+-		codexDetector:       NewOpenAICodexClientRestrictionDetector(cfg),
+-		schedulerSnapshot:   schedulerSnapshot,
+-		concurrencyService:  concurrencyService,
+-		billingService:      billingService,
+-		rateLimitService:    rateLimitService,
+-		billingCacheService: billingCacheService,
++		accountRepo:             accountRepo,
++		usageLogRepo:            usageLogRepo,
++		usageBillingRepo:        usageBillingRepo,
++		usageBillingWriteBehind: nil,
++		userRepo:                userRepo,
++		userSubRepo:             userSubRepo,
++		cache:                   cache,
++		cfg:                     cfg,
++		codexDetector:           NewOpenAICodexClientRestrictionDetector(cfg),
++		schedulerSnapshot:       schedulerSnapshot,
++		concurrencyService:      concurrencyService,
++		billingService:          billingService,
++		rateLimitService:        rateLimitService,
++		billingCacheService:     billingCacheService,
+ 		userGroupRateResolver: newUserGroupRateResolver(
+ 			userGroupRateRepo,
+ 			nil,
+@@ -535,13 +537,15 @@ func (s *OpenAIGatewayService) getCodexSnapshotThrottle() *accountWriteThrottle
+ 
+ func (s *OpenAIGatewayService) billingDeps() *billingDeps {
+ 	return &billingDeps{
+-		accountRepo:           s.accountRepo,
+-		userRepo:              s.userRepo,
+-		userSubRepo:           s.userSubRepo,
+-		billingCacheService:   s.billingCacheService,
+-		deferredService:       s.deferredService,
+-		balanceNotifyService:  s.balanceNotifyService,
+-		userPlatformQuotaRepo: s.userPlatformQuotaRepo,
++		accountRepo:             s.accountRepo,
++		userRepo:                s.userRepo,
++		userSubRepo:             s.userSubRepo,
++		billingCacheService:     s.billingCacheService,
++		usageBillingWriteBehind: s.usageBillingWriteBehind,
++		deferredService:         s.deferredService,
++		balanceNotifyService:    s.balanceNotifyService,
++		userPlatformQuotaRepo:   s.userPlatformQuotaRepo,
++		cfg:                     s.cfg,
+ 	}
+ }
+ 
+diff --git a/backend/internal/service/scheduler_snapshot_service.go b/backend/internal/service/scheduler_snapshot_service.go
+index dc514bc851042653125577a586b6263fb9d9a1e3..07b2cdf3677e9744f427191788cac62486c1ec12 100644
+--- a/backend/internal/service/scheduler_snapshot_service.go
++++ b/backend/internal/service/scheduler_snapshot_service.go
+@@ -339,29 +339,7 @@ func (s *SchedulerSnapshotService) handleOutboxEvent(ctx context.Context, event
+ }
+ 
+ func (s *SchedulerSnapshotService) handleLastUsedEvent(ctx context.Context, payload map[string]any) error {
+-	if s.cache == nil || payload == nil {
+-		return nil
+-	}
+-	raw, ok := payload["last_used"].(map[string]any)
+-	if !ok || len(raw) == 0 {
+-		return nil
+-	}
+-	updates := make(map[int64]time.Time, len(raw))
+-	for key, value := range raw {
+-		id, err := strconv.ParseInt(key, 10, 64)
+-		if err != nil || id <= 0 {
+-			continue
+-		}
+-		sec, ok := toInt64(value)
+-		if !ok || sec <= 0 {
+-			continue
+-		}
+-		updates[id] = time.Unix(sec, 0)
+-	}
+-	if len(updates) == 0 {
+-		return nil
+-	}
+-	return s.cache.UpdateLastUsed(ctx, updates)
++	return nil
+ }
+ 
+ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, payload map[string]any, seen map[batchSeenKey]struct{}) error {
+diff --git a/backend/internal/service/usage_billing.go b/backend/internal/service/usage_billing.go
+index 8d52c92d26e2e25716bb7e94f1cc58ec223f64d6..bcc6fede062081161806d06e445020cf8933973f 100644
+--- a/backend/internal/service/usage_billing.go
++++ b/backend/internal/service/usage_billing.go
+@@ -100,6 +100,18 @@ func valueOrZero(v *int64) int64 {
+ 	return *v
+ }
+ 
++func cloneUsageBillingCommand(in *UsageBillingCommand) *UsageBillingCommand {
++	if in == nil {
++		return nil
++	}
++	out := *in
++	if in.SubscriptionID != nil {
++		subID := *in.SubscriptionID
++		out.SubscriptionID = &subID
++	}
++	return &out
++}
++
+ // AccountQuotaState holds the post-increment quota state returned by the DB transaction.
+ // All values are post-update (i.e., already include the increment).
+ type AccountQuotaState struct {
+@@ -117,6 +129,7 @@ type UsageBillingApplyResult struct {
+ 	NewBalance           *float64           // post-deduction balance (nil = no balance deduction)
+ 	BalanceOverdrafted   bool               // true when the sufficient-balance guard missed and debt was still recorded
+ 	QuotaState           *AccountQuotaState // post-increment quota state (nil = no quota increment)
++	balanceCacheSynced   bool               // write-behind already applied the balance delta to L1
+ }
+ 
+ // BatchImageBalanceHoldCommand describes an idempotent balance hold operation.
+diff --git a/backend/internal/service/usage_billing_write_behind.go b/backend/internal/service/usage_billing_write_behind.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee8fdca29908878fcb76e995197b855124f79cbe
+--- /dev/null
++++ b/backend/internal/service/usage_billing_write_behind.go
+@@ -0,0 +1,748 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"strconv"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++)
++
++const (
++	defaultUsageBillingFlushInterval = 30 * time.Second
++	usageBillingApplyTimeout         = 3 * time.Second
++	usageBillingFlushMaxBatches      = 16
++	usagePendingRedisTimeout         = 250 * time.Millisecond
++	usagePendingL2TTL                = 24 * time.Hour
++)
++
++type usageBillingDedupEntry struct {
++	fingerprint string
++	expiresAt   time.Time
++}
++
++type usageBillingWriteBehindBatch struct {
++	balances       map[int64]float64
++	subscriptions  map[int64]float64
++	apiKeyQuota    map[int64]usageBillingAPIKeyQuotaDelta
++	apiKeyRate     map[int64]float64
++	apiKeyUpdaters map[int64]APIKeyQuotaUpdater
++	accountQuota   map[int64]float64
++	commands       []*UsageBillingCommand
++	l2Entries      int64
++}
++
++type usageBillingAPIKeyQuotaDelta struct {
++	cost float64
++}
++
++type usageBillingAPIKeyQuotaShadow struct {
++	used      float64
++	quota     float64
++	expiresAt time.Time
++}
++
++type usageBillingPendingStore interface {
++	Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error
++	Trim(ctx context.Context, key string, n int64) error
++}
++
++type usageBillingPendingRecord struct {
++	RequestID           string  `json:"request_id"`
++	APIKeyID            int64   `json:"api_key_id"`
++	RequestFingerprint  string  `json:"request_fingerprint"`
++	UserID              int64   `json:"user_id"`
++	AccountID           int64   `json:"account_id"`
++	SubscriptionID      *int64  `json:"subscription_id,omitempty"`
++	AccountType         string  `json:"account_type,omitempty"`
++	Model               string  `json:"model,omitempty"`
++	ServiceTier         string  `json:"service_tier,omitempty"`
++	ReasoningEffort     string  `json:"reasoning_effort,omitempty"`
++	BillingType         int8    `json:"billing_type"`
++	InputTokens         int     `json:"input_tokens"`
++	OutputTokens        int     `json:"output_tokens"`
++	CacheCreationTokens int     `json:"cache_creation_tokens"`
++	CacheReadTokens     int     `json:"cache_read_tokens"`
++	ImageCount          int     `json:"image_count"`
++	MediaType           string  `json:"media_type,omitempty"`
++	BalanceCost         float64 `json:"balance_cost,omitempty"`
++	SubscriptionCost    float64 `json:"subscription_cost,omitempty"`
++	APIKeyQuotaCost     float64 `json:"api_key_quota_cost,omitempty"`
++	APIKeyRateLimitCost float64 `json:"api_key_rate_limit_cost,omitempty"`
++	AccountQuotaCost    float64 `json:"account_quota_cost,omitempty"`
++	CreatedAtUnixNano   int64   `json:"created_at_unix_nano"`
++}
++
++type UsageBillingWriteBehindStats struct {
++	PendingL1Entries           int    `json:"pending_l1_entries"`
++	PendingBalanceKeys         int    `json:"pending_balance_keys"`
++	PendingSubscriptionKeys    int    `json:"pending_subscription_keys"`
++	PendingAPIKeyQuotaKeys     int    `json:"pending_api_key_quota_keys"`
++	PendingAPIKeyRateKeys      int    `json:"pending_api_key_rate_keys"`
++	PendingAPIKeyUpdaterKeys   int    `json:"pending_api_key_updater_keys"`
++	PendingAccountQuotaKeys    int    `json:"pending_account_quota_keys"`
++	PendingL2Entries           int64  `json:"pending_l2_entries"`
++	DedupEntries               int    `json:"dedup_entries"`
++	AppliedTotal               uint64 `json:"applied_total"`
++	DedupSkippedTotal          uint64 `json:"dedup_skipped_total"`
++	L2MirrorErrorTotal         uint64 `json:"l2_mirror_error_total"`
++	L2TrimErrorTotal           uint64 `json:"l2_trim_error_total"`
++	FlushSuccessTotal          uint64 `json:"flush_success_total"`
++	FlushErrorTotal            uint64 `json:"flush_error_total"`
++	FlushBalanceKeysTotal      uint64 `json:"flush_balance_keys_total"`
++	FlushSubscriptionKeysTotal uint64 `json:"flush_subscription_keys_total"`
++	FlushAPIKeyQuotaKeysTotal  uint64 `json:"flush_api_key_quota_keys_total"`
++	FlushAPIKeyRateKeysTotal   uint64 `json:"flush_api_key_rate_keys_total"`
++	FlushAccountQuotaKeysTotal uint64 `json:"flush_account_quota_keys_total"`
++}
++
++type UsageBillingWriteBehind struct {
++	cfg      *config.Config
++	enabled  bool
++	interval time.Duration
++	pending  usageBillingPendingStore
++	repo     UsageBillingRepository
++	l2Key    string
++	stopCh   chan struct{}
++	stopped  atomic.Bool
++	started  atomic.Bool
++	once     sync.Once
++	wg       sync.WaitGroup
++
++	mu             sync.Mutex
++	depsMu         sync.RWMutex
++	deps           *billingDeps
++	balances       map[int64]float64
++	subscriptions  map[int64]float64
++	apiKeyQuota    map[int64]usageBillingAPIKeyQuotaDelta
++	apiKeyRate     map[int64]float64
++	apiKeyUpdaters map[int64]APIKeyQuotaUpdater
++	accountQuota   map[int64]float64
++	commands       []*UsageBillingCommand
++	balanceShadow  map[int64]float64
++	quotaShadow    map[int64]usageBillingAPIKeyQuotaShadow
++	dedup          map[string]usageBillingDedupEntry
++	l2Entries      int64
++
++	appliedTotal               atomic.Uint64
++	dedupSkippedTotal          atomic.Uint64
++	l2PendingEntries           atomic.Int64
++	l2MirrorErrorTotal         atomic.Uint64
++	l2TrimErrorTotal           atomic.Uint64
++	flushSuccessTotal          atomic.Uint64
++	flushErrorTotal            atomic.Uint64
++	flushBalanceKeysTotal      atomic.Uint64
++	flushSubscriptionKeysTotal atomic.Uint64
++	flushAPIKeyQuotaKeysTotal  atomic.Uint64
++	flushAPIKeyRateKeysTotal   atomic.Uint64
++	flushAccountQuotaKeysTotal atomic.Uint64
++}
++
++func NewUsageBillingWriteBehind(cfg *config.Config) *UsageBillingWriteBehind {
++	return newUsageBillingWriteBehind(cfg, nil, nil)
++}
++
++func newUsageBillingWriteBehind(cfg *config.Config, pending usageBillingPendingStore, repo UsageBillingRepository) *UsageBillingWriteBehind {
++	interval := defaultUsageBillingFlushInterval
++	if cfg != nil && cfg.Gateway.HotPath.UsageBillingFlushIntervalMs > 0 {
++		interval = time.Duration(cfg.Gateway.HotPath.UsageBillingFlushIntervalMs) * time.Millisecond
++	}
++	s := &UsageBillingWriteBehind{
++		cfg:            cfg,
++		enabled:        cfg != nil && cfg.Gateway.HotPath.UsageBillingWriteBehind,
++		interval:       interval,
++		pending:        pending,
++		repo:           repo,
++		l2Key:          usagePendingInstanceKey("usage:pending:billing"),
++		stopCh:         make(chan struct{}),
++		balances:       make(map[int64]float64),
++		subscriptions:  make(map[int64]float64),
++		apiKeyQuota:    make(map[int64]usageBillingAPIKeyQuotaDelta),
++		apiKeyRate:     make(map[int64]float64),
++		apiKeyUpdaters: make(map[int64]APIKeyQuotaUpdater),
++		accountQuota:   make(map[int64]float64),
++		commands:       make([]*UsageBillingCommand, 0),
++		balanceShadow:  make(map[int64]float64),
++		quotaShadow:    make(map[int64]usageBillingAPIKeyQuotaShadow),
++		dedup:          make(map[string]usageBillingDedupEntry),
++	}
++	return s
++}
++
++func (s *UsageBillingWriteBehind) Enabled() bool {
++	return s != nil && s.enabled
++}
++
++func (s *UsageBillingWriteBehind) rememberDeps(deps *billingDeps) {
++	if s == nil || deps == nil {
++		return
++	}
++	s.depsMu.Lock()
++	s.deps = deps
++	s.depsMu.Unlock()
++}
++
++func (s *UsageBillingWriteBehind) currentDeps() *billingDeps {
++	if s == nil {
++		return nil
++	}
++	s.depsMu.RLock()
++	defer s.depsMu.RUnlock()
++	return s.deps
++}
++
++func (s *UsageBillingWriteBehind) APIKeyQuotaExhausted(apiKey *APIKey) bool {
++	if !s.Enabled() || apiKey == nil || apiKey.Quota <= 0 {
++		return false
++	}
++	now := time.Now()
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	shadow, ok := s.quotaShadow[apiKey.ID]
++	if ok && !shadow.expiresAt.After(now) {
++		delete(s.quotaShadow, apiKey.ID)
++		ok = false
++	}
++	used := apiKey.QuotaUsed
++	if ok && shadow.used > used {
++		used = shadow.used
++	}
++	return used >= apiKey.Quota
++}
++
++func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *UsageBillingCommand) error {
++	if s == nil || s.pending == nil || cmd == nil {
++		return nil
++	}
++	record := usageBillingPendingRecord{
++		RequestID:           cmd.RequestID,
++		APIKeyID:            cmd.APIKeyID,
++		RequestFingerprint:  cmd.RequestFingerprint,
++		UserID:              cmd.UserID,
++		AccountID:           cmd.AccountID,
++		SubscriptionID:      cmd.SubscriptionID,
++		AccountType:         cmd.AccountType,
++		Model:               cmd.Model,
++		ServiceTier:         cmd.ServiceTier,
++		ReasoningEffort:     cmd.ReasoningEffort,
++		BillingType:         cmd.BillingType,
++		InputTokens:         cmd.InputTokens,
++		OutputTokens:        cmd.OutputTokens,
++		CacheCreationTokens: cmd.CacheCreationTokens,
++		CacheReadTokens:     cmd.CacheReadTokens,
++		ImageCount:          cmd.ImageCount,
++		MediaType:           cmd.MediaType,
++		BalanceCost:         cmd.BalanceCost,
++		SubscriptionCost:    cmd.SubscriptionCost,
++		APIKeyQuotaCost:     cmd.APIKeyQuotaCost,
++		APIKeyRateLimitCost: cmd.APIKeyRateLimitCost,
++		AccountQuotaCost:    cmd.AccountQuotaCost,
++		CreatedAtUnixNano:   time.Now().UnixNano(),
++	}
++	payload, err := json.Marshal(record)
++	if err != nil {
++		return err
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	mirrorCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
++	defer cancel()
++	if err := s.pending.Append(mirrorCtx, s.l2Key, payload, usagePendingTTL()); err != nil {
++		return err
++	}
++	s.l2PendingEntries.Add(1)
++	return nil
++}
++
++func (s *UsageBillingWriteBehind) trimPendingL2(ctx context.Context, n int64) error {
++	if s == nil || s.pending == nil || n <= 0 {
++		return nil
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	trimCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
++	defer cancel()
++	if err := s.pending.Trim(trimCtx, s.l2Key, n); err != nil {
++		return err
++	}
++	for {
++		current := s.l2PendingEntries.Load()
++		next := current - n
++		if next < 0 {
++			next = 0
++		}
++		if s.l2PendingEntries.CompareAndSwap(current, next) {
++			return nil
++		}
++	}
++}
++
++func (s *UsageBillingWriteBehind) Start() {
++	if !s.Enabled() {
++		return
++	}
++	if !s.started.CompareAndSwap(false, true) {
++		return
++	}
++	s.wg.Add(1)
++	go func() {
++		defer s.wg.Done()
++		ticker := time.NewTicker(s.interval)
++		defer ticker.Stop()
++		for {
++			select {
++			case <-ticker.C:
++				s.Flush(context.Background(), nil)
++			case <-s.stopCh:
++				return
++			}
++		}
++	}()
++	logger.LegacyPrintf("usage_billing_write_behind", "[UsageBillingWriteBehind] started interval=%s", s.interval)
++}
++
++func (s *UsageBillingWriteBehind) Stop(deps *billingDeps) {
++	if s == nil {
++		return
++	}
++	s.once.Do(func() {
++		s.stopped.Store(true)
++		close(s.stopCh)
++	})
++	s.wg.Wait()
++	s.Flush(context.Background(), deps)
++}
++
++func (s *UsageBillingWriteBehind) Apply(ctx context.Context, cmd *UsageBillingCommand, p *postUsageBillingParams, deps *billingDeps) (*UsageBillingApplyResult, bool, error) {
++	if !s.Enabled() || cmd == nil || p == nil || deps == nil {
++		return nil, false, nil
++	}
++	if s.stopped.Load() {
++		return nil, false, nil
++	}
++	s.rememberDeps(deps)
++	cmd.Normalize()
++	if cmd.RequestID == "" {
++		return nil, false, ErrUsageBillingRequestIDRequired
++	}
++	now := time.Now()
++	dedupKey := usageBillingWriteBehindDedupKey(cmd)
++
++	result := &UsageBillingApplyResult{Applied: true}
++	if cmd.AccountQuotaCost > 0 && p.Account != nil {
++		result.QuotaState = buildOptimisticAccountQuotaState(p.Account, cmd.AccountQuotaCost)
++	}
++
++	s.mu.Lock()
++	s.pruneDedupLocked(now)
++	if existing, ok := s.dedup[dedupKey]; ok && existing.expiresAt.After(now) {
++		if strings.TrimSpace(existing.fingerprint) != strings.TrimSpace(cmd.RequestFingerprint) {
++			s.mu.Unlock()
++			return nil, true, ErrUsageBillingRequestConflict
++		}
++		s.dedupSkippedTotal.Add(1)
++		s.mu.Unlock()
++		return &UsageBillingApplyResult{Applied: false}, true, nil
++	}
++	if cmd.BalanceCost > 0 {
++		currentBalance, balanceKnown, cacheSynced, err := s.deductCurrentBalanceLocked(ctx, cmd.UserID, cmd.BalanceCost, deps)
++		if err != nil {
++			s.mu.Unlock()
++			return nil, true, err
++		}
++		if balanceKnown {
++			newBalance := currentBalance - cmd.BalanceCost
++			if !cacheSynced {
++				s.balanceShadow[cmd.UserID] = newBalance
++			}
++			result.NewBalance = &newBalance
++			result.BalanceOverdrafted = currentBalance < cmd.BalanceCost
++			result.balanceCacheSynced = cacheSynced
++		}
++	}
++	s.dedup[dedupKey] = usageBillingDedupEntry{
++		fingerprint: strings.TrimSpace(cmd.RequestFingerprint),
++		expiresAt:   now.Add(s.dedupTTL()),
++	}
++	if cmd.BalanceCost > 0 {
++		s.balances[cmd.UserID] += cmd.BalanceCost
++	}
++	if cmd.SubscriptionCost > 0 && cmd.SubscriptionID != nil {
++		s.subscriptions[*cmd.SubscriptionID] += cmd.SubscriptionCost
++	}
++	if cmd.APIKeyQuotaCost > 0 {
++		item := s.apiKeyQuota[cmd.APIKeyID]
++		item.cost += cmd.APIKeyQuotaCost
++		if p.APIKey != nil {
++			shadow := s.quotaShadow[cmd.APIKeyID]
++			if shadow.used < p.APIKey.QuotaUsed {
++				shadow.used = p.APIKey.QuotaUsed
++			}
++			shadow.used += cmd.APIKeyQuotaCost
++			shadow.quota = p.APIKey.Quota
++			shadow.expiresAt = now.Add(s.quotaShadowTTL())
++			s.quotaShadow[cmd.APIKeyID] = shadow
++			result.APIKeyQuotaExhausted = shadow.quota > 0 && shadow.used >= shadow.quota
++		}
++		s.apiKeyQuota[cmd.APIKeyID] = item
++		if p.APIKeyService != nil {
++			s.apiKeyUpdaters[cmd.APIKeyID] = p.APIKeyService
++		}
++	}
++	if cmd.APIKeyRateLimitCost > 0 {
++		s.apiKeyRate[cmd.APIKeyID] += cmd.APIKeyRateLimitCost
++		if p.APIKeyService != nil {
++			s.apiKeyUpdaters[cmd.APIKeyID] = p.APIKeyService
++		}
++	}
++	if cmd.AccountQuotaCost > 0 {
++		s.accountQuota[cmd.AccountID] += cmd.AccountQuotaCost
++	}
++	s.commands = append(s.commands, cloneUsageBillingCommand(cmd))
++	s.l2Entries++
++	s.appliedTotal.Add(1)
++	s.mu.Unlock()
++
++	if err := s.mirrorPendingToL2(ctx, cmd); err != nil {
++		s.l2MirrorErrorTotal.Add(1)
++		logger.LegacyPrintf("usage_billing_write_behind", "[UsageBillingWriteBehind] L2 mirror failed, continuing L1-only: %v", err)
++	}
++
++	return result, true, nil
++}
++
++// deductCurrentBalanceLocked uses the billing L1 as the balance authority.
++// The auth snapshot is intentionally ignored because it may be stale for its
++// full cache TTL. Apply holds s.mu while this method reads and deducts L1.
++func (s *UsageBillingWriteBehind) deductCurrentBalanceLocked(ctx context.Context, userID int64, cost float64, deps *billingDeps) (float64, bool, bool, error) {
++	if deps != nil && deps.billingCacheService != nil {
++		balance, err := deps.billingCacheService.GetUserBalance(ctx, userID)
++		if err != nil {
++			return 0, false, false, err
++		}
++		if deps.billingCacheService.applyUserBalanceDeltaLocal(userID, -cost) {
++			return balance, true, true, nil
++		}
++		// Non-local cache compatibility path. It is serialized by s.mu and is
++		// based on the just-read billing cache value, never the auth snapshot.
++		if err := deps.billingCacheService.SetUserBalanceRealtime(ctx, userID, balance-cost); err != nil {
++			return 0, false, false, err
++		}
++		return balance, true, true, nil
++	}
++	if balance, ok := s.balanceShadow[userID]; ok {
++		return balance, true, false, nil
++	}
++	if deps == nil || deps.userRepo == nil {
++		return 0, false, false, nil
++	}
++	user, err := deps.userRepo.GetByID(ctx, userID)
++	if err != nil {
++		return 0, false, false, err
++	}
++	if user == nil {
++		return 0, false, false, nil
++	}
++	return user.Balance, true, false, nil
++}
++
++func (s *UsageBillingWriteBehind) Flush(parentCtx context.Context, deps *billingDeps) {
++	if s == nil {
++		return
++	}
++	if parentCtx == nil {
++		parentCtx = context.Background()
++	}
++	for i := 0; i < usageBillingFlushMaxBatches; i++ {
++		batch := s.takeBatch()
++		if batch.empty() {
++			return
++		}
++		balanceKeys := len(batch.balances)
++		subscriptionKeys := len(batch.subscriptions)
++		apiKeyQuotaKeys := len(batch.apiKeyQuota)
++		apiKeyRateKeys := len(batch.apiKeyRate)
++		accountQuotaKeys := len(batch.accountQuota)
++		if err := s.flushBatch(parentCtx, deps, batch); err != nil {
++			s.requeue(batch)
++			s.flushErrorTotal.Add(1)
++			logger.LegacyPrintf("usage_billing_write_behind", "[UsageBillingWriteBehind] ALERT flush failed: %v", err)
++			return
++		}
++		if err := s.trimPendingL2(parentCtx, batch.l2Entries); err != nil {
++			s.l2TrimErrorTotal.Add(1)
++			logger.LegacyPrintf("usage_billing_write_behind", "[UsageBillingWriteBehind] L2 trim failed after DB flush: %v", err)
++		}
++		s.flushSuccessTotal.Add(1)
++		s.flushBalanceKeysTotal.Add(uint64(balanceKeys))
++		s.flushSubscriptionKeysTotal.Add(uint64(subscriptionKeys))
++		s.flushAPIKeyQuotaKeysTotal.Add(uint64(apiKeyQuotaKeys))
++		s.flushAPIKeyRateKeysTotal.Add(uint64(apiKeyRateKeys))
++		s.flushAccountQuotaKeysTotal.Add(uint64(accountQuotaKeys))
++	}
++	logger.LegacyPrintf("usage_billing_write_behind", "[UsageBillingWriteBehind] single flush reached batch cap=%d", usageBillingFlushMaxBatches)
++}
++
++func (s *UsageBillingWriteBehind) Stats() UsageBillingWriteBehindStats {
++	if s == nil {
++		return UsageBillingWriteBehindStats{}
++	}
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return UsageBillingWriteBehindStats{
++		PendingL1Entries:           len(s.commands),
++		PendingBalanceKeys:         len(s.balances),
++		PendingSubscriptionKeys:    len(s.subscriptions),
++		PendingAPIKeyQuotaKeys:     len(s.apiKeyQuota),
++		PendingAPIKeyRateKeys:      len(s.apiKeyRate),
++		PendingAPIKeyUpdaterKeys:   len(s.apiKeyUpdaters),
++		PendingAccountQuotaKeys:    len(s.accountQuota),
++		PendingL2Entries:           s.l2PendingEntries.Load(),
++		DedupEntries:               len(s.dedup),
++		AppliedTotal:               s.appliedTotal.Load(),
++		DedupSkippedTotal:          s.dedupSkippedTotal.Load(),
++		L2MirrorErrorTotal:         s.l2MirrorErrorTotal.Load(),
++		L2TrimErrorTotal:           s.l2TrimErrorTotal.Load(),
++		FlushSuccessTotal:          s.flushSuccessTotal.Load(),
++		FlushErrorTotal:            s.flushErrorTotal.Load(),
++		FlushBalanceKeysTotal:      s.flushBalanceKeysTotal.Load(),
++		FlushSubscriptionKeysTotal: s.flushSubscriptionKeysTotal.Load(),
++		FlushAPIKeyQuotaKeysTotal:  s.flushAPIKeyQuotaKeysTotal.Load(),
++		FlushAPIKeyRateKeysTotal:   s.flushAPIKeyRateKeysTotal.Load(),
++		FlushAccountQuotaKeysTotal: s.flushAccountQuotaKeysTotal.Load(),
++	}
++}
++
++func (s *UsageBillingWriteBehind) takeBatch() usageBillingWriteBehindBatch {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	now := time.Now()
++	s.pruneDedupLocked(now)
++	batch := usageBillingWriteBehindBatch{
++		balances:       s.balances,
++		subscriptions:  s.subscriptions,
++		apiKeyQuota:    s.apiKeyQuota,
++		apiKeyRate:     s.apiKeyRate,
++		apiKeyUpdaters: s.apiKeyUpdaters,
++		accountQuota:   s.accountQuota,
++		commands:       s.commands,
++		l2Entries:      s.l2Entries,
++	}
++	s.balances = make(map[int64]float64)
++	s.subscriptions = make(map[int64]float64)
++	s.apiKeyQuota = make(map[int64]usageBillingAPIKeyQuotaDelta)
++	s.apiKeyRate = make(map[int64]float64)
++	s.apiKeyUpdaters = make(map[int64]APIKeyQuotaUpdater)
++	s.accountQuota = make(map[int64]float64)
++	s.commands = make([]*UsageBillingCommand, 0)
++	s.l2Entries = 0
++	return batch
++}
++
++func (s *UsageBillingWriteBehind) requeue(batch usageBillingWriteBehindBatch) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	for userID, cost := range batch.balances {
++		s.balances[userID] += cost
++	}
++	for id, cost := range batch.subscriptions {
++		s.subscriptions[id] += cost
++	}
++	for keyID, delta := range batch.apiKeyQuota {
++		existing := s.apiKeyQuota[keyID]
++		existing.cost += delta.cost
++		s.apiKeyQuota[keyID] = existing
++	}
++	for keyID, cost := range batch.apiKeyRate {
++		s.apiKeyRate[keyID] += cost
++	}
++	for keyID, updater := range batch.apiKeyUpdaters {
++		if _, ok := batch.apiKeyQuota[keyID]; !ok {
++			if _, ok := batch.apiKeyRate[keyID]; !ok {
++				continue
++			}
++		}
++		if updater != nil && s.apiKeyUpdaters[keyID] == nil {
++			s.apiKeyUpdaters[keyID] = updater
++		}
++	}
++	for accountID, cost := range batch.accountQuota {
++		s.accountQuota[accountID] += cost
++	}
++	if len(batch.commands) > 0 {
++		s.commands = append(batch.commands, s.commands...)
++	}
++	s.l2Entries += batch.l2Entries
++}
++
++func (s *UsageBillingWriteBehind) flushBatch(parentCtx context.Context, deps *billingDeps, batch usageBillingWriteBehindBatch) error {
++	if batch.empty() {
++		return nil
++	}
++	if s.repo != nil && len(batch.commands) > 0 {
++		return s.flushBatchCommands(parentCtx, batch)
++	}
++	if deps == nil {
++		deps = s.currentDeps()
++	}
++	if deps == nil {
++		return errors.New("usage billing write-behind deps nil")
++	}
++	ctx, cancel := context.WithTimeout(parentCtx, usageBillingApplyTimeout)
++	defer cancel()
++
++	if len(batch.balances) > 0 && deps.userRepo == nil {
++		return errors.New("usage billing write-behind user repo nil")
++	}
++	for userID, cost := range batch.balances {
++		if cost <= 0 {
++			delete(batch.balances, userID)
++			continue
++		}
++		if err := deps.userRepo.DeductBalance(ctx, userID, cost); err != nil {
++			return err
++		}
++		delete(batch.balances, userID)
++	}
++
++	if len(batch.subscriptions) > 0 && deps.userSubRepo == nil {
++		return errors.New("usage billing write-behind subscription repo nil")
++	}
++	for id, cost := range batch.subscriptions {
++		if cost <= 0 {
++			delete(batch.subscriptions, id)
++			continue
++		}
++		if err := deps.userSubRepo.IncrementUsage(ctx, id, cost); err != nil {
++			return err
++		}
++		delete(batch.subscriptions, id)
++	}
++
++	for keyID, delta := range batch.apiKeyQuota {
++		if delta.cost <= 0 {
++			delete(batch.apiKeyQuota, keyID)
++			continue
++		}
++		updater := batch.apiKeyUpdaters[keyID]
++		if updater == nil {
++			return errors.New("usage billing write-behind api key quota updater nil")
++		}
++		if err := updater.UpdateQuotaUsed(ctx, keyID, delta.cost); err != nil {
++			return err
++		}
++		delete(batch.apiKeyQuota, keyID)
++	}
++	for keyID, cost := range batch.apiKeyRate {
++		if cost <= 0 {
++			delete(batch.apiKeyRate, keyID)
++			continue
++		}
++		updater := batch.apiKeyUpdaters[keyID]
++		if updater == nil {
++			return errors.New("usage billing write-behind api key rate updater nil")
++		}
++		if err := updater.UpdateRateLimitUsage(ctx, keyID, cost); err != nil {
++			return err
++		}
++		delete(batch.apiKeyRate, keyID)
++	}
++	if len(batch.accountQuota) > 0 && deps.accountRepo == nil {
++		return errors.New("usage billing write-behind account repo nil")
++	}
++	for accountID, cost := range batch.accountQuota {
++		if cost <= 0 {
++			delete(batch.accountQuota, accountID)
++			continue
++		}
++		if err := deps.accountRepo.IncrementQuotaUsed(ctx, accountID, cost); err != nil {
++			return err
++		}
++		delete(batch.accountQuota, accountID)
++	}
++	return nil
++}
++
++func (s *UsageBillingWriteBehind) flushBatchCommands(parentCtx context.Context, batch usageBillingWriteBehindBatch) error {
++	if s == nil || s.repo == nil || batch.empty() {
++		return nil
++	}
++	for _, cmd := range batch.commands {
++		if cmd == nil {
++			continue
++		}
++		ctx, cancel := context.WithTimeout(parentCtx, usageBillingApplyTimeout)
++		if _, err := s.repo.Apply(ctx, cmd); err != nil {
++			cancel()
++			return err
++		}
++		cancel()
++	}
++	return nil
++}
++
++func (b usageBillingWriteBehindBatch) empty() bool {
++	return len(b.balances) == 0 &&
++		len(b.subscriptions) == 0 &&
++		len(b.apiKeyQuota) == 0 &&
++		len(b.apiKeyRate) == 0 &&
++		len(b.accountQuota) == 0 &&
++		len(b.commands) == 0
++}
++
++func (s *UsageBillingWriteBehind) pruneDedupLocked(now time.Time) {
++	for key, entry := range s.dedup {
++		if !entry.expiresAt.After(now) {
++			delete(s.dedup, key)
++		}
++	}
++	for key, entry := range s.quotaShadow {
++		if !entry.expiresAt.After(now) {
++			delete(s.quotaShadow, key)
++		}
++	}
++}
++
++func (s *UsageBillingWriteBehind) dedupTTL() time.Duration {
++	if s == nil || s.cfg == nil || s.cfg.Idempotency.DefaultTTLSeconds <= 0 {
++		return 24 * time.Hour
++	}
++	return time.Duration(s.cfg.Idempotency.DefaultTTLSeconds) * time.Second
++}
++
++func (s *UsageBillingWriteBehind) quotaShadowTTL() time.Duration {
++	if s == nil || s.cfg == nil || s.cfg.APIKeyAuth.L2TTLSeconds <= 0 {
++		return 5 * time.Minute
++	}
++	return time.Duration(s.cfg.APIKeyAuth.L2TTLSeconds) * time.Second
++}
++
++func usageBillingWriteBehindDedupKey(cmd *UsageBillingCommand) string {
++	if cmd == nil {
++		return ""
++	}
++	return strings.TrimSpace(cmd.RequestID) + ":" + strconv.FormatInt(cmd.APIKeyID, 10)
++}
++
++func buildOptimisticAccountQuotaState(account *Account, cost float64) *AccountQuotaState {
++	if account == nil {
++		return nil
++	}
++	state := &AccountQuotaState{
++		TotalUsed:   account.GetQuotaUsed() + cost,
++		TotalLimit:  account.GetQuotaLimit(),
++		DailyUsed:   account.GetQuotaDailyUsed() + cost,
++		DailyLimit:  account.GetQuotaDailyLimit(),
++		WeeklyUsed:  account.GetQuotaWeeklyUsed() + cost,
++		WeeklyLimit: account.GetQuotaWeeklyLimit(),
++	}
++	return state
++}
+diff --git a/backend/internal/service/usage_pending.go b/backend/internal/service/usage_pending.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4735305ae1eebedede9e90955df522ecca7f5e5
+--- /dev/null
++++ b/backend/internal/service/usage_pending.go
+@@ -0,0 +1,21 @@
++package service
++
++import (
++	"os"
++	"strconv"
++	"strings"
++	"time"
++)
++
++func usagePendingInstanceKey(prefix string) string {
++	host, _ := os.Hostname()
++	host = strings.TrimSpace(host)
++	if host == "" {
++		host = "unknown"
++	}
++	return prefix + ":" + host + ":" + strconv.Itoa(os.Getpid())
++}
++
++func usagePendingTTL() time.Duration {
++	return usagePendingL2TTL
++}
+diff --git a/backend/internal/service/usage_service.go b/backend/internal/service/usage_service.go
+index a085a7137194849d0e1c2325d2866db153e33fbd..62d2ad601e0a4c2487e6766c6d6aebddc46b17ef 100644
+--- a/backend/internal/service/usage_service.go
++++ b/backend/internal/service/usage_service.go
+@@ -62,6 +62,21 @@ type UsageService struct {
+ 	authCacheInvalidator APIKeyAuthCacheInvalidator
+ }
+ 
++type UsageLogPendingStats struct {
++	PendingL1Entries    int    `json:"pending_l1_entries"`
++	PendingL2Entries    int64  `json:"pending_l2_entries"`
++	EnqueuedTotal       uint64 `json:"enqueued_total"`
++	FlushedTotal        uint64 `json:"flushed_total"`
++	FlushErrorTotal     uint64 `json:"flush_error_total"`
++	L2MirrorErrorTotal  uint64 `json:"l2_mirror_error_total"`
++	L2TrimErrorTotal    uint64 `json:"l2_trim_error_total"`
++	DroppedAfterStopped uint64 `json:"dropped_after_stopped"`
++}
++
++type usageLogPendingStatsProvider interface {
++	Stats() UsageLogPendingStats
++}
++
+ // NewUsageService 创建使用统计服务实例
+ func NewUsageService(usageRepo UsageLogRepository, userRepo UserRepository, entClient *dbent.Client, authCacheInvalidator APIKeyAuthCacheInvalidator) *UsageService {
+ 	return &UsageService{
+@@ -73,6 +88,16 @@ func NewUsageService(usageRepo UsageLogRepository, userRepo UserRepository, entC
+ }
+ 
+ // Create 创建使用日志
++func (s *UsageService) PendingStats() UsageLogPendingStats {
++	if s == nil || s.usageRepo == nil {
++		return UsageLogPendingStats{}
++	}
++	if provider, ok := s.usageRepo.(usageLogPendingStatsProvider); ok {
++		return provider.Stats()
++	}
++	return UsageLogPendingStats{}
++}
++
+ func (s *UsageService) Create(ctx context.Context, req CreateUsageLogRequest) (*UsageLog, error) {
+ 	// 使用数据库事务保证「使用日志插入」与「扣费」的原子性，避免重复扣费或漏扣风险。
+ 	tx, err := s.entClient.Tx(ctx)
+diff --git a/backend/internal/service/user_platform_quota_flusher.go b/backend/internal/service/user_platform_quota_flusher.go
+index 3ee23d2c93728b829bd56de4f0164146c6261cc7..24649fc7d40aa12e5cacb80325fa158745f7c3b4 100644
+--- a/backend/internal/service/user_platform_quota_flusher.go
++++ b/backend/internal/service/user_platform_quota_flusher.go
+@@ -17,6 +17,10 @@ type quotaDirtyCache interface {
+ 	BatchGetUserPlatformQuotaCache(ctx context.Context, keys []UserPlatformQuotaKey) ([]*UserPlatformQuotaCacheEntry, error)
+ }
+ 
++type quotaFlushAcknowledger interface {
++	AcknowledgeUserPlatformQuotaFlush(keys []UserPlatformQuotaKey)
++}
++
+ // quotaSnapshotWriter 是 flusher 依赖的 DB 写入窄接口。
+ // 使用 service 层的 UserPlatformQuotaSnapshot，避免与 repository 包形成循环依赖；
+ // 实际实现由 repository adapter 在 B7 注入。
+@@ -47,6 +51,8 @@ const maxFlushBatchSize = 6000
+ // defaultFlushBatchSize 是配置 flush_batch_size 非法(≤0)时的回退值。
+ const defaultFlushBatchSize = 1000
+ 
++const defaultQuotaFlushInterval = 30 * time.Second
++
+ // UserPlatformQuotaUsageFlusher 将 Redis 脏集快照定期批量写入 DB。
+ // 不维护任何 delta/in-process 状态；每批读取 Redis 当前绝对值覆盖写入。
+ type UserPlatformQuotaUsageFlusher struct {
+@@ -77,8 +83,8 @@ func NewUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, qu
+ 	}
+ 	interval := time.Duration(cfg.Database.UserPlatformQuotaFlushIntervalMs) * time.Millisecond
+ 	if interval <= 0 {
+-		logger.LegacyPrintf("quota_flusher", "[QuotaFlusher] flush_interval_ms %d 非法,回退 2000ms", cfg.Database.UserPlatformQuotaFlushIntervalMs)
+-		interval = 2 * time.Second
++		logger.LegacyPrintf("quota_flusher", "[QuotaFlusher] flush_interval_ms %d 非法,回退 30000ms", cfg.Database.UserPlatformQuotaFlushIntervalMs)
++		interval = defaultQuotaFlushInterval
+ 	}
+ 	return &UserPlatformQuotaUsageFlusher{
+ 		cache:        cache,
+@@ -115,6 +121,12 @@ func (s *UserPlatformQuotaUsageFlusher) readdOrCountLost(ctx context.Context, ke
+ 	s.metrics.DirtyReaddTotal.Add(int64(len(keys)))
+ }
+ 
++func (s *UserPlatformQuotaUsageFlusher) acknowledge(keys []UserPlatformQuotaKey) {
++	if cache, ok := s.cache.(quotaFlushAcknowledger); ok {
++		cache.AcknowledgeUserPlatformQuotaFlush(keys)
++	}
++}
++
+ // flushOneBatch 处理单批：Pop → BatchGet → 组装 snaps → BatchSnapshotUsage。
+ // 返回 (shouldContinue bool)：false 表示本轮循环应停止（空集/错误/最后一批）。
+ // 每次调用独立创建带 timeout 的 ctx 并 defer cancel，不会在循环中累积泄漏。
+@@ -167,6 +179,7 @@ func (s *UserPlatformQuotaUsageFlusher) flushOneBatch(parentCtx context.Context)
+ 
+ 	// 4. 全部 MISS/异常跳过时
+ 	if len(snaps) == 0 {
++		s.acknowledge(keys)
+ 		// 若 Pop 数量已不满一批，表示脏集将空，停止
+ 		if len(keys) < s.batchSize {
+ 			return false
+@@ -200,6 +213,7 @@ func (s *UserPlatformQuotaUsageFlusher) flushOneBatch(parentCtx context.Context)
+ 			// FK 违反：用户已被删除，直接丢弃不 Readd
+ 			s.metrics.FlushFKViolationTotal.Add(1)
+ 			s.metrics.FlushErrorTotal.Add(1)
++			s.acknowledge(keys)
+ 			logger.LegacyPrintf("quota_flusher", "[QuotaFlusher] FK violation (dropped %d snaps): %v", len(snaps), writeErr)
+ 		} else {
+ 			// 其他错误：回填脏集，保留下次重试
+@@ -213,6 +227,7 @@ func (s *UserPlatformQuotaUsageFlusher) flushOneBatch(parentCtx context.Context)
+ 	// 6. 成功
+ 	s.metrics.FlushSuccessTotal.Add(1)
+ 	s.metrics.FlushBatchSizeTotal.Add(int64(len(snaps)))
++	s.acknowledge(keys)
+ 
+ 	// 若 Pop 数量不满一批，脏集已空，停止
+ 	if len(keys) < s.batchSize {
+diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
+index 7258ff05a3246171d2bb8de1b0ca2b50785997eb..e5f2ccce82ae4b7d31bbef1237311f1bd377786a 100644
+--- a/backend/internal/service/wire.go
++++ b/backend/internal/service/wire.go
+@@ -240,8 +240,12 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
+ }
+ 
+ // ProvideDeferredService creates and starts DeferredService
+-func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService) *DeferredService {
+-	svc := NewDeferredService(accountRepo, timingWheel, 10*time.Second)
++func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService, cfg *config.Config) *DeferredService {
++	persistLastUsed := true
++	if cfg != nil {
++		persistLastUsed = cfg.Gateway.HotPath.PersistAccountLastUsed
++	}
++	svc := NewDeferredServiceWithOptions(accountRepo, timingWheel, 10*time.Second, persistLastUsed)
+ 	svc.Start()
+ 	return svc
+ }
+@@ -537,6 +541,37 @@ func ProvideBillingCacheService(
+ 	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
+ }
+ 
++type usageBillingPendingRedisStore struct {
++	client *redis.Client
++}
++
++func (s *usageBillingPendingRedisStore) Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error {
++	pipe := s.client.Pipeline()
++	pipe.RPush(ctx, key, payload)
++	pipe.Expire(ctx, key, ttl)
++	_, err := pipe.Exec(ctx)
++	return err
++}
++
++func (s *usageBillingPendingRedisStore) Trim(ctx context.Context, key string, n int64) error {
++	return s.client.LTrim(ctx, key, n, -1).Err()
++}
++
++func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, client *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
++	var pending usageBillingPendingStore
++	if client != nil {
++		pending = &usageBillingPendingRedisStore{client: client}
++	}
++	return newUsageBillingWriteBehind(cfg, pending, repo)
++}
++
++// ProvideUsageBillingWriteBehind creates and starts the request hot-path billing flusher.
++func ProvideUsageBillingWriteBehind(cfg *config.Config, redisClient *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
++	svc := NewUsageBillingWriteBehindWithRedis(cfg, redisClient, repo)
++	svc.Start()
++	return svc
++}
++
+ // ProvideAPIKeyService wires APIKeyService and connects rate-limit cache invalidation.
+ func ProvideAPIKeyService(
+ 	apiKeyRepo APIKeyRepository,
+@@ -547,10 +582,12 @@ func ProvideAPIKeyService(
+ 	cache APIKeyCache,
+ 	cfg *config.Config,
+ 	billingCacheService *BillingCacheService,
++	usageBillingWriteBehind *UsageBillingWriteBehind,
+ 	concurrencyService *ConcurrencyService,
+ ) *APIKeyService {
+ 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
+ 	svc.SetRateLimitCacheInvalidator(billingCacheService)
++	svc.SetUsageBillingWriteBehind(usageBillingWriteBehind)
+ 	svc.SetConcurrencyService(concurrencyService)
+ 	return svc
+ }
+@@ -572,6 +609,7 @@ var ProviderSet = wire.NewSet(
+ 	ProvidePricingService,
+ 	NewBillingService,
+ 	ProvideBillingCacheService,
++	ProvideUsageBillingWriteBehind,
+ 	NewAnnouncementService,
+ 	NewAdminService,
+ 	NewGatewayService,
+@@ -683,8 +721,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
+ }
+ 
+ // ProvidePaymentService creates PaymentService and attaches notification email delivery.
+-func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, notificationEmailService *NotificationEmailService) *PaymentService {
+-	svc := NewPaymentService(entClient, registry, loadBalancer, redeemService, subscriptionSvc, configService, userRepo, groupRepo, affiliateService)
++func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, billingCacheService *BillingCacheService, notificationEmailService *NotificationEmailService) *PaymentService {
++	svc := NewPaymentService(entClient, registry, loadBalancer, redeemService, subscriptionSvc, configService, userRepo, groupRepo, affiliateService, billingCacheService)
+ 	svc.SetNotificationEmailService(notificationEmailService)
+ 	return svc
+ }
+

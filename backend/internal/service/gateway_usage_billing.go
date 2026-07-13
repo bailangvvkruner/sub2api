@@ -406,6 +406,9 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
 	if p == nil || p.Cost == nil || p.User == nil || deps == nil || deps.billingCacheService == nil {
 		return
 	}
+	if result != nil && result.balanceCacheSynced {
+		return
+	}
 	var newBalance *float64
 	if result != nil {
 		newBalance = result.NewBalance

@@ -1,0 +1,499 @@
+From 08cdea42f59e319d767dadab4dea2c2c42d7cf81 Mon Sep 17 00:00:00 2001
+From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
+Date: Mon, 13 Jul 2026 10:33:15 +0800
+Subject: [PATCH 6/7] fork: retain deployment defaults and documentation
+
+---
+diff --git a/.gitattributes b/.gitattributes
+index 37e3bee2cc6d7b92ae9033d6d7183977920d2379..6d73e5028c41b466ffd9f50c55cda3d87cad3a3e 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -18,5 +18,11 @@ backend/migrations/*.sql text eol=lf
+ *.yaml text eol=lf
+ *.yml text eol=lf
+ 
++# Structured fork metadata
++*.json text eol=lf
++
+ # Dockerfile
+ Dockerfile text eol=lf
++
++fork-meta/patches/* text eol=lf
++fork-meta/patches/*.patch -whitespace
+diff --git a/.gitignore b/.gitignore
+index bd2e3e6ddf486b0620ecfc32c8176352baf02c11..ae1236c48db978841a005191ceafbcf43571af5c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -27,6 +27,10 @@ vendor/
+ 
+ # Go 编译缓存
+ backend/.gocache/
++backend/.gomodcache/
++backend/.gotmp/
++backend/.tmp/
++.tmp/
+ 
+ # ===================
+ # Node.js / Vue 前端
+@@ -34,6 +38,9 @@ backend/.gocache/
+ node_modules/
+ frontend/node_modules/
+ frontend/dist/
++.pnpm-store/
++.vite/
++frontend/.corepack/
+ *.local
+ *.tsbuildinfo
+ vite.config.d.ts
+@@ -119,6 +126,8 @@ tests
+ CLAUDE.md
+ .claude
+ scripts
++!.github/scripts/
++!.github/scripts/*.sh
+ !backend/scripts/
+ !backend/scripts/resolve-version.sh
+ .code-review-state
+@@ -128,6 +137,8 @@ AGENTS.md
+ backend/cmd/server/server
+ deploy/docker-compose.override.yml
+ .gocache/
++.gomodcache/
++.gotmp/
+ vite.config.js
+ docs/*
+ !docs/PAYMENT.md
+diff --git a/README.md b/README.md
+index 661cd8e7ebde231289a2ac10ab522e89a72179dc..89d45ce4faf98afca781bd1b16cd25cf4af733ab 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,48 @@
++## 本分支性能补丁说明（单机激进模式默认开启）
++
++这个 fork 的目标是压低请求热路径里的 Redis/DB 写放大，适合单机或单进程部署。默认已开启：
++
++- `gateway.hotpath.local_concurrency_slots: true`：账号/用户并发槽与等待计数从 Redis ZSET/计数器切到本机内存，抢槽、释放槽、负载读取不再走 Redis。
++- `gateway.hotpath.persist_account_last_used: false`：账号 `last_used_at` 默认不再按请求延迟批量写数据库，减少高 QPS 下的 DB 写入与调度缓存刷新。
++- `gateway.hotpath.local_billing_cache: true`：余额、订阅用量、API key 限速、user×platform quota 增加 sub2api 进程内 L1 缓存。读路径优先级为 `sub2api 程序缓存 > Redis > PostgreSQL`；默认 `local_billing_cache_write_through: false`，热路径写入先更新本机快照，不再每次透传 Redis。
++- `gateway.hotpath.usage_billing_write_behind: true`：余额扣费、订阅用量、API key quota/限速用量、账号 quota 默认先进入进程内聚合器，再按 `usage_billing_flush_interval_ms: 30000` 批量刷入 PostgreSQL；正常退出 cleanup 会先 flush，减少每请求事务和磁盘写入。
++- `database.user_platform_quota_flusher_enabled: true`：user×platform quota usage 默认不再每请求同步直写 PostgreSQL，而是先累加到本机热快照，再由 flusher 默认每 30 秒批量刷入 PostgreSQL，降低 DB 写入次数和磁盘 IOPS。
++- 调度默认走 priority/load/random 类 tie-break；`fallback_selection_mode: last_used` 仍保留兼容，但激进模式下不建议依赖它。
++- 上游同步工作流会检查这些补丁是否仍在，避免同步后被上游改动悄悄冲掉。
++
++边界说明：请求数据面默认 L1 优先，但不是所有数据都只放内存。支付订单、充值记录、管理员配置变更、账号/API key/用户创建修改等控制面仍直接以 PostgreSQL 为权威。`usage_billing_write_behind` 会把请求扣费延迟到 30 秒批量刷盘；正常停止会 flush，断电、宿主机崩溃、`docker kill -9` 可能丢失未 flush 的窗口。多实例部署如果需要跨进程强一致热快照，应打开 `local_billing_cache_write_through` 或关闭激进 L1 模式。
++
++Docker 部署已加正常退出保护：`sub2api` 停机宽限期 90 秒，HTTP 排水最多等待 15 秒，应用内部 cleanup 最多等待 45 秒；PostgreSQL/Redis 停机宽限期 120 秒；Redis 收到 `docker compose stop/down` 的 SIGTERM 时会执行 `SHUTDOWN SAVE`，尽量在退出前把 RDB/AOF 写盘。这个保护只覆盖正常停止流程，不能保证断电、宿主机崩溃、`docker kill -9` 这类强杀场景。
++
++### 本机热路径 QPS 对比
++
++口径：只测并发控制缓存热路径，不代表完整 HTTP 网关吞吐。完整吞吐还会受上游响应、数据库查询、日志、鉴权、流式传输等影响。
++
++测试命令：
++
++```powershell
++$env:GOMAXPROCS='2'
++cd backend
++go test -run '^$' -bench '^BenchmarkConcurrencyCacheHotPath$' -benchtime=3s -count=1 -cpu=2 ./internal/repository
++```
++
++测试环境：Windows/amd64，Intel i5-10400，`GOMAXPROCS=2`。本机未配置 `TEST_REDIS_URL`，Redis 基线使用内嵌 `miniredis`，所以绝对值仅作本机参考；真实 Redis 会受网络、部署方式和实例性能影响。
++
++| 场景 | 优化前：Redis ZSET | 优化后：本机内存 | 提升 |
++| --- | ---: | ---: | ---: |
++| 抢槽+释放槽（单线程） | 4,557 QPS | 3,286,863 QPS | 约 721x |
++| 抢槽+释放槽（2 核并行） | 5,303 QPS | 2,327,639 QPS | 约 439x |
++| 100 个账号负载批量读取 | 248 QPS | 53,012 QPS | 约 214x |
++
++### 中国大陆构建命令
++
++```powershell
++$env:GOPROXY='https://goproxy.cn,direct'
++$env:GOSUMDB='sum.golang.google.cn'
++cd backend
++go build -o '..\.tmp\sub2api-server.exe' .\cmd\server
++```
++
+ # Sub2API
+ 
+ <div align="center">
+diff --git a/deploy/config.example.yaml b/deploy/config.example.yaml
+index eff4bfb598a17b2f8102f0196aa1a295f13428a4..f66fa64277f51c429fbb7947aa07fddef1c473ea 100644
+--- a/deploy/config.example.yaml
++++ b/deploy/config.example.yaml
+@@ -431,9 +431,12 @@ gateway:
+     # Fallback max waiting queue size
+     # 兜底最大排队长度
+     fallback_max_waiting: 100
++    # Fallback account selection mode: random or last_used
++    # 兜底账户选择策略：random（默认）或 last_used
++    fallback_selection_mode: random
+     # Prefer the account whose session window resets soonest (use-it-or-lose-it).
+     # 负载感知选择时优先用尽「会话窗口最早重置」的账号；false 保持
+-    # 原有「优先级 → 负载率 → LRU」行为（默认）。
++    # 默认「优先级 → 负载率 → 随机」行为。
+     prefer_soonest_reset: false
+     # Enable batch load calculation for scheduling
+     # 启用调度批量负载计算
+@@ -462,6 +465,30 @@ gateway:
+     outbox_backlog_rebuild_rows: 10000
+     # 全量重建周期（秒），0 表示禁用
+     full_rebuild_interval_seconds: 300
++  # Hot-path optimization switches. This fork enables aggressive single-node mode by default.
++  # 热路径优化开关。本 fork 默认开启单机激进模式。
++  hotpath:
++    # Store concurrency slots and wait counters in process memory instead of Redis.
++    # 将并发槽和等待计数放到本机内存，适合单实例部署；多实例会各自放行并发额度。
++    local_concurrency_slots: true
++    # Persist account last_used_at to DB via deferred batch updates.
++    # 是否继续把账号 last_used_at 延迟批量写入数据库；关闭可进一步降低 DB 写入。
++    persist_account_last_used: false
++    # Read/write billing cache through process memory before Redis.
++    # 余额、订阅用量、API key 限速、user×platform quota 先落 sub2api 进程内存，未命中再 Redis。
++    local_billing_cache: true
++    # Max entries per local billing cache bucket before approximate LRU eviction.
++    # 本机计费缓存每类最大条目数，超过后按近似 LRU 淘汰。
++    local_billing_cache_max_entries: 262144
++    # Also write local billing cache mutations through to Redis.
++    # 是否把本机计费热快照的写入同时透传 Redis；单实例 L1 激进模式默认关闭以降低 Redis QPS。
++    local_billing_cache_write_through: false
++    # Batch per-request usage billing in process memory before PostgreSQL.
++    # 请求扣费/用量先进入进程内 write-behind 聚合，再批量刷入 PostgreSQL。
++    usage_billing_write_behind: true
++    # Flush interval for usage billing write-behind (milliseconds).
++    # 请求扣费/用量 write-behind 刷盘间隔（毫秒）。
++    usage_billing_flush_interval_ms: 30000
+   # TLS fingerprint simulation / TLS 指纹伪装
+   # Default profile "claude_cli_v2" simulates Node.js 20.x
+   # 默认模板 "claude_cli_v2" 模拟 Node.js 20.x 指纹
+@@ -815,6 +842,15 @@ database:
+   # Connection max idle time (minutes)
+   # 空闲连接最大存活时间（分钟）
+   conn_max_idle_time_minutes: 5
++  # Batch-flush user×platform quota usage snapshots from cache to PostgreSQL.
++  # 将 user×platform 配额用量从缓存批量刷入 PostgreSQL，减少每请求直写 DB。
++  user_platform_quota_flusher_enabled: true
++  # Flush interval for user×platform quota snapshots (milliseconds).
++  # user×platform 配额快照刷盘间隔（毫秒）。
++  user_platform_quota_flush_interval_ms: 30000
++  # Max user×platform quota rows per flush batch.
++  # 单批刷入的 user×platform 配额行数上限，建议不超过 6000。
++  user_platform_quota_flush_batch_size: 1000
+ 
+ # =============================================================================
+ # Redis Configuration
+diff --git a/deploy/docker-compose.dev.yml b/deploy/docker-compose.dev.yml
+index 6f5b3f56f3d6f191a518a1bf97ff08cf556b6e48..b01441a0671e92c57961379602315b25bb7ad8d5 100644
+--- a/deploy/docker-compose.dev.yml
++++ b/deploy/docker-compose.dev.yml
+@@ -17,6 +17,7 @@ services:
+         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}
+     container_name: sub2api-dev
+     restart: unless-stopped
++    stop_grace_period: 60s
+     ports:
+       - "${BIND_HOST:-127.0.0.1}:${SERVER_PORT:-8080}:8080"
+     volumes:
+@@ -90,6 +91,7 @@ services:
+     image: postgres:18-alpine
+     container_name: sub2api-postgres-dev
+     restart: unless-stopped
++    stop_grace_period: 120s
+     volumes:
+       - ./postgres_data:/var/lib/postgresql/data:Z
+     environment:
+@@ -111,6 +113,7 @@ services:
+     image: redis:8-alpine
+     container_name: sub2api-redis-dev
+     restart: unless-stopped
++    stop_grace_period: 120s
+     volumes:
+       - ./redis_data:/data:Z
+     command: >
+@@ -119,7 +122,10 @@ services:
+           --save 60 1
+           --appendonly yes
+           --appendfsync everysec
+-          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
++          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"} &
++          pid=$$!;
++          trap "redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN SAVE >/dev/null 2>&1 || kill -TERM $$pid; wait $$pid; exit 0" TERM INT;
++          wait $$pid'
+     environment:
+       - TZ=${TZ:-Asia/Shanghai}
+       - REDISCLI_AUTH=${REDIS_PASSWORD:-}
+diff --git a/deploy/docker-compose.local.yml b/deploy/docker-compose.local.yml
+index 042752e8578042dea2382aceb3625754b18ffcd5..b61727cf4664c0f361d5af86258d97d16796a70d 100644
+--- a/deploy/docker-compose.local.yml
++++ b/deploy/docker-compose.local.yml
+@@ -27,6 +27,7 @@ services:
+     image: weishaw/sub2api:latest
+     container_name: sub2api
+     restart: unless-stopped
++    stop_grace_period: 60s
+     ulimits:
+       nofile:
+         soft: 100000
+@@ -191,6 +192,7 @@ services:
+     image: postgres:18-alpine
+     container_name: sub2api-postgres
+     restart: unless-stopped
++    stop_grace_period: 120s
+     ulimits:
+       nofile:
+         soft: 100000
+@@ -222,6 +224,7 @@ services:
+     image: redis:8-alpine
+     container_name: sub2api-redis
+     restart: unless-stopped
++    stop_grace_period: 120s
+     ulimits:
+       nofile:
+         soft: 100000
+@@ -235,7 +238,10 @@ services:
+           --save 60 1
+           --appendonly yes
+           --appendfsync everysec
+-          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
++          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"} &
++          pid=$$!;
++          trap "redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN SAVE >/dev/null 2>&1 || kill -TERM $$pid; wait $$pid; exit 0" TERM INT;
++          wait $$pid'
+     environment:
+       - TZ=${TZ:-Asia/Shanghai}
+       # REDISCLI_AUTH is used by redis-cli for authentication (safer than -a flag)
+diff --git a/deploy/docker-compose.standalone.yml b/deploy/docker-compose.standalone.yml
+index 2e1d3356244a21a83f73cf273bdfe6c47cd611a3..776d24f9aa5e5416cde73025a2a4f73ec09620d2 100644
+--- a/deploy/docker-compose.standalone.yml
++++ b/deploy/docker-compose.standalone.yml
+@@ -15,6 +15,7 @@ services:
+     image: weishaw/sub2api:latest
+     container_name: sub2api
+     restart: unless-stopped
++    stop_grace_period: 60s
+     ulimits:
+       nofile:
+         soft: 100000
+diff --git a/deploy/docker-compose.yml b/deploy/docker-compose.yml
+index 22713c59aab46005873f316e064b645496a80339..99489325e4ed54d2d7ce8cd3ce4e4efa202a8ad9 100644
+--- a/deploy/docker-compose.yml
++++ b/deploy/docker-compose.yml
+@@ -1,14 +1,22 @@
+ # =============================================================================
+-# Sub2API Docker Compose Configuration
++# Sub2API Docker Compose - Local Directory Version
+ # =============================================================================
++# This configuration uses local directories for data storage instead of named
++# volumes, making it easy to migrate the entire deployment by simply copying
++# the deploy directory.
++#
+ # Quick Start:
+ #   1. Copy .env.example to .env and configure
+-#   2. docker-compose up -d
+-#   3. Check logs: docker-compose logs -f sub2api
+-#   4. Access: http://localhost:8080
++#   2. mkdir -p data postgres_data redis_data
++#   3. docker-compose -f docker-compose.local.yml up -d
++#   4. Check logs: docker-compose -f docker-compose.local.yml logs -f sub2api
++#   5. Access: http://localhost:8080
+ #
+-# All configuration is done via environment variables.
+-# No Setup Wizard needed - the system auto-initializes on first run.
++# Migration to New Server:
++#   1. docker-compose -f docker-compose.local.yml down
++#   2. tar czf sub2api-deploy.tar.gz deploy/
++#   3. Transfer to new server and extract
++#   4. docker-compose -f docker-compose.local.yml up -d
+ # =============================================================================
+ 
+ services:
+@@ -16,25 +24,29 @@ services:
+   # Sub2API Application
+   # ===========================================================================
+   sub2api:
+-    image: weishaw/sub2api:latest
++    # redis大量写入
++    # image: weishaw/sub2api:latest
++    # 治标不治本
++    # image: ghcr.io/youxuanxue/sub2api:latest
++    # 治本 但是脱离主线
++    # image: ghcr.io/atoz03/sub2api:latest
++    # 治本补丁
++    image: bailangvvking/sub2api:latest
+     container_name: sub2api
++    network_mode: host
++    init: true
+     restart: unless-stopped
++    stop_grace_period: 90s
+     ulimits:
+       nofile:
+         soft: 100000
+         hard: 100000
+-    ports:
+-      - "${BIND_HOST:-0.0.0.0}:${SERVER_PORT:-8080}:8080"
+     volumes:
+-      # Data persistence (config.yaml will be auto-generated here)
+-      - sub2api_data:/app/data
++      # Local directory mapping for easy migration
++      - /data/sub2api-deploy/data:/app/data
+       # Optional: Mount custom config.yaml (uncomment and create the file first)
+       # Copy config.example.yaml to config.yaml, modify it, then uncomment:
+       # - ./config.yaml:/app/data/config.yaml
+-      # Optional: Mount a custom Codex instructions template file, then point
+-      # gateway.forced_codex_instructions_template_file at /app/data/codex-instructions.md.tmpl
+-      # in config.yaml.
+-      # - ./codex-instructions.md.tmpl:/app/data/codex-instructions.md.tmpl:ro
+     environment:
+       # =======================================================================
+       # Auto Setup (REQUIRED for Docker deployment)
+@@ -52,7 +64,7 @@ services:
+       # =======================================================================
+       # Database Configuration (PostgreSQL)
+       # =======================================================================
+-      - DATABASE_HOST=postgres
++      - DATABASE_HOST=127.0.0.1
+       - DATABASE_PORT=5432
+       - DATABASE_USER=${POSTGRES_USER:-sub2api}
+       - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+@@ -66,7 +78,7 @@ services:
+       # =======================================================================
+       # Redis Configuration
+       # =======================================================================
+-      - REDIS_HOST=redis
++      - REDIS_HOST=127.0.0.1
+       - REDIS_PORT=6379
+       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+       - REDIS_DB=${REDIS_DB:-0}
+@@ -152,13 +164,6 @@ services:
+       # =======================================================================
+       # Image Generation Stream & Concurrency
+       # =======================================================================
+-      # OpenAI HTTP upstream protocol/timeout
+-      - GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT=${GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT:-0}
+-      - GATEWAY_OPENAI_HTTP2_ENABLED=${GATEWAY_OPENAI_HTTP2_ENABLED:-true}
+-      - GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1=${GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1:-true}
+-      - GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD=${GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD:-2}
+-      - GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS:-60}
+-      - GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS:-600}
+       - GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT=${GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT:-900}
+       - GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL=${GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL:-10}
+       - GATEWAY_IMAGE_CONCURRENCY_ENABLED=${GATEWAY_IMAGE_CONCURRENCY_ENABLED:-false}
+@@ -171,20 +176,8 @@ services:
+         condition: service_healthy
+       redis:
+         condition: service_healthy
+-    networks:
+-      - sub2api-network
+     healthcheck:
+-      test:
+-        [
+-          "CMD",
+-          "wget",
+-          "-q",
+-          "-T",
+-          "5",
+-          "-O",
+-          "/dev/null",
+-          "http://localhost:8080/health",
+-        ]
++      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
+       interval: 30s
+       timeout: 10s
+       retries: 3
+@@ -196,30 +189,26 @@ services:
+   postgres:
+     image: postgres:18-alpine
+     container_name: sub2api-postgres
++    network_mode: host
++    init: true
++    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
+     restart: unless-stopped
++    stop_grace_period: 120s
+     ulimits:
+       nofile:
+         soft: 100000
+         hard: 100000
+     volumes:
+-      - postgres_data:/var/lib/postgresql/data
++      # Local directory mapping for easy migration
++      - /data/sub2api-deploy/postgres_data:/var/lib/postgresql/data
+     environment:
+-      # postgres:18-alpine 默认 PGDATA=/var/lib/postgresql/18/docker（位于镜像声明的匿名卷 /var/lib/postgresql 内）。
+-      # 若不显式设置 PGDATA，则即使挂载了 postgres_data 到 /var/lib/postgresql/data，数据也不会落盘到该命名卷，
+-      # docker compose down/up 后会触发 initdb 重新初始化，导致用户/密码等数据丢失。
+-      - PGDATA=/var/lib/postgresql/data
+       - POSTGRES_USER=${POSTGRES_USER:-sub2api}
+       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+       - POSTGRES_DB=${POSTGRES_DB:-sub2api}
++      - PGDATA=/var/lib/postgresql/data
+       - TZ=${TZ:-Asia/Shanghai}
+-    networks:
+-      - sub2api-network
+     healthcheck:
+-      test:
+-        [
+-          "CMD-SHELL",
+-          "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}",
+-        ]
++      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}"]
+       interval: 10s
+       timeout: 5s
+       retries: 5
+@@ -233,48 +222,33 @@ services:
+   redis:
+     image: redis:8-alpine
+     container_name: sub2api-redis
++    network_mode: host
++    init: true
+     restart: unless-stopped
++    stop_grace_period: 120s
+     ulimits:
+       nofile:
+         soft: 100000
+         hard: 100000
+     volumes:
+-      - redis_data:/data
++      # Local directory mapping for easy migration
++      - /data/sub2api-deploy/redis_data:/data
+     command: >
+-      sh -c '
+-        redis-server
+-        --save 60 1
+-        --appendonly yes
+-        --appendfsync everysec
+-        ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
++        sh -c 'redis-server --bind 127.0.0.1 ::1 --protected-mode yes --save 60 1 --appendonly yes --appendfsync everysec ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"} &
++        pid=$$!;
++        trap "redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN SAVE >/dev/null 2>&1 || kill -TERM $$pid; wait $$pid; exit 0" TERM INT;
++        wait $$pid'
+     environment:
+       - TZ=${TZ:-Asia/Shanghai}
+       # REDISCLI_AUTH is used by redis-cli for authentication (safer than -a flag)
+       - REDISCLI_AUTH=${REDIS_PASSWORD:-}
+-    networks:
+-      - sub2api-network
+     healthcheck:
+       test: ["CMD", "redis-cli", "ping"]
+       interval: 10s
+       timeout: 5s
+       retries: 5
+       start_period: 5s
+-    # 注意：不暴露端口到宿主机，应用通过内部网络连接
+-    # 如需调试，可临时添加：ports: ["127.0.0.1:6379:6379"]
+-# =============================================================================
+-# Volumes
+-# =============================================================================
+-volumes:
+-  sub2api_data:
+-    driver: local
+-  postgres_data:
+-    driver: local
+-  redis_data:
+-    driver: local
+ 
+ # =============================================================================
+ # Networks
+ # =============================================================================
+-networks:
+-  sub2api-network:
+-    driver: bridge
+

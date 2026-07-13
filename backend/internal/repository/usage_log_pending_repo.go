@@ -462,6 +462,14 @@ func cloneInt64Ptr(in *int64) *int64 {
 	return &out
 }
 
+func cloneFloat64Ptr(in *float64) *float64 {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
 func cloneStringIntMap(in map[string]int) map[string]int {
 	if len(in) == 0 {
 		return nil
