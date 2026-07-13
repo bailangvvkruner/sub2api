@@ -1,6 +1,6 @@
-From e927a947d0b76da1575d32ab6218159266134fc6 Mon Sep 17 00:00:00 2001
+From 7bb9cf31c618b540c987b6437cea8ffb076405d3 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 09:41:16 +0800
+Date: Mon, 13 Jul 2026 10:16:49 +0800
 Subject: [PATCH 1/7] fork: preserve patch queue and automation
 
 ---
@@ -602,7 +602,7 @@ index 0000000000000000000000000000000000000000..6e6a7891853fd6825cc319378326266e
 +            "${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 diff --git a/.github/workflows/sync-upstream.yml b/.github/workflows/sync-upstream.yml
 new file mode 100644
-index 0000000000000000000000000000000000000000..ad909054ccac21c972e66a87c45669e79adba6ba
+index 0000000000000000000000000000000000000000..6bb29b3750c17a2bee384beaf9093cef960cd493
 --- /dev/null
 +++ b/.github/workflows/sync-upstream.yml
 @@ -0,0 +1,169 @@
@@ -614,7 +614,6 @@ index 0000000000000000000000000000000000000000..ad909054ccac21c972e66a87c45669e7
 +    - cron: "0 20 * * *"
 +
 +permissions:
-+  actions: write
 +  contents: write
 +  pull-requests: write
 +
@@ -633,6 +632,16 @@ index 0000000000000000000000000000000000000000..ad909054ccac21c972e66a87c45669e7
 +        with:
 +          fetch-depth: 0
 +          ref: main
++          token: ${{ secrets.SYNC_TOKEN }}
++
++      - name: Require synchronization credential
++        env:
++          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
++        run: |
++          if [ -z "$SYNC_TOKEN" ]; then
++            echo "::error::SYNC_TOKEN must be a GitHub App token or PAT with contents, pull request, actions, and workflow access"
++            exit 1
++          fi
 +
 +      - name: Configure git
 +        run: |
@@ -676,7 +685,7 @@ index 0000000000000000000000000000000000000000..ad909054ccac21c972e66a87c45669e7
 +      - name: Resolve synchronization metadata
 +        id: meta
 +        env:
-+          GH_TOKEN: ${{ github.token }}
++          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
 +        run: |
 +          target_sha="$(git rev-parse "$UPSTREAM_REF")"
 +          base_sha="$(jq -er '.base_upstream_sha' fork-meta/patch-series.json)"
@@ -693,14 +702,12 @@ index 0000000000000000000000000000000000000000..ad909054ccac21c972e66a87c45669e7
 +            if [ -n "$pr_number" ]; then
 +              echo "Existing sync PR #$pr_number already tracks $target_sha"
 +              echo "changed=false" >>"$GITHUB_OUTPUT"
-+              echo "dispatch=true" >>"$GITHUB_OUTPUT"
 +              exit 0
 +            fi
 +            echo "::error::Remote sync branch exists without an open PR: $branch"
 +            exit 1
 +          fi
 +          echo "changed=true" >>"$GITHUB_OUTPUT"
-+          echo "dispatch=true" >>"$GITHUB_OUTPUT"
 +          echo "target_sha=$target_sha" >>"$GITHUB_OUTPUT"
 +
 +      - name: Rebuild fork in clean upstream worktree
@@ -760,7 +767,7 @@ index 0000000000000000000000000000000000000000..ad909054ccac21c972e66a87c45669e7
 +        if: steps.meta.outputs.changed == 'true'
 +        working-directory: ${{ steps.rebuild.outputs.worktree }}
 +        env:
-+          GH_TOKEN: ${{ github.token }}
++          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
 +        run: |
 +          body="Rebuilds the ordered fork patch queue on upstream ${{ steps.meta.outputs.target_sha }}. Conflicts fail closed; no automatic conflict resolution or direct push to main is used. Merge only after the Fork patch validation check passes."
 +          gh pr create \
@@ -768,13 +775,6 @@ index 0000000000000000000000000000000000000000..ad909054ccac21c972e66a87c45669e7
 +            --head "${{ steps.meta.outputs.branch }}" \
 +            --title "chore(fork): sync upstream ${{ steps.meta.outputs.target_sha }}" \
 +            --body "$body"
-+
-+      - name: Dispatch required validation for bot PR
-+        if: steps.meta.outputs.dispatch == 'true'
-+        env:
-+          GH_TOKEN: ${{ github.token }}
-+        run: |
-+          gh workflow run validate-fork-patches.yml --ref "${{ steps.meta.outputs.branch }}"
 diff --git a/.github/workflows/validate-fork-patches.yml b/.github/workflows/validate-fork-patches.yml
 new file mode 100644
 index 0000000000000000000000000000000000000000..928c0e4d3a93b071af84b3b4a4f150b95f25a7ec
@@ -873,10 +873,10 @@ index 0000000000000000000000000000000000000000..928c0e4d3a93b071af84b3b4a4f150b9
 +          pnpm test:run
 diff --git a/fork-meta/README.md b/fork-meta/README.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..e02b7fa7d6ded54a82d001d8970cb83ecde2967c
+index 0000000000000000000000000000000000000000..23e09059fc3321663ab3bf4837b7653f6ebc6586
 --- /dev/null
 +++ b/fork-meta/README.md
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,59 @@
 +# Fork patch queue
 +
 +This directory defines the canonical fork-owned changes replayed on top of
@@ -886,6 +886,11 @@ index 0000000000000000000000000000000000000000..e02b7fa7d6ded54a82d001d8970cb83e
 +
 +Local use requires Git, `jq` 1.6 or newer, and the Go toolchain declared in
 +`backend/go.mod`. GitHub-hosted Ubuntu runners already provide `jq`.
++
++Automated synchronization requires a repository Actions secret named
++`SYNC_TOKEN`. Prefer a short-lived GitHub App installation token with contents,
++pull-request, actions, and workflow write access. A scoped PAT is a fallback for
++organizations that disable pull-request creation by the default `GITHUB_TOKEN`.
 +
 +`patch-series.json` is the ownership contract. Every changed path must match
 +exactly one series. A missing owner, overlap, empty series, duplicate ID/order,

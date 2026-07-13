@@ -8,6 +8,11 @@ feature-level patches.
 Local use requires Git, `jq` 1.6 or newer, and the Go toolchain declared in
 `backend/go.mod`. GitHub-hosted Ubuntu runners already provide `jq`.
 
+Automated synchronization requires a repository Actions secret named
+`SYNC_TOKEN`. Prefer a short-lived GitHub App installation token with contents,
+pull-request, actions, and workflow write access. A scoped PAT is a fallback for
+organizations that disable pull-request creation by the default `GITHUB_TOKEN`.
+
 `patch-series.json` is the ownership contract. Every changed path must match
 exactly one series. A missing owner, overlap, empty series, duplicate ID/order,
 or checksum mismatch fails validation before any patch is applied. Generator

@@ -1,6 +1,6 @@
-From e927a947d0b76da1575d32ab6218159266134fc6 Mon Sep 17 00:00:00 2001
+From 7bb9cf31c618b540c987b6437cea8ffb076405d3 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 09:41:16 +0800
+Date: Mon, 13 Jul 2026 10:16:49 +0800
 Subject: [PATCH 2/7] fork: restore L1 hotpath and write-behind runtime
 
 ---
@@ -1436,20 +1436,16 @@ index af8ec49c08e1f14c85a9e1fe2f9c3a652a5b86f5..8339ff5f1e70068d790edddd228fd41b
  	val, err := c.rdb.Get(ctx, key).Result()
 diff --git a/backend/internal/repository/local_billing_cache.go b/backend/internal/repository/local_billing_cache.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae9f10567772eedeea884b9c58c7ce0b2b56e33c
+index 0000000000000000000000000000000000000000..44cbb16cd158371952334c28996ec32642a37202
 --- /dev/null
 +++ b/backend/internal/repository/local_billing_cache.go
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,10 @@
 +package repository
 +
 +import (
 +	"github.com/Wei-Shaw/sub2api/internal/hotpath"
 +	"github.com/Wei-Shaw/sub2api/internal/service"
 +)
-+
-+func newLocalBillingCache(next service.BillingCache, maxEntries int) service.BillingCache {
-+	return hotpath.NewLocalBillingCache(next, maxEntries)
-+}
 +
 +func newLocalBillingCacheWithOptions(next service.BillingCache, maxEntries int, writeThrough bool) service.BillingCache {
 +	return hotpath.NewLocalBillingCacheWithOptions(next, maxEntries, writeThrough)
@@ -1471,7 +1467,7 @@ index 0000000000000000000000000000000000000000..327edb20d5d5fbe796e6205ca20c03e5
 +	return hotpath.NewLocalConcurrencyCache(slotTTLMinutes, waitQueueTTLSeconds)
 +}
 diff --git a/backend/internal/repository/scheduler_cache.go b/backend/internal/repository/scheduler_cache.go
-index c8e1fe14e0a5027141941deaac4ec99cecec0bca..49444cf04030fa0eec1371dc6dfe4793d6a8c140 100644
+index c8e1fe14e0a5027141941deaac4ec99cecec0bca..8c0be004a97e7560d5a0fbdea423135054ee8f52 100644
 --- a/backend/internal/repository/scheduler_cache.go
 +++ b/backend/internal/repository/scheduler_cache.go
 @@ -236,45 +236,7 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
@@ -1521,6 +1517,17 @@ index c8e1fe14e0a5027141941deaac4ec99cecec0bca..49444cf04030fa0eec1371dc6dfe4793
  }
  
  func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
+@@ -338,10 +300,6 @@ func schedulerAccountMetaKey(id string) string {
+ 	return schedulerAccountMetaPrefix + id
+ }
+ 
+-func ptrTime(t time.Time) *time.Time {
+-	return &t
+-}
+-
+ func decodeCachedAccount(val any) (*service.Account, error) {
+ 	var payload []byte
+ 	switch raw := val.(type) {
 diff --git a/backend/internal/repository/usage_log_pending_repo.go b/backend/internal/repository/usage_log_pending_repo.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..a3e3052120e0883c60b66a9b3d9c0c3de22edd2f
@@ -2291,7 +2298,7 @@ index ec5078eac8960ea7c8ad82165884bcc24c7b1f92..eba519de25b7cf31c3f46b688f38aa99
  	NewTempUnschedCache,
  	NewTimeoutCounterCache,
 diff --git a/backend/internal/server/middleware/api_key_auth.go b/backend/internal/server/middleware/api_key_auth.go
-index 082766bfd5596a2559ce986b696052457a027e3a..1a336676a73adb81a765c67c4f02b830da49e5c6 100644
+index 082766bfd5596a2559ce986b696052457a027e3a..279471527dfe8108c33cb7827b20f4e43923056c 100644
 --- a/backend/internal/server/middleware/api_key_auth.go
 +++ b/backend/internal/server/middleware/api_key_auth.go
 @@ -187,7 +187,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
@@ -2303,19 +2310,15 @@ index 082766bfd5596a2559ce986b696052457a027e3a..1a336676a73adb81a765c67c4f02b830
  				AbortWithError(c, 429, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
  				return
  			}
-@@ -218,10 +218,8 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
+@@ -218,6 +218,8 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
  				}
  			} else {
  				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
--				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
--					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
--					return
--				}
-+				// Balance enforcement is handled by handler-level BillingCacheService
-+				// so the hot path can use the freshest L1/Redis balance view.
- 			}
- 		}
- 
++				// Handler-level BillingCacheService remains the primary, freshest check.
++				// Keep the historical fail-closed fallback for an exhausted auth snapshot.
+ 				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
+ 					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+ 					return
 diff --git a/backend/internal/server/middleware/api_key_auth_google.go b/backend/internal/server/middleware/api_key_auth_google.go
 index b910dd9fa4d9a5bba169b982e9116574a08319b6..69c4a61ed9d2d0eb137ba4effb39564c248cae1c 100644
 --- a/backend/internal/server/middleware/api_key_auth_google.go
@@ -2788,7 +2791,7 @@ index a3dfe00826d20e2ee2c2ac70d0efdeac396cbeed..107ee58c0dbc71146d1ba2dd9ee78c62
  	s.lastUsedUpdates.Range(func(key, value any) bool {
  		id, ok := key.(int64)
 diff --git a/backend/internal/service/gateway_scheduling.go b/backend/internal/service/gateway_scheduling.go
-index d72303cd92170faf18e41598ea8ab5dace7e9cfc..2b1df7505accb1551d38d5d18aae0c8a8ce6d400 100644
+index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1ed70ef52d 100644
 --- a/backend/internal/service/gateway_scheduling.go
 +++ b/backend/internal/service/gateway_scheduling.go
 @@ -422,27 +422,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
@@ -2845,42 +2848,84 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..2b1df7505accb1551d38d5d18aae0c8a
  
  	for _, acc := range ordered {
  		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
-@@ -1543,6 +1528,31 @@ func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad
- 	return &accounts[selectedIdx]
+@@ -1483,9 +1468,7 @@ func filterBySoonestReset(accounts []accountWithLoad) []accountWithLoad {
+ 	return result
  }
  
+-// selectByLRU 从集合中选择最久未用的账号
+-// 如果有多个账号具有相同的最小 LastUsedAt，则随机选择一个
+-func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
 +func selectRandomAccountWithLoad(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
-+	if len(accounts) == 0 {
-+		return nil
-+	}
-+	if len(accounts) == 1 {
-+		return &accounts[0]
-+	}
-+
+ 	if len(accounts) == 0 {
+ 		return nil
+ 	}
+@@ -1493,52 +1476,19 @@ func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad
+ 		return &accounts[0]
+ 	}
+ 
+-	// 1. 找到最小的 LastUsedAt（nil 被视为最小）
+-	var minTime *time.Time
+-	hasNil := false
+-	for _, acc := range accounts {
+-		if acc.account.LastUsedAt == nil {
+-			hasNil = true
+-			break
+-		}
+-		if minTime == nil || acc.account.LastUsedAt.Before(*minTime) {
+-			minTime = acc.account.LastUsedAt
+-		}
+-	}
+-
+-	// 2. 收集所有具有最小 LastUsedAt 的账号索引
+-	var candidateIdxs []int
+-	for i, acc := range accounts {
+-		if hasNil {
+-			if acc.account.LastUsedAt == nil {
+-				candidateIdxs = append(candidateIdxs, i)
+-			}
+-		} else {
+-			if acc.account.LastUsedAt != nil && acc.account.LastUsedAt.Equal(*minTime) {
 +	candidateIdxs := make([]int, 0, len(accounts))
 +	if preferOAuth {
 +		for i := range accounts {
 +			if accounts[i].account.Type == AccountTypeOAuth {
-+				candidateIdxs = append(candidateIdxs, i)
-+			}
-+		}
-+	}
+ 				candidateIdxs = append(candidateIdxs, i)
+ 			}
+ 		}
+ 	}
+-
+-	// 3. 如果只有一个候选，直接返回
+-	if len(candidateIdxs) == 1 {
+-		return &accounts[candidateIdxs[0]]
+-	}
+-
+-	// 4. 如果有多个候选且 preferOAuth，优先选择 OAuth 类型
+-	if preferOAuth {
+-		var oauthIdxs []int
+-		for _, idx := range candidateIdxs {
+-			if accounts[idx].account.Type == AccountTypeOAuth {
+-				oauthIdxs = append(oauthIdxs, idx)
+-			}
+-		}
+-		if len(oauthIdxs) > 0 {
+-			candidateIdxs = oauthIdxs
 +	if len(candidateIdxs) == 0 {
 +		for i := range accounts {
 +			candidateIdxs = append(candidateIdxs, i)
-+		}
-+	}
-+	selectedIdx := candidateIdxs[mathrand.Intn(len(candidateIdxs))]
-+	return &accounts[selectedIdx]
-+}
-+
- func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
- 	sort.SliceStable(accounts, func(i, j int) bool {
- 		a, b := accounts[i], accounts[j]
-@@ -1566,6 +1576,45 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
+ 		}
+ 	}
+-
+-	// 5. 随机选择一个
+ 	selectedIdx := candidateIdxs[mathrand.Intn(len(candidateIdxs))]
+ 	return &accounts[selectedIdx]
+ }
+@@ -1566,16 +1516,34 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
  	shuffleWithinPriorityAndLastUsed(accounts, preferOAuth)
  }
  
+-// shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。
+-// 防止并发请求读取同一快照时，确定性排序导致所有请求命中相同账号。
+-func shuffleWithinSortGroups(accounts []accountWithLoad) {
 +func sortAccountsByPriorityAndLoad(accounts []accountWithLoad) {
 +	sort.SliceStable(accounts, func(i, j int) bool {
 +		a, b := accounts[i], accounts[j]
@@ -2901,29 +2946,39 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..2b1df7505accb1551d38d5d18aae0c8a
 +}
 +
 +func shuffleWithinPriorityAndLoad(accounts []accountWithLoad) {
-+	if len(accounts) <= 1 {
-+		return
-+	}
+ 	if len(accounts) <= 1 {
+ 		return
+ 	}
+-	i := 0
+-	for i < len(accounts) {
 +	for i := 0; i < len(accounts); {
-+		j := i + 1
+ 		j := i + 1
+-		for j < len(accounts) && sameAccountWithLoadGroup(accounts[i], accounts[j]) {
 +		for j < len(accounts) &&
 +			accounts[i].account.Priority == accounts[j].account.Priority &&
 +			accounts[i].loadInfo.LoadRate == accounts[j].loadInfo.LoadRate {
-+			j++
-+		}
-+		if j-i > 1 {
-+			mathrand.Shuffle(j-i, func(a, b int) {
-+				accounts[i+a], accounts[i+b] = accounts[i+b], accounts[i+a]
-+			})
-+		}
-+		i = j
-+	}
-+}
-+
- // shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。
- // 防止并发请求读取同一快照时，确定性排序导致所有请求命中相同账号。
- func shuffleWithinSortGroups(accounts []accountWithLoad) {
-@@ -1668,8 +1717,7 @@ func sameLastUsedAt(a, b *time.Time) bool {
+ 			j++
+ 		}
+ 		if j-i > 1 {
+@@ -1587,17 +1555,6 @@ func shuffleWithinSortGroups(accounts []accountWithLoad) {
+ 	}
+ }
+ 
+-// sameAccountWithLoadGroup 判断两个 accountWithLoad 是否属于同一排序组
+-func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
+-	if a.account.Priority != b.account.Priority {
+-		return false
+-	}
+-	if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+-		return false
+-	}
+-	return sameLastUsedAt(a.account.LastUsedAt, b.account.LastUsedAt)
+-}
+-
+ // shuffleWithinPriorityAndLastUsed 对排序后的 []*Account 切片，按 (Priority, LastUsedAt) 分组后组内随机打乱。
+ //
+ // 注意：当 preferOAuth=true 时，需要保证 OAuth 账号在同组内仍然优先，否则会把排序时的偏好打散掉。
+@@ -1668,8 +1625,7 @@ func sameLastUsedAt(a, b *time.Time) bool {
  func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, preferOAuth bool, mode string) {
  	if mode == "random" {
  		// 先按优先级排序，然后在同优先级内随机打乱
@@ -3491,10 +3546,10 @@ index 8d52c92d26e2e25716bb7e94f1cc58ec223f64d6..bcc6fede062081161806d06e445020cf
  // BatchImageBalanceHoldCommand describes an idempotent balance hold operation.
 diff --git a/backend/internal/service/usage_billing_write_behind.go b/backend/internal/service/usage_billing_write_behind.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53c7e29926
+index 0000000000000000000000000000000000000000..ee8fdca29908878fcb76e995197b855124f79cbe
 --- /dev/null
 +++ b/backend/internal/service/usage_billing_write_behind.go
-@@ -0,0 +1,747 @@
+@@ -0,0 +1,748 @@
 +package service
 +
 +import (
@@ -3509,7 +3564,6 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +
 +	"github.com/Wei-Shaw/sub2api/internal/config"
 +	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-+	"github.com/redis/go-redis/v9"
 +)
 +
 +const (
@@ -3544,6 +3598,11 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +	used      float64
 +	quota     float64
 +	expiresAt time.Time
++}
++
++type usageBillingPendingStore interface {
++	Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error
++	Trim(ctx context.Context, key string, n int64) error
 +}
 +
 +type usageBillingPendingRecord struct {
@@ -3599,7 +3658,7 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +	cfg      *config.Config
 +	enabled  bool
 +	interval time.Duration
-+	rdb      *redis.Client
++	pending  usageBillingPendingStore
 +	repo     UsageBillingRepository
 +	l2Key    string
 +	stopCh   chan struct{}
@@ -3638,10 +3697,10 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +}
 +
 +func NewUsageBillingWriteBehind(cfg *config.Config) *UsageBillingWriteBehind {
-+	return NewUsageBillingWriteBehindWithRedis(cfg, nil, nil)
++	return newUsageBillingWriteBehind(cfg, nil, nil)
 +}
 +
-+func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, rdb *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
++func newUsageBillingWriteBehind(cfg *config.Config, pending usageBillingPendingStore, repo UsageBillingRepository) *UsageBillingWriteBehind {
 +	interval := defaultUsageBillingFlushInterval
 +	if cfg != nil && cfg.Gateway.HotPath.UsageBillingFlushIntervalMs > 0 {
 +		interval = time.Duration(cfg.Gateway.HotPath.UsageBillingFlushIntervalMs) * time.Millisecond
@@ -3650,7 +3709,7 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +		cfg:            cfg,
 +		enabled:        cfg != nil && cfg.Gateway.HotPath.UsageBillingWriteBehind,
 +		interval:       interval,
-+		rdb:            rdb,
++		pending:        pending,
 +		repo:           repo,
 +		l2Key:          usagePendingInstanceKey("usage:pending:billing"),
 +		stopCh:         make(chan struct{}),
@@ -3710,7 +3769,7 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +}
 +
 +func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *UsageBillingCommand) error {
-+	if s == nil || s.rdb == nil || cmd == nil {
++	if s == nil || s.pending == nil || cmd == nil {
 +		return nil
 +	}
 +	record := usageBillingPendingRecord{
@@ -3747,10 +3806,7 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +	}
 +	mirrorCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
 +	defer cancel()
-+	pipe := s.rdb.Pipeline()
-+	pipe.RPush(mirrorCtx, s.l2Key, payload)
-+	pipe.Expire(mirrorCtx, s.l2Key, usagePendingTTL())
-+	if _, err := pipe.Exec(mirrorCtx); err != nil {
++	if err := s.pending.Append(mirrorCtx, s.l2Key, payload, usagePendingTTL()); err != nil {
 +		return err
 +	}
 +	s.l2PendingEntries.Add(1)
@@ -3758,7 +3814,7 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +}
 +
 +func (s *UsageBillingWriteBehind) trimPendingL2(ctx context.Context, n int64) error {
-+	if s == nil || s.rdb == nil || n <= 0 {
++	if s == nil || s.pending == nil || n <= 0 {
 +		return nil
 +	}
 +	if ctx == nil {
@@ -3766,7 +3822,7 @@ index 0000000000000000000000000000000000000000..91b717533409c2ed5bb615670fd4ab53
 +	}
 +	trimCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
 +	defer cancel()
-+	if err := s.rdb.LTrim(trimCtx, s.l2Key, n, -1).Err(); err != nil {
++	if err := s.pending.Trim(trimCtx, s.l2Key, n); err != nil {
 +		return err
 +	}
 +	for {
@@ -4385,7 +4441,7 @@ index 3ee23d2c93728b829bd56de4f0164146c6261cc7..24649fc7d40aa12e5cacb80325fa1587
  	// 若 Pop 数量不满一批，脏集已空，停止
  	if len(keys) < s.batchSize {
 diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
-index 7258ff05a3246171d2bb8de1b0ca2b50785997eb..0cf7885299900853c8bfebe51f67c65ed0a69c9f 100644
+index 7258ff05a3246171d2bb8de1b0ca2b50785997eb..e5f2ccce82ae4b7d31bbef1237311f1bd377786a 100644
 --- a/backend/internal/service/wire.go
 +++ b/backend/internal/service/wire.go
 @@ -240,8 +240,12 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
@@ -4403,10 +4459,34 @@ index 7258ff05a3246171d2bb8de1b0ca2b50785997eb..0cf7885299900853c8bfebe51f67c65e
  	svc.Start()
  	return svc
  }
-@@ -537,6 +541,13 @@ func ProvideBillingCacheService(
+@@ -537,6 +541,37 @@ func ProvideBillingCacheService(
  	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
  }
  
++type usageBillingPendingRedisStore struct {
++	client *redis.Client
++}
++
++func (s *usageBillingPendingRedisStore) Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error {
++	pipe := s.client.Pipeline()
++	pipe.RPush(ctx, key, payload)
++	pipe.Expire(ctx, key, ttl)
++	_, err := pipe.Exec(ctx)
++	return err
++}
++
++func (s *usageBillingPendingRedisStore) Trim(ctx context.Context, key string, n int64) error {
++	return s.client.LTrim(ctx, key, n, -1).Err()
++}
++
++func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, client *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
++	var pending usageBillingPendingStore
++	if client != nil {
++		pending = &usageBillingPendingRedisStore{client: client}
++	}
++	return newUsageBillingWriteBehind(cfg, pending, repo)
++}
++
 +// ProvideUsageBillingWriteBehind creates and starts the request hot-path billing flusher.
 +func ProvideUsageBillingWriteBehind(cfg *config.Config, redisClient *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
 +	svc := NewUsageBillingWriteBehindWithRedis(cfg, redisClient, repo)
@@ -4417,7 +4497,7 @@ index 7258ff05a3246171d2bb8de1b0ca2b50785997eb..0cf7885299900853c8bfebe51f67c65e
  // ProvideAPIKeyService wires APIKeyService and connects rate-limit cache invalidation.
  func ProvideAPIKeyService(
  	apiKeyRepo APIKeyRepository,
-@@ -547,10 +558,12 @@ func ProvideAPIKeyService(
+@@ -547,10 +582,12 @@ func ProvideAPIKeyService(
  	cache APIKeyCache,
  	cfg *config.Config,
  	billingCacheService *BillingCacheService,
@@ -4430,7 +4510,7 @@ index 7258ff05a3246171d2bb8de1b0ca2b50785997eb..0cf7885299900853c8bfebe51f67c65e
  	svc.SetConcurrencyService(concurrencyService)
  	return svc
  }
-@@ -572,6 +585,7 @@ var ProviderSet = wire.NewSet(
+@@ -572,6 +609,7 @@ var ProviderSet = wire.NewSet(
  	ProvidePricingService,
  	NewBillingService,
  	ProvideBillingCacheService,
@@ -4438,7 +4518,7 @@ index 7258ff05a3246171d2bb8de1b0ca2b50785997eb..0cf7885299900853c8bfebe51f67c65e
  	NewAnnouncementService,
  	NewAdminService,
  	NewGatewayService,
-@@ -683,8 +697,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
+@@ -683,8 +721,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
  }
  
  // ProvidePaymentService creates PaymentService and attaches notification email delivery.

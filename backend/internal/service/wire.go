@@ -541,6 +541,30 @@ func ProvideBillingCacheService(
 	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
 }
 
+type usageBillingPendingRedisStore struct {
+	client *redis.Client
+}
+
+func (s *usageBillingPendingRedisStore) Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error {
+	pipe := s.client.Pipeline()
+	pipe.RPush(ctx, key, payload)
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (s *usageBillingPendingRedisStore) Trim(ctx context.Context, key string, n int64) error {
+	return s.client.LTrim(ctx, key, n, -1).Err()
+}
+
+func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, client *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
+	var pending usageBillingPendingStore
+	if client != nil {
+		pending = &usageBillingPendingRedisStore{client: client}
+	}
+	return newUsageBillingWriteBehind(cfg, pending, repo)
+}
+
 // ProvideUsageBillingWriteBehind creates and starts the request hot-path billing flusher.
 func ProvideUsageBillingWriteBehind(cfg *config.Config, redisClient *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
 	svc := NewUsageBillingWriteBehindWithRedis(cfg, redisClient, repo)

@@ -244,12 +244,20 @@ func (s *SubscriptionService) refreshSubscriptionCaches(ctx context.Context, use
 	s.publishSubCacheInvalidation(cacheCtx, key)
 }
 
-// invalidateSubscriptionCaches keeps the upstream restore path compatible with
-// the realtime refresh flow used by this fork.
 func (s *SubscriptionService) invalidateSubscriptionCaches(userID, groupID int64) error {
+	s.InvalidateSubCacheSync(userID, groupID)
+	if s.billingCacheService == nil {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s.refreshSubscriptionCaches(ctx, userID, groupID)
+	if err := s.billingCacheService.InvalidateSubscription(ctx, userID, groupID); err != nil {
+		return fmt.Errorf("invalidate billing subscription cache: %w", err)
+	}
+	if err := s.billingCacheService.PublishSubscriptionCacheInvalidation(ctx, subCacheKey(userID, groupID)); err != nil {
+		return fmt.Errorf("publish subscription cache invalidation: %w", err)
+	}
 	return nil
 }
 
@@ -643,7 +651,9 @@ func (s *SubscriptionService) RevokeSubscription(ctx context.Context, subscripti
 	}
 
 	// 失效订阅缓存
-	s.refreshSubscriptionCaches(ctx, sub.UserID, sub.GroupID)
+	if err := s.invalidateSubscriptionCaches(sub.UserID, sub.GroupID); err != nil {
+		return err
+	}
 
 	return nil
 }

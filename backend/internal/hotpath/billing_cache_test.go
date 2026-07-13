@@ -144,7 +144,8 @@ func TestLocalBillingCache_UserPlatformQuotaWriteThroughPassesToNext(t *testing.
 }
 
 func TestLocalBillingCache_UserPlatformQuotaDirtySurvivesExpiration(t *testing.T) {
-	cache := NewLocalBillingCache(nil, 1024).(*localBillingCache)
+	cache, ok := NewLocalBillingCache(nil, 1024).(*localBillingCache)
+	require.True(t, ok)
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
 	cache.clock = func() time.Time { return now }
@@ -177,7 +178,8 @@ func TestLocalBillingCache_UserPlatformQuotaDirtySurvivesExpiration(t *testing.T
 }
 
 func TestLocalBillingCache_UserPlatformQuotaCapacityPreservesDirty(t *testing.T) {
-	cache := NewLocalBillingCache(nil, 1024).(*localBillingCache)
+	cache, ok := NewLocalBillingCache(nil, 1024).(*localBillingCache)
+	require.True(t, ok)
 	cache.maxEntries = 2
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
@@ -202,7 +204,8 @@ func TestLocalBillingCache_UserPlatformQuotaCapacityPreservesDirty(t *testing.T)
 }
 
 func TestLocalBillingCache_UserPlatformQuotaCapacityAllowsDirtyOverflow(t *testing.T) {
-	cache := NewLocalBillingCache(nil, 1024).(*localBillingCache)
+	cache, ok := NewLocalBillingCache(nil, 1024).(*localBillingCache)
+	require.True(t, ok)
 	cache.maxEntries = 2
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)

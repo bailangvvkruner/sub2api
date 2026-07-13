@@ -1,6 +1,6 @@
-From e927a947d0b76da1575d32ab6218159266134fc6 Mon Sep 17 00:00:00 2001
+From 7bb9cf31c618b540c987b6437cea8ffb076405d3 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 09:41:16 +0800
+Date: Mon, 13 Jul 2026 10:16:49 +0800
 Subject: [PATCH 3/7] fork: keep control-plane cache coherence
 
 ---
@@ -270,7 +270,7 @@ index 8794872e3d1db1f1bf571e30f1671a7597c0c80d..0d5e42cc6f13f8a3d2bf2981fee4db91
  	return nil
  }
 diff --git a/backend/internal/service/subscription_service.go b/backend/internal/service/subscription_service.go
-index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b424029a3f6c8 100644
+index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b96396e11bc6f 100644
 --- a/backend/internal/service/subscription_service.go
 +++ b/backend/internal/service/subscription_service.go
 @@ -7,6 +7,7 @@ import (
@@ -298,7 +298,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
  
  	maintenanceQueue *SubscriptionMaintenanceQueue
  }
-@@ -145,45 +148,108 @@ func (s *SubscriptionService) InvalidateSubCache(userID, groupID int64) {
+@@ -145,43 +148,114 @@ func (s *SubscriptionService) InvalidateSubCache(userID, groupID int64) {
  	s.subCacheL1.Del(subCacheKey(userID, groupID))
  }
  
@@ -364,10 +364,6 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
  	}
  }
  
--func (s *SubscriptionService) invalidateSubscriptionCaches(userID, groupID int64) error {
--	s.InvalidateSubCacheSync(userID, groupID)
--	if s.billingCacheService == nil {
--		return nil
 +func (s *SubscriptionService) publishSubCacheInvalidation(ctx context.Context, cacheKey string) {
 +	if s == nil || s.billingCacheService == nil || cacheKey == "" {
 +		return
@@ -379,13 +375,9 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
 +	if err := s.billingCacheService.PublishSubscriptionCacheInvalidation(ctx, cacheKey); err != nil {
 +		_ = s.consumeLocalSubCacheInvalidation(cacheKey)
 +		log.Printf("Warning: publish subscription cache invalidation failed for key %s: %v", cacheKey, err)
- 	}
++	}
 +}
- 
--	cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
--	defer cancel()
--	if err := s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID); err != nil {
--		return fmt.Errorf("invalidate billing subscription cache: %w", err)
++
 +func (s *SubscriptionService) refreshSubscriptionCaches(ctx context.Context, userID, groupID int64) {
 +	if s == nil {
 +		return
@@ -399,29 +391,36 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
 +			s.subCacheL1.Del(key)
 +		}
 +		s.subCacheL1.Wait()
- 	}
--	if err := s.billingCacheService.PublishSubscriptionCacheInvalidation(cacheCtx, subCacheKey(userID, groupID)); err != nil {
--		return fmt.Errorf("publish subscription cache invalidation: %w", err)
++	}
 +	if s.billingCacheService != nil {
 +		if err := s.billingCacheService.RefreshSubscription(ctx, userID, groupID); err != nil {
 +			log.Printf("Warning: refresh billing subscription cache failed for user %d group %d: %v", userID, groupID, err)
 +		}
- 	}
++	}
 +	cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 +	defer cancel()
 +	s.publishSubCacheInvalidation(cacheCtx, key)
 +}
 +
-+// invalidateSubscriptionCaches keeps the upstream restore path compatible with
-+// the realtime refresh flow used by this fork.
-+func (s *SubscriptionService) invalidateSubscriptionCaches(userID, groupID int64) error {
-+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-+	defer cancel()
-+	s.refreshSubscriptionCaches(ctx, userID, groupID)
- 	return nil
- }
+ func (s *SubscriptionService) invalidateSubscriptionCaches(userID, groupID int64) error {
+ 	s.InvalidateSubCacheSync(userID, groupID)
+ 	if s.billingCacheService == nil {
+ 		return nil
+ 	}
  
-@@ -291,14 +357,16 @@ func (s *SubscriptionService) maybeInvalidateAssignmentCaches(userID, groupID in
+-	cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+ 	defer cancel()
+-	if err := s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID); err != nil {
++	if err := s.billingCacheService.InvalidateSubscription(ctx, userID, groupID); err != nil {
+ 		return fmt.Errorf("invalidate billing subscription cache: %w", err)
+ 	}
+-	if err := s.billingCacheService.PublishSubscriptionCacheInvalidation(cacheCtx, subCacheKey(userID, groupID)); err != nil {
++	if err := s.billingCacheService.PublishSubscriptionCacheInvalidation(ctx, subCacheKey(userID, groupID)); err != nil {
+ 		return fmt.Errorf("publish subscription cache invalidation: %w", err)
+ 	}
+ 	return nil
+@@ -291,14 +365,16 @@ func (s *SubscriptionService) maybeInvalidateAssignmentCaches(userID, groupID in
  		return
  	}
  
@@ -444,7 +443,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
  }
  
  func (s *SubscriptionService) updateExistingSubscriptionTerm(
-@@ -522,15 +590,7 @@ func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, i
+@@ -522,15 +598,7 @@ func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, i
  	}
  
  	// 失效订阅缓存
@@ -461,19 +460,15 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
  
  	return sub, false, nil
  }
-@@ -582,9 +642,8 @@ func (s *SubscriptionService) RevokeSubscription(ctx context.Context, subscripti
+@@ -582,6 +650,7 @@ func (s *SubscriptionService) RevokeSubscription(ctx context.Context, subscripti
  		return err
  	}
  
--	if err := s.invalidateSubscriptionCaches(sub.UserID, sub.GroupID); err != nil {
--		return err
--	}
 +	// 失效订阅缓存
-+	s.refreshSubscriptionCaches(ctx, sub.UserID, sub.GroupID)
- 
- 	return nil
- }
-@@ -678,15 +737,7 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
+ 	if err := s.invalidateSubscriptionCaches(sub.UserID, sub.GroupID); err != nil {
+ 		return err
+ 	}
+@@ -678,15 +747,7 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
  	}
  
  	// 失效订阅缓存
@@ -490,7 +485,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
  
  	return s.userSubRepo.GetByID(ctx, subscriptionID)
  }
-@@ -846,13 +897,7 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
+@@ -846,13 +907,7 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
  	if err := s.userSubRepo.ResetUsageWindows(ctx, sub.ID, resetDaily, resetWeekly, resetMonthly, windowStart); err != nil {
  		return nil, err
  	}
@@ -505,7 +500,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
  	// Return the refreshed subscription from DB
  	return s.userSubRepo.GetByID(ctx, subscriptionID)
  }
-@@ -898,10 +943,7 @@ func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *Use
+@@ -898,10 +953,7 @@ func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *Use
  
  	// 如果有窗口被重置，失效缓存以保持一致性
  	if needsInvalidateCache {
@@ -517,7 +512,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b4240
  	}
  
  	return nil
-@@ -1034,7 +1076,7 @@ func (s *SubscriptionService) doWindowMaintenance(sub *UserSubscription) {
+@@ -1034,7 +1086,7 @@ func (s *SubscriptionService) doWindowMaintenance(sub *UserSubscription) {
  	}
  
  	// 失效 L1 缓存，确保后续请求拿到更新后的数据

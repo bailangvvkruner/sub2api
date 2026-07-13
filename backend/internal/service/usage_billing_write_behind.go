@@ -12,7 +12,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -47,6 +46,11 @@ type usageBillingAPIKeyQuotaShadow struct {
 	used      float64
 	quota     float64
 	expiresAt time.Time
+}
+
+type usageBillingPendingStore interface {
+	Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error
+	Trim(ctx context.Context, key string, n int64) error
 }
 
 type usageBillingPendingRecord struct {
@@ -102,7 +106,7 @@ type UsageBillingWriteBehind struct {
 	cfg      *config.Config
 	enabled  bool
 	interval time.Duration
-	rdb      *redis.Client
+	pending  usageBillingPendingStore
 	repo     UsageBillingRepository
 	l2Key    string
 	stopCh   chan struct{}
@@ -141,10 +145,10 @@ type UsageBillingWriteBehind struct {
 }
 
 func NewUsageBillingWriteBehind(cfg *config.Config) *UsageBillingWriteBehind {
-	return NewUsageBillingWriteBehindWithRedis(cfg, nil, nil)
+	return newUsageBillingWriteBehind(cfg, nil, nil)
 }
 
-func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, rdb *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
+func newUsageBillingWriteBehind(cfg *config.Config, pending usageBillingPendingStore, repo UsageBillingRepository) *UsageBillingWriteBehind {
 	interval := defaultUsageBillingFlushInterval
 	if cfg != nil && cfg.Gateway.HotPath.UsageBillingFlushIntervalMs > 0 {
 		interval = time.Duration(cfg.Gateway.HotPath.UsageBillingFlushIntervalMs) * time.Millisecond
@@ -153,7 +157,7 @@ func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, rdb *redis.Client, 
 		cfg:            cfg,
 		enabled:        cfg != nil && cfg.Gateway.HotPath.UsageBillingWriteBehind,
 		interval:       interval,
-		rdb:            rdb,
+		pending:        pending,
 		repo:           repo,
 		l2Key:          usagePendingInstanceKey("usage:pending:billing"),
 		stopCh:         make(chan struct{}),
@@ -213,7 +217,7 @@ func (s *UsageBillingWriteBehind) APIKeyQuotaExhausted(apiKey *APIKey) bool {
 }
 
 func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *UsageBillingCommand) error {
-	if s == nil || s.rdb == nil || cmd == nil {
+	if s == nil || s.pending == nil || cmd == nil {
 		return nil
 	}
 	record := usageBillingPendingRecord{
@@ -250,10 +254,7 @@ func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *Us
 	}
 	mirrorCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
 	defer cancel()
-	pipe := s.rdb.Pipeline()
-	pipe.RPush(mirrorCtx, s.l2Key, payload)
-	pipe.Expire(mirrorCtx, s.l2Key, usagePendingTTL())
-	if _, err := pipe.Exec(mirrorCtx); err != nil {
+	if err := s.pending.Append(mirrorCtx, s.l2Key, payload, usagePendingTTL()); err != nil {
 		return err
 	}
 	s.l2PendingEntries.Add(1)
@@ -261,7 +262,7 @@ func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *Us
 }
 
 func (s *UsageBillingWriteBehind) trimPendingL2(ctx context.Context, n int64) error {
-	if s == nil || s.rdb == nil || n <= 0 {
+	if s == nil || s.pending == nil || n <= 0 {
 		return nil
 	}
 	if ctx == nil {
@@ -269,7 +270,7 @@ func (s *UsageBillingWriteBehind) trimPendingL2(ctx context.Context, n int64) er
 	}
 	trimCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
 	defer cancel()
-	if err := s.rdb.LTrim(trimCtx, s.l2Key, n, -1).Err(); err != nil {
+	if err := s.pending.Trim(trimCtx, s.l2Key, n); err != nil {
 		return err
 	}
 	for {

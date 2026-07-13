@@ -300,10 +300,6 @@ func schedulerAccountMetaKey(id string) string {
 	return schedulerAccountMetaPrefix + id
 }
 
-func ptrTime(t time.Time) *time.Time {
-	return &t
-}
-
 func decodeCachedAccount(val any) (*service.Account, error) {
 	var payload []byte
 	switch raw := val.(type) {

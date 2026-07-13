@@ -414,10 +414,6 @@ func findDuplicatePaymentOrderOutTradeNos(ctx context.Context, db *sql.DB) ([]st
 	return duplicates, nil
 }
 
-func indexIsInvalid(ctx context.Context, db *sql.DB, indexName string) (bool, error) {
-	return indexIsInvalidInSchema(ctx, db, "public", indexName)
-}
-
 func indexIsInvalidInSchema(ctx context.Context, db *sql.DB, schemaName, indexName string) (bool, error) {
 	var invalid bool
 	err := db.QueryRowContext(ctx, `

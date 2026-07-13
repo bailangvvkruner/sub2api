@@ -1,11 +1,11 @@
-From e927a947d0b76da1575d32ab6218159266134fc6 Mon Sep 17 00:00:00 2001
+From 7bb9cf31c618b540c987b6437cea8ffb076405d3 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 09:41:16 +0800
+Date: Mon, 13 Jul 2026 10:16:49 +0800
 Subject: [PATCH 4/7] fork: retain database and operations hardening
 
 ---
 diff --git a/backend/internal/repository/migrations_runner.go b/backend/internal/repository/migrations_runner.go
-index 7c045fea74fbd6f341a57ca5508f358160fd133a..6e8fe4da064017ee75d4d812978799c690b4c2b8 100644
+index 7c045fea74fbd6f341a57ca5508f358160fd133a..4e3d11094ae177bbacf9ef71e76f79f6bab10816 100644
 --- a/backend/internal/repository/migrations_runner.go
 +++ b/backend/internal/repository/migrations_runner.go
 @@ -55,6 +55,8 @@ const paymentOrdersOutTradeNoUniqueMigration = "120_enforce_payment_orders_out_t
@@ -129,18 +129,16 @@ index 7c045fea74fbd6f341a57ca5508f358160fd133a..6e8fe4da064017ee75d4d812978799c6
  		return fmt.Errorf("drop invalid index %s: %w", indexName, err)
  	}
  	return nil
-@@ -333,6 +415,10 @@ func findDuplicatePaymentOrderOutTradeNos(ctx context.Context, db *sql.DB) ([]st
+@@ -332,7 +414,7 @@ func findDuplicatePaymentOrderOutTradeNos(ctx context.Context, db *sql.DB) ([]st
+ 	return duplicates, nil
  }
  
- func indexIsInvalid(ctx context.Context, db *sql.DB, indexName string) (bool, error) {
-+	return indexIsInvalidInSchema(ctx, db, "public", indexName)
-+}
-+
+-func indexIsInvalid(ctx context.Context, db *sql.DB, indexName string) (bool, error) {
 +func indexIsInvalidInSchema(ctx context.Context, db *sql.DB, schemaName, indexName string) (bool, error) {
  	var invalid bool
  	err := db.QueryRowContext(ctx, `
  		SELECT EXISTS (
-@@ -340,14 +426,123 @@ func indexIsInvalid(ctx context.Context, db *sql.DB, indexName string) (bool, er
+@@ -340,14 +422,123 @@ func indexIsInvalid(ctx context.Context, db *sql.DB, indexName string) (bool, er
  			FROM pg_class idx
  			JOIN pg_namespace ns ON ns.oid = idx.relnamespace
  			JOIN pg_index i ON i.indexrelid = idx.oid
