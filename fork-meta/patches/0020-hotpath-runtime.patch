@@ -1,6 +1,6 @@
-From 15d85ffe351203b72fe4a4945c6510789a6a35d9 Mon Sep 17 00:00:00 2001
+From 08cdea42f59e319d767dadab4dea2c2c42d7cf81 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 10:21:09 +0800
+Date: Mon, 13 Jul 2026 10:33:15 +0800
 Subject: [PATCH 2/7] fork: restore L1 hotpath and write-behind runtime
 
 ---
@@ -1467,7 +1467,7 @@ index 0000000000000000000000000000000000000000..327edb20d5d5fbe796e6205ca20c03e5
 +	return hotpath.NewLocalConcurrencyCache(slotTTLMinutes, waitQueueTTLSeconds)
 +}
 diff --git a/backend/internal/repository/scheduler_cache.go b/backend/internal/repository/scheduler_cache.go
-index c8e1fe14e0a5027141941deaac4ec99cecec0bca..8c0be004a97e7560d5a0fbdea423135054ee8f52 100644
+index c8e1fe14e0a5027141941deaac4ec99cecec0bca..d94c2840c5b4c2243d94cbe1f205219088f48cb0 100644
 --- a/backend/internal/repository/scheduler_cache.go
 +++ b/backend/internal/repository/scheduler_cache.go
 @@ -236,45 +236,7 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
@@ -1528,6 +1528,16 @@ index c8e1fe14e0a5027141941deaac4ec99cecec0bca..8c0be004a97e7560d5a0fbdea4231350
  func decodeCachedAccount(val any) (*service.Account, error) {
  	var payload []byte
  	switch raw := val.(type) {
+@@ -379,6 +337,9 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
+ 	}
+ 
+ 	for _, account := range accounts {
++		// last_used is intentionally ephemeral in this fork. Scrub it at the
++		// only account write boundary so startup/full rebuilds cannot restore it.
++		account.LastUsedAt = nil
+ 		fullPayload, err := json.Marshal(account)
+ 		if err != nil {
+ 			return err
 diff --git a/backend/internal/repository/usage_log_pending_repo.go b/backend/internal/repository/usage_log_pending_repo.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..a3e3052120e0883c60b66a9b3d9c0c3de22edd2f

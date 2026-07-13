@@ -1,6 +1,6 @@
-From 15d85ffe351203b72fe4a4945c6510789a6a35d9 Mon Sep 17 00:00:00 2001
+From 08cdea42f59e319d767dadab4dea2c2c42d7cf81 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 10:21:09 +0800
+Date: Mon, 13 Jul 2026 10:33:15 +0800
 Subject: [PATCH 7/7] fork: retain hotpath regression coverage
 
 ---
@@ -862,10 +862,23 @@ index c997865ba4aa3ccd730463a5066fa7cefbbe9d00..e66b56c219ea3668c70157642518a527
  	uid := int64(42)
  
 diff --git a/backend/internal/repository/scheduler_cache_integration_test.go b/backend/internal/repository/scheduler_cache_integration_test.go
-index 948c2c73e0b755a7ec596a01083d44166933f7aa..14764f2dd88ccc72746b30dc8a074ac17e5ba5ff 100644
+index 948c2c73e0b755a7ec596a01083d44166933f7aa..d0a07b8c245489761d22deba1ac3b119211bfa5a 100644
 --- a/backend/internal/repository/scheduler_cache_integration_test.go
 +++ b/backend/internal/repository/scheduler_cache_integration_test.go
-@@ -101,4 +101,18 @@ func TestSchedulerCacheSnapshotUsesSlimMetadataButKeepsFullAccount(t *testing.T)
+@@ -76,6 +76,7 @@ func TestSchedulerCacheSnapshotUsesSlimMetadataButKeepsFullAccount(t *testing.T)
+ 
+ 	got := snapshot[0]
+ 	require.NotNil(t, got)
++	require.Nil(t, got.LastUsedAt)
+ 	require.Equal(t, "gemini-api-key", got.GetCredential("api_key"))
+ 	require.Equal(t, "proj-1", got.GetCredential("project_id"))
+ 	require.Equal(t, "ai_studio", got.GetCredential("oauth_type"))
+@@ -97,8 +98,23 @@ func TestSchedulerCacheSnapshotUsesSlimMetadataButKeepsFullAccount(t *testing.T)
+ 	full, err := cache.GetAccount(ctx, account.ID)
+ 	require.NoError(t, err)
+ 	require.NotNil(t, full)
++	require.Nil(t, full.LastUsedAt)
+ 	require.Equal(t, "secret-access-token", full.GetCredential("access_token"))
  	require.Equal(t, strings.Repeat("x", 4096), full.GetCredential("huge_blob"))
  	require.Len(t, full.AccountGroups, 1)
  	require.NotNil(t, full.AccountGroups[0].Group)

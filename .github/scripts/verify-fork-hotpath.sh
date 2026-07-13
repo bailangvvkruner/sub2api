@@ -73,6 +73,7 @@ require_fixed backend/internal/service/deferred_service.go 'func NewDeferredServ
 require_fixed backend/internal/service/wire.go 'persistLastUsed = cfg.Gateway.HotPath.PersistAccountLastUsed' "last_used persistence switch is not wired"
 require_regex backend/internal/repository/scheduler_cache.go 'func \(c \*schedulerCache\) UpdateLastUsed' "scheduler UpdateLastUsed hook is missing"
 require_nearby_fixed backend/internal/repository/scheduler_cache.go 'func (c *schedulerCache) UpdateLastUsed' 'return nil' "scheduler UpdateLastUsed must stay disabled"
+require_fixed backend/internal/repository/scheduler_cache.go 'account.LastUsedAt = nil' "scheduler cache rebuilds must scrub last_used"
 require_regex backend/internal/service/scheduler_snapshot_service.go 'func \(s \*SchedulerSnapshotService\) handleLastUsedEvent' "scheduler snapshot last_used handler is missing"
 require_nearby_fixed backend/internal/service/scheduler_snapshot_service.go 'func (s *SchedulerSnapshotService) handleLastUsedEvent' 'return nil' "scheduler snapshot last_used handler must stay disabled"
 

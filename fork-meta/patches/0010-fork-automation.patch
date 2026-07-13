@@ -1,6 +1,6 @@
-From 15d85ffe351203b72fe4a4945c6510789a6a35d9 Mon Sep 17 00:00:00 2001
+From 08cdea42f59e319d767dadab4dea2c2c42d7cf81 Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Mon, 13 Jul 2026 10:21:09 +0800
+Date: Mon, 13 Jul 2026 10:33:15 +0800
 Subject: [PATCH 1/7] fork: preserve patch queue and automation
 
 ---
@@ -392,10 +392,10 @@ index 0000000000000000000000000000000000000000..ca389531ff2f73507b0a0d2589b72ae8
 +printf 'canonical patch queue validated: source=%s upstream=%s\n' "$source_ref" "$target_sha"
 diff --git a/.github/scripts/verify-fork-hotpath.sh b/.github/scripts/verify-fork-hotpath.sh
 new file mode 100644
-index 0000000000000000000000000000000000000000..3838dc95bd25d375e37edf194357060389e65456
+index 0000000000000000000000000000000000000000..0a1a03bd1ffea7d89ad2291b6e584a5d5151008b
 --- /dev/null
 +++ b/.github/scripts/verify-fork-hotpath.sh
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,138 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -471,6 +471,7 @@ index 0000000000000000000000000000000000000000..3838dc95bd25d375e37edf1943570603
 +require_fixed backend/internal/service/wire.go 'persistLastUsed = cfg.Gateway.HotPath.PersistAccountLastUsed' "last_used persistence switch is not wired"
 +require_regex backend/internal/repository/scheduler_cache.go 'func \(c \*schedulerCache\) UpdateLastUsed' "scheduler UpdateLastUsed hook is missing"
 +require_nearby_fixed backend/internal/repository/scheduler_cache.go 'func (c *schedulerCache) UpdateLastUsed' 'return nil' "scheduler UpdateLastUsed must stay disabled"
++require_fixed backend/internal/repository/scheduler_cache.go 'account.LastUsedAt = nil' "scheduler cache rebuilds must scrub last_used"
 +require_regex backend/internal/service/scheduler_snapshot_service.go 'func \(s \*SchedulerSnapshotService\) handleLastUsedEvent' "scheduler snapshot last_used handler is missing"
 +require_nearby_fixed backend/internal/service/scheduler_snapshot_service.go 'func (s *SchedulerSnapshotService) handleLastUsedEvent' 'return nil' "scheduler snapshot last_used handler must stay disabled"
 +

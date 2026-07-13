@@ -337,6 +337,9 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
 	}
 
 	for _, account := range accounts {
+		// last_used is intentionally ephemeral in this fork. Scrub it at the
+		// only account write boundary so startup/full rebuilds cannot restore it.
+		account.LastUsedAt = nil
 		fullPayload, err := json.Marshal(account)
 		if err != nil {
 			return err
