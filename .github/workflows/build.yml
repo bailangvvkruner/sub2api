@@ -14,12 +14,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_NAME: sub2api
-  IMAGE_TAG: latest
+  IMAGE_REPOSITORY: ${{ secrets.DOCKERHUB_USERNAME }}/sub2api
 
 jobs:
   build-and-push:
-    name: Build amd64 and push to Docker Hub
+    name: Publish immutable image then latest
     runs-on: ubuntu-latest
 
     steps:
@@ -31,24 +30,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set version metadata
+      - name: Set image metadata
         run: |
-          BASE_VERSION="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
-          echo "APP_VERSION=${BASE_VERSION}-vmain" >> "$GITHUB_ENV"
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          build-args: |
-            VERSION=${{ env.APP_VERSION }}
-            COMMIT=${{ github.sha }}
-          no-cache: true
+          base_version="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
+          echo "APP_VERSION=${base_version}-vmain" >>"$GITHUB_ENV"
+          echo "IMAGE_TAG=sha-${GITHUB_SHA}" >>"$GITHUB_ENV"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -56,12 +42,22 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Push Docker image
-        run: |
-          docker push "${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+      - name: Build and push immutable SHA tag
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            VERSION=${{ env.APP_VERSION }}
+            COMMIT=${{ github.sha }}
+          no-cache: true
 
-      - name: Output image info
+      - name: Promote merged main image to latest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          echo "Image built and pushed successfully"
-          echo "Repository: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}"
-          echo "Tag: ${{ env.IMAGE_TAG }}"
+          docker buildx imagetools create \
+            --tag "${IMAGE_REPOSITORY}:latest" \
+            "${IMAGE_REPOSITORY}:${IMAGE_TAG}"

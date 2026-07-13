@@ -1,0 +1,570 @@
+From e927a947d0b76da1575d32ab6218159266134fc6 Mon Sep 17 00:00:00 2001
+From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
+Date: Mon, 13 Jul 2026 09:41:16 +0800
+Subject: [PATCH 3/7] fork: keep control-plane cache coherence
+
+---
+diff --git a/backend/internal/service/admin_group.go b/backend/internal/service/admin_group.go
+index c85056d623362626a49fc9ca83f12e741d73d8bc..7d6cf01dbeffacb163f98f0909a1b451a2ce91e0 100644
+--- a/backend/internal/service/admin_group.go
++++ b/backend/internal/service/admin_group.go
+@@ -709,18 +709,16 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
+ 	}
+ 	// 注意：user_group_rate_multipliers 表通过外键 ON DELETE CASCADE 自动清理
+ 
+-	// 事务成功后，异步失效受影响用户的订阅缓存
++	// 事务成功后，同步刷新受影响用户的订阅缓存。
+ 	if len(affectedUserIDs) > 0 && s.billingCacheService != nil {
+ 		groupID := id
+-		go func() {
+-			cacheCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+-			defer cancel()
+-			for _, userID := range affectedUserIDs {
+-				if err := s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID); err != nil {
+-					logger.LegacyPrintf("service.admin", "invalidate subscription cache failed: user_id=%d group_id=%d err=%v", userID, groupID, err)
+-				}
++		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
++		for _, userID := range affectedUserIDs {
++			if err := s.billingCacheService.RefreshSubscription(cacheCtx, userID, groupID); err != nil {
++				logger.LegacyPrintf("service.admin", "refresh subscription cache failed: user_id=%d group_id=%d err=%v", userID, groupID, err)
+ 			}
+-		}()
++		}
++		cancel()
+ 	}
+ 	if s.authCacheInvalidator != nil {
+ 		for _, key := range groupKeys {
+diff --git a/backend/internal/service/admin_user.go b/backend/internal/service/admin_user.go
+index 862a5ab5c737d4988cb2fca3afa323018710b0a1..6472e9521e2246c2d689ed5b813cc137c0222475 100644
+--- a/backend/internal/service/admin_user.go
++++ b/backend/internal/service/admin_user.go
+@@ -489,13 +489,15 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64,
+ 	}
+ 
+ 	if s.billingCacheService != nil {
+-		go func() {
+-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+-			defer cancel()
+-			if err := s.billingCacheService.InvalidateUserBalance(cacheCtx, userID); err != nil {
+-				logger.LegacyPrintf("service.admin", "invalidate user balance cache failed: user_id=%d err=%v", userID, err)
++		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
++		if operation == "set" {
++			if err := s.billingCacheService.SetUserBalanceRealtime(cacheCtx, userID, user.Balance); err != nil {
++				logger.LegacyPrintf("service.admin", "set user balance cache failed: user_id=%d err=%v", userID, err)
+ 			}
+-		}()
++		} else if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(cacheCtx, userID, balanceDiff); err != nil {
++			logger.LegacyPrintf("service.admin", "update user balance cache failed: user_id=%d err=%v", userID, err)
++		}
++		cancel()
+ 	}
+ 
+ 	if balanceDiff != 0 {
+diff --git a/backend/internal/service/affiliate_service.go b/backend/internal/service/affiliate_service.go
+index 91cca5e216dab7c7483b92991f35843cc62b7340..b4999df7923b33ae5f3882ce032be36f017dd9fd 100644
+--- a/backend/internal/service/affiliate_service.go
++++ b/backend/internal/service/affiliate_service.go
+@@ -418,7 +418,7 @@ func (s *AffiliateService) TransferAffiliateQuota(ctx context.Context, userID in
+ 		return 0, 0, err
+ 	}
+ 	if transferred > 0 {
+-		s.invalidateAffiliateCaches(ctx, userID)
++		s.invalidateAffiliateCaches(ctx, userID, transferred)
+ 	}
+ 	return transferred, balance, nil
+ }
+@@ -477,13 +477,13 @@ func maskSegment(s string) string {
+ 	return string(r[0]) + "***"
+ }
+ 
+-func (s *AffiliateService) invalidateAffiliateCaches(ctx context.Context, userID int64) {
++func (s *AffiliateService) invalidateAffiliateCaches(ctx context.Context, userID int64, balanceDelta float64) {
+ 	if s.authCacheInvalidator != nil {
+ 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
+ 	}
+ 	if s.billingCacheService != nil {
+-		if err := s.billingCacheService.InvalidateUserBalance(ctx, userID); err != nil {
+-			logger.LegacyPrintf("service.affiliate", "[Affiliate] Failed to invalidate billing cache for user %d: %v", userID, err)
++		if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(ctx, userID, balanceDelta); err != nil {
++			logger.LegacyPrintf("service.affiliate", "[Affiliate] Failed to update billing cache for user %d: %v", userID, err)
+ 		}
+ 	}
+ }
+diff --git a/backend/internal/service/payment_refund.go b/backend/internal/service/payment_refund.go
+index 91822680ed5856b5121eeab5ec4f8d1b8cdded82..fdf22b9f6ac1a8fad81ea2028ee1f26ca2d95d97 100644
+--- a/backend/internal/service/payment_refund.go
++++ b/backend/internal/service/payment_refund.go
+@@ -295,6 +295,7 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
+ 				s.restoreStatus(ctx, p)
+ 				return nil, fmt.Errorf("deduction: %w", err)
+ 			}
++			s.syncUserBalanceDelta(ctx, p.Order.UserID, -p.BalanceToDeduct)
+ 		} else {
+ 			slog.Warn("skipping balance deduction on retry (previous rollback failed)", "orderID", p.OrderID)
+ 			p.BalanceToDeduct = 0
+@@ -487,6 +488,7 @@ func (s *PaymentService) applyRefundFinalDeduction(ctx context.Context, p *Refun
+ 		if err := s.userRepo.DeductBalance(ctx, p.Order.UserID, p.BalanceToDeduct); err != nil {
+ 			return fmt.Errorf("deduction: %w", err)
+ 		}
++		s.syncUserBalanceDelta(ctx, p.Order.UserID, -p.BalanceToDeduct)
+ 	}
+ 	if p.DeductionType == payment.DeductionTypeSubscription && p.SubDaysToDeduct > 0 && p.SubscriptionID > 0 {
+ 		if _, err := s.subscriptionSvc.ExtendSubscription(ctx, p.SubscriptionID, -p.SubDaysToDeduct); err != nil {
+@@ -623,6 +625,7 @@ func (s *PaymentService) RollbackRefund(ctx context.Context, p *RefundPlan, gErr
+ 			s.writeAuditLog(ctx, p.OrderID, "REFUND_ROLLBACK_FAILED", "admin", map[string]any{"gatewayError": psErrMsg(gErr), "rollbackError": psErrMsg(err), "balanceDeducted": p.BalanceToDeduct})
+ 			return false
+ 		}
++		s.syncUserBalanceDelta(ctx, p.Order.UserID, p.BalanceToDeduct)
+ 	}
+ 	if p.DeductionType == payment.DeductionTypeSubscription && p.SubDaysToDeduct > 0 && p.SubscriptionID > 0 {
+ 		if _, err := s.subscriptionSvc.ExtendSubscription(ctx, p.SubscriptionID, p.SubDaysToDeduct); err != nil {
+@@ -634,6 +637,17 @@ func (s *PaymentService) RollbackRefund(ctx context.Context, p *RefundPlan, gErr
+ 	return true
+ }
+ 
++func (s *PaymentService) syncUserBalanceDelta(ctx context.Context, userID int64, delta float64) {
++	if s == nil || s.billingCacheService == nil || delta == 0 {
++		return
++	}
++	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
++	defer cancel()
++	if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(cacheCtx, userID, delta); err != nil {
++		slog.Warn("sync payment balance cache failed", "user_id", userID, "delta", delta, "error", err)
++	}
++}
++
+ func (s *PaymentService) restoreStatus(ctx context.Context, p *RefundPlan) {
+ 	rs := OrderStatusCompleted
+ 	if p.Order.Status == OrderStatusRefundRequested {
+diff --git a/backend/internal/service/payment_service.go b/backend/internal/service/payment_service.go
+index 3698a59c0b36b203b589ce7d2e12255076fb8e1f..1822868d9e9f102bc26185bc9d24b9e2067c57fb 100644
+--- a/backend/internal/service/payment_service.go
++++ b/backend/internal/service/payment_service.go
+@@ -186,13 +186,14 @@ type PaymentService struct {
+ 	configService            *PaymentConfigService
+ 	userRepo                 UserRepository
+ 	groupRepo                GroupRepository
++	billingCacheService      *BillingCacheService
+ 	resumeService            *PaymentResumeService
+ 	affiliateService         *AffiliateService
+ 	notificationEmailService *NotificationEmailService
+ }
+ 
+-func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService) *PaymentService {
+-	svc := &PaymentService{entClient: entClient, registry: registry, loadBalancer: newVisibleMethodLoadBalancer(loadBalancer, configService), redeemService: redeemService, subscriptionSvc: subscriptionSvc, configService: configService, userRepo: userRepo, groupRepo: groupRepo, affiliateService: affiliateService}
++func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, billingCacheService *BillingCacheService) *PaymentService {
++	svc := &PaymentService{entClient: entClient, registry: registry, loadBalancer: newVisibleMethodLoadBalancer(loadBalancer, configService), redeemService: redeemService, subscriptionSvc: subscriptionSvc, configService: configService, userRepo: userRepo, groupRepo: groupRepo, billingCacheService: billingCacheService, affiliateService: affiliateService}
+ 	svc.resumeService = psNewPaymentResumeService(configService)
+ 	return svc
+ }
+diff --git a/backend/internal/service/promo_service.go b/backend/internal/service/promo_service.go
+index b85f7e48088d38cafc085a760e91d7d066b661ca..b8a6afa8df43108c75340dc6957f869de37bb25b 100644
+--- a/backend/internal/service/promo_service.go
++++ b/backend/internal/service/promo_service.go
+@@ -10,6 +10,7 @@ import (
+ 
+ 	dbent "github.com/Wei-Shaw/sub2api/ent"
+ 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+ )
+ 
+@@ -152,11 +153,11 @@ func (s *PromoService) ApplyPromoCode(ctx context.Context, userID int64, code st
+ 
+ 	// 失效余额缓存
+ 	if s.billingCacheService != nil {
+-		go func() {
+-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+-			defer cancel()
+-			_ = s.billingCacheService.InvalidateUserBalance(cacheCtx, userID)
+-		}()
++		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
++		if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(cacheCtx, userID, promoCode.BonusAmount); err != nil {
++			logger.LegacyPrintf("service.promo", "update user balance cache failed: user_id=%d err=%v", userID, err)
++		}
++		cancel()
+ 	}
+ 
+ 	return nil
+diff --git a/backend/internal/service/redeem_service.go b/backend/internal/service/redeem_service.go
+index 8794872e3d1db1f1bf571e30f1671a7597c0c80d..0d5e42cc6f13f8a3d2bf2981fee4db9110ac69c9 100644
+--- a/backend/internal/service/redeem_service.go
++++ b/backend/internal/service/redeem_service.go
+@@ -454,6 +454,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
+ 	}
+ 
+ 	// 执行兑换逻辑（兑换码已被锁定，此时可安全操作）
++	balanceDelta := 0.0
+ 	switch redeemCode.Type {
+ 	case RedeemTypeBalance:
+ 		amount := redeemCode.Value
+@@ -467,6 +468,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
+ 		} else if err := s.userRepo.UpdateBalance(txCtx, userID, amount); err != nil {
+ 			return nil, fmt.Errorf("update user balance: %w", err)
+ 		}
++		balanceDelta = amount
+ 
+ 	case RedeemTypeConcurrency:
+ 		delta := int(redeemCode.Value)
+@@ -514,7 +516,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
+ 	}
+ 
+ 	// 事务提交成功后失效缓存
+-	s.invalidateRedeemCaches(ctx, userID, redeemCode)
++	s.invalidateRedeemCaches(ctx, userID, redeemCode, balanceDelta)
+ 
+ 	// 余额类正数兑换码触发邀请返利（best-effort，失败不影响兑换结果）
+ 	if redeemCode.Type == RedeemTypeBalance && redeemCode.Value > 0 {
+@@ -531,7 +533,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
+ }
+ 
+ // invalidateRedeemCaches 失效兑换相关的缓存
+-func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64, redeemCode *RedeemCode) {
++func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64, redeemCode *RedeemCode, balanceDelta float64) {
+ 	switch redeemCode.Type {
+ 	case RedeemTypeBalance:
+ 		if s.authCacheInvalidator != nil {
+@@ -540,11 +542,11 @@ func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64
+ 		if s.billingCacheService == nil {
+ 			return
+ 		}
+-		go func() {
+-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+-			defer cancel()
+-			_ = s.billingCacheService.InvalidateUserBalance(cacheCtx, userID)
+-		}()
++		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
++		if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(cacheCtx, userID, balanceDelta); err != nil {
++			logger.LegacyPrintf("service.redeem", "update user balance cache failed: user_id=%d err=%v", userID, err)
++		}
++		cancel()
+ 	case RedeemTypeConcurrency:
+ 		if s.authCacheInvalidator != nil {
+ 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
+@@ -561,11 +563,13 @@ func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64
+ 		}
+ 		if redeemCode.GroupID != nil {
+ 			groupID := *redeemCode.GroupID
+-			go func() {
+-				cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+-				defer cancel()
+-				_ = s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID)
+-			}()
++			if s.subscriptionService != nil {
++				s.subscriptionService.refreshSubscriptionCaches(ctx, userID, groupID)
++			} else {
++				cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
++				_ = s.billingCacheService.RefreshSubscription(cacheCtx, userID, groupID)
++				cancel()
++			}
+ 		}
+ 	}
+ }
+@@ -704,8 +708,5 @@ func (s *RedeemService) reduceOrCancelSubscription(ctx context.Context, userID,
+ 		return fmt.Errorf("update subscription notes: %w", err)
+ 	}
+ 
+-	// 失效缓存
+-	s.subscriptionService.InvalidateSubCache(userID, groupID)
+-
+ 	return nil
+ }
+diff --git a/backend/internal/service/subscription_service.go b/backend/internal/service/subscription_service.go
+index ea1fd091d925495553321e4d393f4a465aacde2e..1610c4a8b7ea54d95717f973521b424029a3f6c8 100644
+--- a/backend/internal/service/subscription_service.go
++++ b/backend/internal/service/subscription_service.go
+@@ -7,6 +7,7 @@ import (
+ 	"math/rand/v2"
+ 	"strconv"
+ 	"strings"
++	"sync"
+ 	"time"
+ 
+ 	dbent "github.com/Wei-Shaw/sub2api/ent"
+@@ -49,10 +50,12 @@ type SubscriptionService struct {
+ 	entClient           *dbent.Client
+ 
+ 	// L1 缓存：加速中间件热路径的订阅查询
+-	subCacheL1     *ristretto.Cache
+-	subCacheGroup  singleflight.Group
+-	subCacheTTL    time.Duration
+-	subCacheJitter int // 抖动百分比
++	subCacheL1      *ristretto.Cache
++	subCacheGroup   singleflight.Group
++	subCacheTTL     time.Duration
++	subCachePubMu   sync.Mutex
++	subCachePubSkip map[string]int
++	subCacheJitter  int // 抖动百分比
+ 
+ 	maintenanceQueue *SubscriptionMaintenanceQueue
+ }
+@@ -145,45 +148,108 @@ func (s *SubscriptionService) InvalidateSubCache(userID, groupID int64) {
+ 	s.subCacheL1.Del(subCacheKey(userID, groupID))
+ }
+ 
+-// InvalidateSubCacheSync 失效订阅 L1 缓存并等待 Ristretto 删除操作生效。
++// InvalidateSubCacheSync removes a subscription L1 cache entry and waits for Ristretto.
+ func (s *SubscriptionService) InvalidateSubCacheSync(userID, groupID int64) {
+ 	s.invalidateSubCacheKeySync(subCacheKey(userID, groupID))
+ }
+ 
+ func (s *SubscriptionService) invalidateSubCacheKeySync(key string) {
+-	if s.subCacheL1 == nil {
++	if s == nil || s.subCacheL1 == nil {
+ 		return
+ 	}
+ 	s.subCacheL1.Del(key)
+ 	s.subCacheL1.Wait()
+ }
+ 
+-// StartSubCacheInvalidationSubscriber 启动跨实例订阅 L1 缓存失效订阅。
++func (s *SubscriptionService) markLocalSubCacheInvalidation(cacheKey string) {
++	if s == nil || cacheKey == "" {
++		return
++	}
++	s.subCachePubMu.Lock()
++	if s.subCachePubSkip == nil {
++		s.subCachePubSkip = make(map[string]int)
++	}
++	s.subCachePubSkip[cacheKey]++
++	s.subCachePubMu.Unlock()
++}
++
++func (s *SubscriptionService) consumeLocalSubCacheInvalidation(cacheKey string) bool {
++	if s == nil || cacheKey == "" {
++		return false
++	}
++	s.subCachePubMu.Lock()
++	defer s.subCachePubMu.Unlock()
++	count := s.subCachePubSkip[cacheKey]
++	if count <= 0 {
++		return false
++	}
++	if count == 1 {
++		delete(s.subCachePubSkip, cacheKey)
++	} else {
++		s.subCachePubSkip[cacheKey] = count - 1
++	}
++	return true
++}
++
++// StartSubCacheInvalidationSubscriber listens for cross-instance L1 invalidations.
+ func (s *SubscriptionService) StartSubCacheInvalidationSubscriber(ctx context.Context) {
+-	if s.billingCacheService == nil || s.subCacheL1 == nil {
++	if s == nil || s.billingCacheService == nil || s.subCacheL1 == nil {
+ 		return
+ 	}
+ 	if err := s.billingCacheService.SubscribeSubscriptionCacheInvalidation(ctx, func(cacheKey string) {
++		if s.consumeLocalSubCacheInvalidation(cacheKey) {
++			return
++		}
+ 		s.invalidateSubCacheKeySync(cacheKey)
+ 	}); err != nil {
+ 		log.Printf("Warning: failed to start subscription cache invalidation subscriber: %v", err)
+ 	}
+ }
+ 
+-func (s *SubscriptionService) invalidateSubscriptionCaches(userID, groupID int64) error {
+-	s.InvalidateSubCacheSync(userID, groupID)
+-	if s.billingCacheService == nil {
+-		return nil
++func (s *SubscriptionService) publishSubCacheInvalidation(ctx context.Context, cacheKey string) {
++	if s == nil || s.billingCacheService == nil || cacheKey == "" {
++		return
++	}
++	s.markLocalSubCacheInvalidation(cacheKey)
++	time.AfterFunc(30*time.Second, func() {
++		_ = s.consumeLocalSubCacheInvalidation(cacheKey)
++	})
++	if err := s.billingCacheService.PublishSubscriptionCacheInvalidation(ctx, cacheKey); err != nil {
++		_ = s.consumeLocalSubCacheInvalidation(cacheKey)
++		log.Printf("Warning: publish subscription cache invalidation failed for key %s: %v", cacheKey, err)
+ 	}
++}
+ 
+-	cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+-	defer cancel()
+-	if err := s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID); err != nil {
+-		return fmt.Errorf("invalidate billing subscription cache: %w", err)
++func (s *SubscriptionService) refreshSubscriptionCaches(ctx context.Context, userID, groupID int64) {
++	if s == nil {
++		return
++	}
++	key := subCacheKey(userID, groupID)
++	if s.subCacheL1 != nil && s.userSubRepo != nil {
++		sub, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, userID, groupID)
++		if err == nil && sub != nil {
++			_ = s.subCacheL1.SetWithTTL(key, sub, 1, s.jitteredTTL(s.subCacheTTL))
++		} else {
++			s.subCacheL1.Del(key)
++		}
++		s.subCacheL1.Wait()
+ 	}
+-	if err := s.billingCacheService.PublishSubscriptionCacheInvalidation(cacheCtx, subCacheKey(userID, groupID)); err != nil {
+-		return fmt.Errorf("publish subscription cache invalidation: %w", err)
++	if s.billingCacheService != nil {
++		if err := s.billingCacheService.RefreshSubscription(ctx, userID, groupID); err != nil {
++			log.Printf("Warning: refresh billing subscription cache failed for user %d group %d: %v", userID, groupID, err)
++		}
+ 	}
++	cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	s.publishSubCacheInvalidation(cacheCtx, key)
++}
++
++// invalidateSubscriptionCaches keeps the upstream restore path compatible with
++// the realtime refresh flow used by this fork.
++func (s *SubscriptionService) invalidateSubscriptionCaches(userID, groupID int64) error {
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	s.refreshSubscriptionCaches(ctx, userID, groupID)
+ 	return nil
+ }
+ 
+@@ -291,14 +357,16 @@ func (s *SubscriptionService) maybeInvalidateAssignmentCaches(userID, groupID in
+ 		return
+ 	}
+ 
+-	s.InvalidateSubCache(userID, groupID)
+-	if s.billingCacheService != nil {
+-		go func() {
+-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+-			defer cancel()
++	cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	if s.userSubRepo == nil {
++		s.InvalidateSubCacheSync(userID, groupID)
++		if s.billingCacheService != nil {
+ 			_ = s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID)
+-		}()
++		}
++		return
+ 	}
++	s.refreshSubscriptionCaches(cacheCtx, userID, groupID)
+ }
+ 
+ func (s *SubscriptionService) updateExistingSubscriptionTerm(
+@@ -522,15 +590,7 @@ func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, i
+ 	}
+ 
+ 	// 失效订阅缓存
+-	s.InvalidateSubCache(input.UserID, input.GroupID)
+-	if s.billingCacheService != nil {
+-		userID, groupID := input.UserID, input.GroupID
+-		go func() {
+-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+-			defer cancel()
+-			_ = s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID)
+-		}()
+-	}
++	s.refreshSubscriptionCaches(ctx, input.UserID, input.GroupID)
+ 
+ 	return sub, false, nil
+ }
+@@ -582,9 +642,8 @@ func (s *SubscriptionService) RevokeSubscription(ctx context.Context, subscripti
+ 		return err
+ 	}
+ 
+-	if err := s.invalidateSubscriptionCaches(sub.UserID, sub.GroupID); err != nil {
+-		return err
+-	}
++	// 失效订阅缓存
++	s.refreshSubscriptionCaches(ctx, sub.UserID, sub.GroupID)
+ 
+ 	return nil
+ }
+@@ -678,15 +737,7 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
+ 	}
+ 
+ 	// 失效订阅缓存
+-	s.InvalidateSubCache(sub.UserID, sub.GroupID)
+-	if s.billingCacheService != nil {
+-		userID, groupID := sub.UserID, sub.GroupID
+-		go func() {
+-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+-			defer cancel()
+-			_ = s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID)
+-		}()
+-	}
++	s.refreshSubscriptionCaches(ctx, sub.UserID, sub.GroupID)
+ 
+ 	return s.userSubRepo.GetByID(ctx, subscriptionID)
+ }
+@@ -846,13 +897,7 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
+ 	if err := s.userSubRepo.ResetUsageWindows(ctx, sub.ID, resetDaily, resetWeekly, resetMonthly, windowStart); err != nil {
+ 		return nil, err
+ 	}
+-	// Invalidate L1 ristretto cache. Ristretto's Del() is asynchronous by design,
+-	// so call Wait() immediately after to flush pending operations and guarantee
+-	// the deleted key is not returned on the very next Get() call.
+-	s.InvalidateSubCacheSync(sub.UserID, sub.GroupID)
+-	if s.billingCacheService != nil {
+-		_ = s.billingCacheService.InvalidateSubscription(ctx, sub.UserID, sub.GroupID)
+-	}
++	s.refreshSubscriptionCaches(ctx, sub.UserID, sub.GroupID)
+ 	// Return the refreshed subscription from DB
+ 	return s.userSubRepo.GetByID(ctx, subscriptionID)
+ }
+@@ -898,10 +943,7 @@ func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *Use
+ 
+ 	// 如果有窗口被重置，失效缓存以保持一致性
+ 	if needsInvalidateCache {
+-		s.InvalidateSubCache(sub.UserID, sub.GroupID)
+-		if s.billingCacheService != nil {
+-			_ = s.billingCacheService.InvalidateSubscription(ctx, sub.UserID, sub.GroupID)
+-		}
++		s.refreshSubscriptionCaches(ctx, sub.UserID, sub.GroupID)
+ 	}
+ 
+ 	return nil
+@@ -1034,7 +1076,7 @@ func (s *SubscriptionService) doWindowMaintenance(sub *UserSubscription) {
+ 	}
+ 
+ 	// 失效 L1 缓存，确保后续请求拿到更新后的数据
+-	s.InvalidateSubCache(sub.UserID, sub.GroupID)
++	s.refreshSubscriptionCaches(ctx, sub.UserID, sub.GroupID)
+ }
+ 
+ // RecordUsage 记录使用量到订阅
+diff --git a/backend/internal/service/user_service.go b/backend/internal/service/user_service.go
+index 98b0c8f32b2961fabf4d471f5c924df269df3fbb..320147e520b241740f0dda59411cba28df3cc5e9 100644
+--- a/backend/internal/service/user_service.go
++++ b/backend/internal/service/user_service.go
+@@ -1080,18 +1080,26 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
+ 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
+ 	}
+ 	if s.billingCache != nil {
+-		go func() {
+-			defer func() {
+-				if r := recover(); r != nil {
+-					slog.Error("panic in balance cache invalidation", "user_id", userID, "recover", r)
+-				}
+-			}()
+-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++		if local, ok := s.billingCache.(localBillingBalanceDeltaCache); ok {
++			if local.ApplyUserBalanceDeltaLocal(userID, amount) {
++				return nil
++			}
++			cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+ 			defer cancel()
+-			if err := s.billingCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
+-				slog.Error("invalidate user balance cache failed", "user_id", userID, "error", err)
++			user, err := s.userRepo.GetByID(cacheCtx, userID)
++			if err == nil && user != nil {
++				if err := s.billingCache.SetUserBalance(cacheCtx, userID, user.Balance); err != nil {
++					slog.Error("set user balance cache failed", "user_id", userID, "error", err)
++				}
++				return nil
+ 			}
+-		}()
++			slog.Error("load user balance for cache refresh failed", "user_id", userID, "error", err)
++		}
++		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
++		defer cancel()
++		if err := s.billingCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
++			slog.Error("invalidate user balance cache failed", "user_id", userID, "error", err)
++		}
+ 	}
+ 	return nil
+ }
+

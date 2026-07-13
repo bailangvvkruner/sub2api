@@ -358,12 +358,11 @@ func (s *BillingCacheService) GetUserBalance(ctx context.Context, userID int64) 
 			return nil, err
 		}
 
-		// 异步建立缓存
-		_ = s.enqueueCacheWrite(cacheWriteTask{
-			kind:    cacheWriteSetBalance,
-			userID:  userID,
-			balance: balance,
-		})
+		// Populate synchronously so a write-behind delta cannot be overwritten
+		// later by an asynchronously queued copy of this pre-deduction value.
+		if err := s.cache.SetUserBalance(loadCtx, userID, balance); err != nil {
+			return nil, err
+		}
 		return balance, nil
 	})
 	if err != nil {

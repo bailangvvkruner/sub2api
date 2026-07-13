@@ -121,6 +121,7 @@ type UsageBillingWriteBehind struct {
 	apiKeyUpdaters map[int64]APIKeyQuotaUpdater
 	accountQuota   map[int64]float64
 	commands       []*UsageBillingCommand
+	balanceShadow  map[int64]float64
 	quotaShadow    map[int64]usageBillingAPIKeyQuotaShadow
 	dedup          map[string]usageBillingDedupEntry
 	l2Entries      int64
@@ -163,6 +164,7 @@ func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, rdb *redis.Client, 
 		apiKeyUpdaters: make(map[int64]APIKeyQuotaUpdater),
 		accountQuota:   make(map[int64]float64),
 		commands:       make([]*UsageBillingCommand, 0),
+		balanceShadow:  make(map[int64]float64),
 		quotaShadow:    make(map[int64]usageBillingAPIKeyQuotaShadow),
 		dedup:          make(map[string]usageBillingDedupEntry),
 	}
@@ -334,11 +336,6 @@ func (s *UsageBillingWriteBehind) Apply(ctx context.Context, cmd *UsageBillingCo
 	dedupKey := usageBillingWriteBehindDedupKey(cmd)
 
 	result := &UsageBillingApplyResult{Applied: true}
-	if cmd.BalanceCost > 0 && p.User != nil {
-		newBalance := p.User.Balance - cmd.BalanceCost
-		result.NewBalance = &newBalance
-		result.BalanceOverdrafted = p.User.Balance < cmd.BalanceCost
-	}
 	if cmd.AccountQuotaCost > 0 && p.Account != nil {
 		result.QuotaState = buildOptimisticAccountQuotaState(p.Account, cmd.AccountQuotaCost)
 	}
@@ -353,6 +350,22 @@ func (s *UsageBillingWriteBehind) Apply(ctx context.Context, cmd *UsageBillingCo
 		s.dedupSkippedTotal.Add(1)
 		s.mu.Unlock()
 		return &UsageBillingApplyResult{Applied: false}, true, nil
+	}
+	if cmd.BalanceCost > 0 {
+		currentBalance, balanceKnown, cacheSynced, err := s.deductCurrentBalanceLocked(ctx, cmd.UserID, cmd.BalanceCost, deps)
+		if err != nil {
+			s.mu.Unlock()
+			return nil, true, err
+		}
+		if balanceKnown {
+			newBalance := currentBalance - cmd.BalanceCost
+			if !cacheSynced {
+				s.balanceShadow[cmd.UserID] = newBalance
+			}
+			result.NewBalance = &newBalance
+			result.BalanceOverdrafted = currentBalance < cmd.BalanceCost
+			result.balanceCacheSynced = cacheSynced
+		}
 	}
 	s.dedup[dedupKey] = usageBillingDedupEntry{
 		fingerprint: strings.TrimSpace(cmd.RequestFingerprint),
@@ -403,6 +416,41 @@ func (s *UsageBillingWriteBehind) Apply(ctx context.Context, cmd *UsageBillingCo
 	}
 
 	return result, true, nil
+}
+
+// deductCurrentBalanceLocked uses the billing L1 as the balance authority.
+// The auth snapshot is intentionally ignored because it may be stale for its
+// full cache TTL. Apply holds s.mu while this method reads and deducts L1.
+func (s *UsageBillingWriteBehind) deductCurrentBalanceLocked(ctx context.Context, userID int64, cost float64, deps *billingDeps) (float64, bool, bool, error) {
+	if deps != nil && deps.billingCacheService != nil {
+		balance, err := deps.billingCacheService.GetUserBalance(ctx, userID)
+		if err != nil {
+			return 0, false, false, err
+		}
+		if deps.billingCacheService.applyUserBalanceDeltaLocal(userID, -cost) {
+			return balance, true, true, nil
+		}
+		// Non-local cache compatibility path. It is serialized by s.mu and is
+		// based on the just-read billing cache value, never the auth snapshot.
+		if err := deps.billingCacheService.SetUserBalanceRealtime(ctx, userID, balance-cost); err != nil {
+			return 0, false, false, err
+		}
+		return balance, true, true, nil
+	}
+	if balance, ok := s.balanceShadow[userID]; ok {
+		return balance, true, false, nil
+	}
+	if deps == nil || deps.userRepo == nil {
+		return 0, false, false, nil
+	}
+	user, err := deps.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return 0, false, false, err
+	}
+	if user == nil {
+		return 0, false, false, nil
+	}
+	return user.Balance, true, false, nil
 }
 
 func (s *UsageBillingWriteBehind) Flush(parentCtx context.Context, deps *billingDeps) {
