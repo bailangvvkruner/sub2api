@@ -1,11 +1,13 @@
 use std::{
     collections::HashSet,
     env, fmt,
-    future::Future,
     path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
 };
+
+#[cfg(not(unix))]
+use std::future::Future;
 
 use anyhow::{Context, Result, bail};
 use ipnet::IpNet;
@@ -664,7 +666,6 @@ pub(crate) async fn persist_setup_config(config: &PersistedSetupConfig) -> Resul
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
 
