@@ -1,39 +1,14 @@
 import { apiClient } from '../client'
 
-export type BackupType = 'postgres' | 'redis' | 'full'
-export type BackupJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'partial_succeeded'
-
-export interface BackupAgentInfo {
-  status: string
-  version: string
-  uptime_seconds: number
-}
+export type BackupType = 'postgres'
+export type BackupJobStatus = 'running' | 'completed' | 'failed'
+export type DataManagementMode = 'embedded_postgresql'
 
 export interface BackupAgentHealth {
+  healthy: boolean
   enabled: boolean
-  reason: string
-  socket_path: string
-  agent?: BackupAgentInfo
-}
-
-export interface DataManagementPostgresConfig {
-  host: string
-  port: number
-  user: string
-  password?: string
-  password_configured?: boolean
-  database: string
-  ssl_mode: string
-  container_name: string
-}
-
-export interface DataManagementRedisConfig {
-  addr: string
-  username: string
-  password?: string
-  password_configured?: boolean
-  db: number
-  container_name: string
+  mode: DataManagementMode
+  message: string
 }
 
 export interface DataManagementS3Config {
@@ -50,20 +25,12 @@ export interface DataManagementS3Config {
 }
 
 export interface DataManagementConfig {
-  source_mode: 'direct' | 'docker_exec'
-  backup_root: string
-  sqlite_path?: string
-  retention_days: number
-  keep_last: number
-  active_postgres_profile_id?: string
-  active_redis_profile_id?: string
-  active_s3_profile_id?: string
-  postgres: DataManagementPostgresConfig
-  redis: DataManagementRedisConfig
-  s3: DataManagementS3Config
+  enabled?: boolean
+  mode?: DataManagementMode
+  [key: string]: unknown
 }
 
-export type SourceType = 'postgres' | 'redis'
+export type SourceType = 'postgres'
 
 export interface DataManagementSourceConfig {
   host: string
@@ -72,20 +39,13 @@ export interface DataManagementSourceConfig {
   password?: string
   database: string
   ssl_mode: string
-  addr: string
-  username: string
-  db: number
   container_name: string
 }
 
-export interface DataManagementSourceProfile {
-  source_type: SourceType
-  profile_id: string
-  name: string
-  is_active: boolean
-  password_configured?: boolean
-  config: DataManagementSourceConfig
-  created_at?: string
+export interface DataManagementProfileState {
+  id: string
+  active: boolean
+  created_at: string
   updated_at?: string
 }
 
@@ -103,48 +63,23 @@ export interface TestS3Request {
 export interface TestS3Response {
   ok: boolean
   message: string
+  profile_id: string | null
 }
 
 export interface CreateBackupJobRequest {
   backup_type: BackupType
-  upload_to_s3?: boolean
-  s3_profile_id?: string
-  postgres_profile_id?: string
-  redis_profile_id?: string
-  idempotency_key?: string
-}
-
-export interface CreateBackupJobResponse {
-  job_id: string
-  status: BackupJobStatus
-}
-
-export interface BackupArtifactInfo {
-  local_path: string
-  size_bytes: number
-  sha256: string
-}
-
-export interface BackupS3Info {
-  bucket: string
-  key: string
-  etag: string
+  expire_days?: number
 }
 
 export interface BackupJob {
-  job_id: string
-  backup_type: BackupType
+  id: string
   status: BackupJobStatus
-  triggered_by: string
-  s3_profile_id?: string
-  postgres_profile_id?: string
-  redis_profile_id?: string
-  started_at?: string
-  finished_at?: string
-  error_message?: string
-  artifact?: BackupArtifactInfo
-  s3?: BackupS3Info
+  backup_id: string
+  created_at: string
+  mode: DataManagementMode
 }
+
+export type CreateBackupJobResponse = BackupJob
 
 export interface ListSourceProfilesResponse {
   items: DataManagementSourceProfile[]
@@ -162,14 +97,26 @@ export interface UpdateSourceProfileRequest {
   config: DataManagementSourceConfig
 }
 
-export interface DataManagementS3Profile {
+export interface DataManagementSourceProfile extends DataManagementProfileState {
   profile_id: string
   name: string
-  is_active: boolean
-  s3: DataManagementS3Config
-  secret_access_key_configured?: boolean
-  created_at?: string
-  updated_at?: string
+  config: DataManagementSourceConfig
+  set_active?: boolean
+}
+
+export interface DataManagementS3Profile extends DataManagementProfileState {
+  profile_id: string
+  name: string
+  enabled: boolean
+  endpoint: string
+  region: string
+  bucket: string
+  access_key_id: string
+  secret_access_key?: string
+  prefix?: string
+  force_path_style?: boolean
+  use_ssl?: boolean
+  set_active?: boolean
 }
 
 export interface ListS3ProfilesResponse {
@@ -204,16 +151,12 @@ export interface UpdateS3ProfileRequest {
   use_ssl?: boolean
 }
 
-export interface ListBackupJobsRequest {
-  page_size?: number
-  page_token?: string
-  status?: BackupJobStatus
-  backup_type?: BackupType
+export interface DeleteProfileResponse {
+  deleted: true
 }
 
 export interface ListBackupJobsResponse {
   items: BackupJob[]
-  next_page_token?: string
 }
 
 export async function getAgentHealth(): Promise<BackupAgentHealth> {
@@ -251,12 +194,23 @@ export async function updateSourceProfile(sourceType: SourceType, profileID: str
   return data
 }
 
-export async function deleteSourceProfile(sourceType: SourceType, profileID: string): Promise<void> {
-  await apiClient.delete(`/admin/data-management/sources/${sourceType}/profiles/${profileID}`)
+export async function deleteSourceProfile(
+  sourceType: SourceType,
+  profileID: string
+): Promise<DeleteProfileResponse> {
+  const { data } = await apiClient.delete<DeleteProfileResponse>(
+    `/admin/data-management/sources/${sourceType}/profiles/${profileID}`
+  )
+  return data
 }
 
-export async function setActiveSourceProfile(sourceType: SourceType, profileID: string): Promise<DataManagementSourceProfile> {
-  const { data } = await apiClient.post<DataManagementSourceProfile>(`/admin/data-management/sources/${sourceType}/profiles/${profileID}/activate`)
+export async function setActiveSourceProfile(
+  sourceType: SourceType,
+  profileID: string
+): Promise<DataManagementSourceProfile> {
+  const { data } = await apiClient.post<DataManagementSourceProfile>(
+    `/admin/data-management/sources/${sourceType}/profiles/${profileID}/activate`
+  )
   return data
 }
 
@@ -275,32 +229,30 @@ export async function updateS3Profile(profileID: string, request: UpdateS3Profil
   return data
 }
 
-export async function deleteS3Profile(profileID: string): Promise<void> {
-  await apiClient.delete(`/admin/data-management/s3/profiles/${profileID}`)
-}
-
-export async function setActiveS3Profile(profileID: string): Promise<DataManagementS3Profile> {
-  const { data } = await apiClient.post<DataManagementS3Profile>(`/admin/data-management/s3/profiles/${profileID}/activate`)
-  return data
-}
-
-export async function createBackupJob(request: CreateBackupJobRequest): Promise<CreateBackupJobResponse> {
-  const headers = request.idempotency_key
-    ? { 'X-Idempotency-Key': request.idempotency_key }
-    : undefined
-
-  const { data } = await apiClient.post<CreateBackupJobResponse>(
-    '/admin/data-management/backups',
-    request,
-    { headers }
+export async function deleteS3Profile(profileID: string): Promise<DeleteProfileResponse> {
+  const { data } = await apiClient.delete<DeleteProfileResponse>(
+    `/admin/data-management/s3/profiles/${profileID}`
   )
   return data
 }
 
-export async function listBackupJobs(request?: ListBackupJobsRequest): Promise<ListBackupJobsResponse> {
-  const { data } = await apiClient.get<ListBackupJobsResponse>('/admin/data-management/backups', {
-    params: request
-  })
+export async function setActiveS3Profile(profileID: string): Promise<DataManagementS3Profile> {
+  const { data } = await apiClient.post<DataManagementS3Profile>(
+    `/admin/data-management/s3/profiles/${profileID}/activate`
+  )
+  return data
+}
+
+export async function createBackupJob(request: CreateBackupJobRequest): Promise<CreateBackupJobResponse> {
+  const { data } = await apiClient.post<CreateBackupJobResponse>(
+    '/admin/data-management/backups',
+    request
+  )
+  return data
+}
+
+export async function listBackupJobs(): Promise<ListBackupJobsResponse> {
+  const { data } = await apiClient.get<ListBackupJobsResponse>('/admin/data-management/backups')
   return data
 }
 

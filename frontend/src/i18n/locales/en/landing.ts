@@ -210,17 +210,6 @@ export default {
         verifyFull: 'Verify Full'
       }
     },
-    redis: {
-      title: 'Redis Configuration',
-      description: 'Connect to your Redis server',
-      host: 'Host',
-      port: 'Port',
-      password: 'Password (optional)',
-      database: 'Database',
-      passwordPlaceholder: 'Password',
-      enableTls: 'Enable TLS',
-      enableTlsHint: 'Use TLS when connecting to Redis (public CA certs)'
-    },
     admin: {
       title: 'Admin Account',
       description: 'Create your administrator account',
@@ -235,7 +224,6 @@ export default {
       title: 'Ready to Install',
       description: 'Review your configuration and complete setup',
       database: 'Database',
-      redis: 'Redis',
       adminEmail: 'Admin Email'
     },
     status: {

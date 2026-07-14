@@ -61,7 +61,7 @@ export default defineConfig(({ mode }) => {
     __INTLIFY_JIT_COMPILATION__: true
   },
   build: {
-    outDir: '../backend/internal/web/dist',
+    outDir: '../frontend-dist',
     emptyOutDir: true,
     rollupOptions: {
       output: {

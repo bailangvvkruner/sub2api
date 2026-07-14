@@ -7,7 +7,7 @@ node_modules/
 
 # 忽略构建输出
 dist/
-../backend/internal/web/dist/
+../frontend-dist/
 
 # 忽略缓存
 .cache/

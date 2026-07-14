@@ -227,7 +227,7 @@ export default {
         },
         backup: {
           title: 'Backup Operations',
-          description: 'Trigger PostgreSQL, Redis, and full backup jobs.'
+          description: 'Trigger PostgreSQL backup jobs.'
         },
         history: {
           title: 'Backup History',
@@ -238,13 +238,11 @@ export default {
         sourceMode: 'Source Mode',
         backupRoot: 'Backup Root',
         activePostgresProfile: 'Active PostgreSQL Profile',
-        activeRedisProfile: 'Active Redis Profile',
         activeS3Profile: 'Active S3 Profile',
         retentionDays: 'Retention Days',
         keepLast: 'Keep Last Jobs',
         uploadToS3: 'Upload to S3',
         useActivePostgresProfile: 'Use Active PostgreSQL Profile',
-        useActiveRedisProfile: 'Use Active Redis Profile',
         useActiveS3Profile: 'Use Active Profile',
         idempotencyKey: 'Idempotency Key (Optional)',
         secretConfigured: 'Configured already, leave empty to keep unchanged',
@@ -261,14 +259,6 @@ export default {
           password: 'Password',
           database: 'Database',
           sslMode: 'SSL Mode',
-          containerName: 'Container Name (docker_exec mode)'
-        },
-        redis: {
-          title: 'Redis',
-          addr: 'Address (host:port)',
-          username: 'Username',
-          password: 'Password',
-          db: 'Database Index',
           containerName: 'Container Name (docker_exec mode)'
         },
         s3: {
@@ -323,7 +313,6 @@ export default {
           status: 'Status',
           triggeredBy: 'Triggered By',
           pgProfile: 'PostgreSQL Profile',
-          redisProfile: 'Redis Profile',
           s3Profile: 'S3 Profile',
           finishedAt: 'Finished At',
           artifact: 'Artifact',

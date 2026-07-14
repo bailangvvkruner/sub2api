@@ -8,26 +8,6 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: backend/go.mod
-          check-latest: false
-          cache: true
-          cache-dependency-path: backend/go.sum
-      - name: Verify Go version
-        run: |
-          go version | grep -q 'go1.26.5'
-      - name: Unit tests
-        working-directory: backend
-        run: make test-unit
-      - name: Integration tests
-        working-directory: backend
-        run: make test-integration
-
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -48,22 +28,100 @@ jobs:
       - name: Frontend typecheck and critical vitest
         run: make test-frontend
 
-  golangci-lint:
+  backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: sub2api
+          POSTGRES_PASSWORD: sub2api-test
+          POSTGRES_DB: sub2api_rust_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sub2api -d sub2api_rust_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://sub2api:sub2api-test@127.0.0.1:5432/sub2api_rust_test?sslmode=disable
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: backend/go.mod
-          check-latest: false
-          cache: true
-          cache-dependency-path: backend/go.sum
-      - name: Verify Go version
+          toolchain: 1.97.0
+          components: clippy,rustfmt
+      - name: Check formatting
+        working-directory: backend-rust
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        working-directory: backend-rust
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Unit tests
+        working-directory: backend-rust
+        run: cargo test --all-targets --locked
+      - name: Legacy route contract coverage
+        working-directory: backend-rust
+        shell: bash
         run: |
-          go version | grep -q 'go1.26.5'
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.9
-          args: --timeout=30m
-          working-directory: backend
+          cargo run --example route_coverage --locked | tee route-coverage.tsv
+          grep -q $'SUMMARY\t.*intentional_absence=1\tmissing=0' route-coverage.tsv
+      - name: PostgreSQL migration integration test
+        working-directory: backend-rust
+        run: cargo test --test postgres_migrations --locked -- --ignored --nocapture
+      - name: PostgreSQL billing integration tests
+        working-directory: backend-rust
+        run: cargo test --test billing_core --locked -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL administrator bootstrap integration test
+        working-directory: backend-rust
+        run: cargo test --test bootstrap_runtime --locked bootstrap::tests::postgres_bootstrap_is_idempotent_and_skips_existing_users -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL ops control-plane integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_ops_mutations_and_combined_request_list_are_live -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL maintenance integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_cycle_expires_orders_cleans_auth_and_executes_usage_tasks -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL batch-image billing integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_hold_idempotency_and_cancel_release_are_atomic -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL batch-image retention integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_expired_output_cleanup_claim_is_durable -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL account and proxy integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_batch_updates_are_atomic_and_proxy_delete_skips_in_use_rows -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL administrator compatibility semantics test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_group_overrides_quotas_and_flagged_hashes_are_durable -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL settings invalidation integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_setting_writes_commit_before_cache_invalidation -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL backup lock and restore write-gate integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_operation_lock_and_restore_write_gate_are_cross_instance -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL scheduled-test and channel-monitor integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_scheduler_claim_recovery_and_result_writes_are_atomic -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL payment refund integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_forced_refund_is_atomic_and_idempotent -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL payment provider secret integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_provider_secret_round_trip_preserves_and_masks_credentials -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL error passthrough rule integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_error_rule_crud_applies_defaults_and_patch_semantics -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL operations runtime integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_ops_runtime_locks_aggregates_and_alerts_are_replica_safe -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL operations retention and channel rollup integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_ops_runtime_rolls_up_channels_and_prunes_moderation_logs -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL authentication rate-limit integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_auth_rate_limits_are_cross_replica_and_hash_only -- --ignored --test-threads=1 --nocapture
+      - name: PostgreSQL gateway authority integration test
+        working-directory: backend-rust
+        run: cargo test --lib --locked postgres_authority_is_cross_replica_and_recovers_ready_billing -- --ignored --test-threads=1 --nocapture

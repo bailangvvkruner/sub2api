@@ -27,14 +27,6 @@ export interface DatabaseConfig {
   sslmode: string
 }
 
-export interface RedisConfig {
-  host: string
-  port: number
-  password: string
-  db: number
-  enable_tls: boolean
-}
-
 export interface AdminConfig {
   email: string
   password: string
@@ -48,7 +40,6 @@ export interface ServerConfig {
 
 export interface InstallRequest {
   database: DatabaseConfig
-  redis: RedisConfig
   admin: AdminConfig
   server: ServerConfig
 }
@@ -71,13 +62,6 @@ export async function getSetupStatus(): Promise<SetupStatus> {
  */
 export async function testDatabase(config: DatabaseConfig): Promise<void> {
   await setupClient.post('/setup/test-db', config)
-}
-
-/**
- * Test Redis connection
- */
-export async function testRedis(config: RedisConfig): Promise<void> {
-  await setupClient.post('/setup/test-redis', config)
 }
 
 /**

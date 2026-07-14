@@ -290,7 +290,7 @@ export default {
       preHashCheck: 'Enable Pre-Hash Check',
       preHashCheckHint: 'Hashes from async hits are blocked before moderation; this does not send email or increment ban counters.',
       flaggedHashCount: 'Current hash collection size: {count}',
-      flaggedHashHint: 'Hashes are stored permanently in Redis; paste a full 64-character hash to remove a false block, or clear all stored hashes.',
+      flaggedHashHint: 'Hashes are stored durably in PostgreSQL; paste a full 64-character hash to remove a false block, or clear all stored hashes.',
       flaggedHashPlaceholder: 'Paste full 64-character input hash',
       deleteFlaggedHash: 'Delete hash',
       clearFlaggedHashes: 'Clear all',

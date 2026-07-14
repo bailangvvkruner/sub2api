@@ -290,7 +290,7 @@ export default {
       preHashCheck: '启用前置哈希比对',
       preHashCheckHint: '异步审核命中过的输入哈希会被前置拦截；该拦截不发送邮件，也不累计封禁次数。',
       flaggedHashCount: '当前哈希集合数量：{count} 个',
-      flaggedHashHint: '哈希永久保存在 Redis 集合中；可粘贴完整 64 位哈希删除误拦截项，或一键清空全部风险哈希。',
+      flaggedHashHint: '哈希持久保存在 PostgreSQL 中；可粘贴完整 64 位哈希删除误拦截项，或一键清空全部风险哈希。',
       flaggedHashPlaceholder: '粘贴完整 64 位输入哈希',
       deleteFlaggedHash: '删除指定哈希',
       clearFlaggedHashes: '一键清空',

@@ -883,7 +883,7 @@ export interface Account {
   proxy_fallback_origin_name?: string | null
   concurrency: number
   load_factor?: number | null
-  current_concurrency?: number // Real-time concurrency count from Redis
+  current_concurrency?: number // Real-time process-local concurrency count
   scheduler_score?: {
     base_score: number
     sticky_score?: number

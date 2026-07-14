@@ -1,0 +1,533 @@
+method	path	handler	auth	source	migration_category	dynamic	transport
+GET	/antigravity/models	h.Gateway.AntigravityModels	API key + assigned group	backend/internal/server/routes/gateway.go:255	gateway/antigravity	no	http
+POST	/antigravity/v1/messages	h.Gateway.Messages	API key + assigned group + forced antigravity platform	backend/internal/server/routes/gateway.go:267	gateway/antigravity	no	http/sse-when-streaming
+POST	/antigravity/v1/messages/count_tokens	h.Gateway.CountTokens	API key + assigned group + forced antigravity platform	backend/internal/server/routes/gateway.go:268	gateway/antigravity	no	http
+GET	/antigravity/v1/models	h.Gateway.AntigravityModels	API key + assigned group + forced antigravity platform	backend/internal/server/routes/gateway.go:269	gateway/antigravity	no	http
+GET	/antigravity/v1/usage	h.Gateway.Usage	API key + assigned group + forced antigravity platform	backend/internal/server/routes/gateway.go:270	gateway/antigravity	no	http
+GET	/antigravity/v1beta/models	h.Gateway.GeminiV1BetaListModels	Google API key + subscription + assigned group + forced antigravity platform	backend/internal/server/routes/gateway.go:282	gateway/gemini-native	no	http
+POST	/antigravity/v1beta/models/*modelAction	h.Gateway.GeminiV1BetaModels	Google API key + subscription + assigned group + forced antigravity platform	backend/internal/server/routes/gateway.go:284	gateway/gemini-native	yes	http/sse-when-streaming
+GET	/antigravity/v1beta/models/:model	h.Gateway.GeminiV1BetaGetModel	Google API key + subscription + assigned group + forced antigravity platform	backend/internal/server/routes/gateway.go:283	gateway/gemini-native	yes	http
+POST	/api/event_logging/batch	inline:eventLoggingNoop	public	backend/internal/server/routes/common.go:17	common/health-control	no	http
+GET	/api/v1/admin/accounts	h.Admin.Account.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:297	admin/accounts	no	http
+POST	/api/v1/admin/accounts	h.Admin.Account.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:299	admin/accounts	no	http
+DELETE	/api/v1/admin/accounts/:id	h.Admin.Account.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:305	admin/accounts	yes	http
+GET	/api/v1/admin/accounts/:id	h.Admin.Account.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:298	admin/accounts	yes	http
+PUT	/api/v1/admin/accounts/:id	h.Admin.Account.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:304	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/apply-oauth-credentials	h.Admin.Account.ApplyOAuthCredentials	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:309	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/clear-error	h.Admin.Account.ClearError	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:313	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/clear-rate-limit	h.Admin.Account.ClearRateLimit	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:318	admin/accounts	yes	http
+GET	/api/v1/admin/accounts/:id/models	h.Admin.Account.GetAvailableModels	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:324	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/models/sync-upstream	h.Admin.Account.SyncUpstreamModels	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:325	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/recover-state	h.Admin.Account.RecoverState	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:307	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/refresh	h.Admin.Account.Refresh	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:308	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/refresh-tier	h.Admin.Account.RefreshTier	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:311	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/reset-quota	h.Admin.Account.ResetQuota	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:319	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/revert-proxy-fallback	h.Admin.Account.RevertProxyFallback	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:314	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/schedulable	h.Admin.Account.SetSchedulable	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:322	admin/accounts	yes	http
+GET	/api/v1/admin/accounts/:id/scheduled-test-plans	h.Admin.ScheduledTest.ListByAccount	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:612	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/set-privacy	h.Admin.Account.SetPrivacy	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:310	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/shadow	h.Admin.OpenAIOAuth.CreateShadow	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:339	admin/accounts	yes	http
+GET	/api/v1/admin/accounts/:id/stats	h.Admin.Account.GetStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:312	admin/accounts	yes	http
+DELETE	/api/v1/admin/accounts/:id/temp-unschedulable	h.Admin.Account.ClearTempUnschedulable	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:321	admin/accounts	yes	http
+GET	/api/v1/admin/accounts/:id/temp-unschedulable	h.Admin.Account.GetTempUnschedulable	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:320	admin/accounts	yes	http
+POST	/api/v1/admin/accounts/:id/test	h.Admin.Account.Test	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:306	admin/accounts	yes	http
+GET	/api/v1/admin/accounts/:id/today-stats	h.Admin.Account.GetTodayStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:316	admin/accounts	yes	http
+GET	/api/v1/admin/accounts/:id/usage	h.Admin.Account.GetUsage	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:315	admin/accounts	yes	http
+GET	/api/v1/admin/accounts/antigravity/default-model-mapping	h.Admin.Account.GetAntigravityDefaultModelMapping	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:336	admin/accounts	no	http
+POST	/api/v1/admin/accounts/batch	h.Admin.Account.BatchCreate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:326	admin/accounts	no	http
+POST	/api/v1/admin/accounts/batch-clear-error	h.Admin.Account.BatchClearError	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:332	admin/accounts	no	http
+POST	/api/v1/admin/accounts/batch-refresh	h.Admin.Account.BatchRefresh	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:333	admin/accounts	no	http
+POST	/api/v1/admin/accounts/batch-refresh-tier	h.Admin.Account.BatchRefreshTier	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:330	admin/accounts	no	http
+POST	/api/v1/admin/accounts/batch-update-credentials	h.Admin.Account.BatchUpdateCredentials	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:329	admin/accounts	no	http
+POST	/api/v1/admin/accounts/bulk-update	h.Admin.Account.BulkUpdate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:331	admin/accounts	no	http
+POST	/api/v1/admin/accounts/check-mixed-channel	h.Admin.Account.CheckMixedChannel	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:300	admin/accounts	no	http
+POST	/api/v1/admin/accounts/cookie-auth	h.Admin.OAuth.CookieAuth	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:346	admin/accounts	no	http
+GET	/api/v1/admin/accounts/data	h.Admin.Account.ExportData	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:327	admin/accounts	no	http
+POST	/api/v1/admin/accounts/data	h.Admin.Account.ImportData	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:328	admin/accounts	no	http
+POST	/api/v1/admin/accounts/exchange-code	h.Admin.OAuth.ExchangeCode	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:344	admin/accounts	no	http
+POST	/api/v1/admin/accounts/exchange-setup-token-code	h.Admin.OAuth.ExchangeSetupTokenCode	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:345	admin/accounts	no	http
+POST	/api/v1/admin/accounts/generate-auth-url	h.Admin.OAuth.GenerateAuthURL	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:342	admin/accounts	no	http
+POST	/api/v1/admin/accounts/generate-setup-token-url	h.Admin.OAuth.GenerateSetupTokenURL	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:343	admin/accounts	no	http
+POST	/api/v1/admin/accounts/import/codex-session	h.Admin.Account.ImportCodexSession	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:301	admin/accounts	no	http
+POST	/api/v1/admin/accounts/models/sync-upstream-preview	h.Admin.Account.SyncUpstreamModelsPreview	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:323	admin/accounts	no	http
+POST	/api/v1/admin/accounts/setup-token-cookie-auth	h.Admin.OAuth.SetupTokenCookieAuth	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:347	admin/accounts	no	http
+POST	/api/v1/admin/accounts/sync/crs	h.Admin.Account.SyncFromCRS	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:302	admin/accounts	no	http
+POST	/api/v1/admin/accounts/sync/crs/preview	h.Admin.Account.PreviewFromCRS	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:303	admin/accounts	no	http
+POST	/api/v1/admin/accounts/today-stats/batch	h.Admin.Account.GetBatchTodayStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:317	admin/accounts	no	http
+GET	/api/v1/admin/affiliates/invites	h.Admin.Affiliate.ListInviteRecords	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:678	admin/affiliates	no	http
+GET	/api/v1/admin/affiliates/rebates	h.Admin.Affiliate.ListRebateRecords	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:679	admin/affiliates	no	http
+GET	/api/v1/admin/affiliates/transfers	h.Admin.Affiliate.ListTransferRecords	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:680	admin/affiliates	no	http
+GET	/api/v1/admin/affiliates/users	h.Admin.Affiliate.ListUsers	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:684	admin/affiliates	no	http
+DELETE	/api/v1/admin/affiliates/users/:user_id	h.Admin.Affiliate.ClearUserSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:689	admin/affiliates	yes	http
+PUT	/api/v1/admin/affiliates/users/:user_id	h.Admin.Affiliate.UpdateUserSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:688	admin/affiliates	yes	http
+GET	/api/v1/admin/affiliates/users/:user_id/overview	h.Admin.Affiliate.GetUserOverview	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:687	admin/affiliates	yes	http
+POST	/api/v1/admin/affiliates/users/batch-rate	h.Admin.Affiliate.BatchSetRate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:686	admin/affiliates	no	http
+GET	/api/v1/admin/affiliates/users/lookup	h.Admin.Affiliate.LookupUsers	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:685	admin/affiliates	no	http
+GET	/api/v1/admin/announcements	h.Admin.Announcement.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:354	admin/announcements	no	http
+POST	/api/v1/admin/announcements	h.Admin.Announcement.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:355	admin/announcements	no	http
+DELETE	/api/v1/admin/announcements/:id	h.Admin.Announcement.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:358	admin/announcements	yes	http
+GET	/api/v1/admin/announcements/:id	h.Admin.Announcement.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:356	admin/announcements	yes	http
+PUT	/api/v1/admin/announcements/:id	h.Admin.Announcement.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:357	admin/announcements	yes	http
+GET	/api/v1/admin/announcements/:id/read-status	h.Admin.Announcement.ListReadStatus	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:359	admin/announcements	yes	http
+POST	/api/v1/admin/antigravity/oauth/auth-url	h.Admin.AntigravityOAuth.GenerateAuthURL	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:389	admin/antigravity	no	http
+POST	/api/v1/admin/antigravity/oauth/exchange-code	h.Admin.AntigravityOAuth.ExchangeCode	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:390	admin/antigravity	no	http
+POST	/api/v1/admin/antigravity/oauth/refresh-token	h.Admin.AntigravityOAuth.RefreshToken	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:391	admin/antigravity	no	http
+PUT	/api/v1/admin/api-keys/:id	h.Admin.APIKey.UpdateGroup	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:137	admin/api-keys	yes	http
+GET	/api/v1/admin/backups	h.Admin.Backup.ListBackups	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:533	admin/backups	no	http
+POST	/api/v1/admin/backups	h.Admin.Backup.CreateBackup	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:532	admin/backups	no	http
+DELETE	/api/v1/admin/backups/:id	h.Admin.Backup.DeleteBackup	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:535	admin/backups	yes	http
+GET	/api/v1/admin/backups/:id	h.Admin.Backup.GetBackup	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:534	admin/backups	yes	http
+GET	/api/v1/admin/backups/:id/download-url	h.Admin.Backup.GetDownloadURL	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:536	admin/backups	yes	http
+POST	/api/v1/admin/backups/:id/restore	h.Admin.Backup.RestoreBackup	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:539	admin/backups	yes	http
+GET	/api/v1/admin/backups/s3-config	h.Admin.Backup.GetS3Config	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:523	admin/backups	no	http
+PUT	/api/v1/admin/backups/s3-config	h.Admin.Backup.UpdateS3Config	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:524	admin/backups	no	http
+POST	/api/v1/admin/backups/s3-config/test	h.Admin.Backup.TestS3Connection	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:525	admin/backups	no	http
+GET	/api/v1/admin/backups/schedule	h.Admin.Backup.GetSchedule	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:528	admin/backups	no	http
+PUT	/api/v1/admin/backups/schedule	h.Admin.Backup.UpdateSchedule	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:529	admin/backups	no	http
+GET	/api/v1/admin/channel-monitors	h.Admin.ChannelMonitor.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:653	admin/channel-monitors	no	http
+POST	/api/v1/admin/channel-monitors	h.Admin.ChannelMonitor.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:654	admin/channel-monitors	no	http
+DELETE	/api/v1/admin/channel-monitors/:id	h.Admin.ChannelMonitor.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:657	admin/channel-monitors	yes	http
+GET	/api/v1/admin/channel-monitors/:id	h.Admin.ChannelMonitor.Get	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:655	admin/channel-monitors	yes	http
+PUT	/api/v1/admin/channel-monitors/:id	h.Admin.ChannelMonitor.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:656	admin/channel-monitors	yes	http
+GET	/api/v1/admin/channel-monitors/:id/history	h.Admin.ChannelMonitor.History	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:659	admin/channel-monitors	yes	http
+POST	/api/v1/admin/channel-monitors/:id/run	h.Admin.ChannelMonitor.Run	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:658	admin/channel-monitors	yes	http
+GET	/api/v1/admin/channel-monitor-templates	h.Admin.ChannelMonitorTemplate.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:664	admin/channel-monitor-templates	no	http
+POST	/api/v1/admin/channel-monitor-templates	h.Admin.ChannelMonitorTemplate.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:665	admin/channel-monitor-templates	no	http
+DELETE	/api/v1/admin/channel-monitor-templates/:id	h.Admin.ChannelMonitorTemplate.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:668	admin/channel-monitor-templates	yes	http
+GET	/api/v1/admin/channel-monitor-templates/:id	h.Admin.ChannelMonitorTemplate.Get	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:666	admin/channel-monitor-templates	yes	http
+PUT	/api/v1/admin/channel-monitor-templates/:id	h.Admin.ChannelMonitorTemplate.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:667	admin/channel-monitor-templates	yes	http
+POST	/api/v1/admin/channel-monitor-templates/:id/apply	h.Admin.ChannelMonitorTemplate.Apply	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:670	admin/channel-monitor-templates	yes	http
+GET	/api/v1/admin/channel-monitor-templates/:id/monitors	h.Admin.ChannelMonitorTemplate.AssociatedMonitors	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:669	admin/channel-monitor-templates	yes	http
+GET	/api/v1/admin/channels	h.Admin.Channel.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:640	admin/channels	no	http
+POST	/api/v1/admin/channels	h.Admin.Channel.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:644	admin/channels	no	http
+DELETE	/api/v1/admin/channels/:id	h.Admin.Channel.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:646	admin/channels	yes	http
+GET	/api/v1/admin/channels/:id	h.Admin.Channel.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:643	admin/channels	yes	http
+PUT	/api/v1/admin/channels/:id	h.Admin.Channel.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:645	admin/channels	yes	http
+GET	/api/v1/admin/channels/model-pricing	h.Admin.Channel.GetModelDefaultPricing	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:641	admin/channels	no	http
+GET	/api/v1/admin/channels/pricing/sync-models	h.Admin.Channel.SyncPricingModels	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:642	admin/channels	no	http
+GET	/api/v1/admin/compliance	h.Admin.Compliance.GetStatus	admin JWT + AdminComplianceGuard (acceptance endpoint exempt from prior acceptance)	backend/internal/server/routes/admin.go:115	admin/compliance	no	http
+POST	/api/v1/admin/compliance/accept	h.Admin.Compliance.Accept	admin JWT + AdminComplianceGuard (acceptance endpoint exempt from prior acceptance)	backend/internal/server/routes/admin.go:116	admin/compliance	no	http
+POST	/api/v1/admin/dashboard/aggregation/backfill	h.Admin.Dashboard.BackfillAggregation	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:241	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/api-keys-trend	h.Admin.Dashboard.GetAPIKeyUsageTrend	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:235	admin/dashboard	no	http
+POST	/api/v1/admin/dashboard/api-keys-usage	h.Admin.Dashboard.GetBatchAPIKeysUsage	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:239	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/groups	h.Admin.Dashboard.GetGroupStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:234	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/models	h.Admin.Dashboard.GetModelStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:233	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/realtime	h.Admin.Dashboard.GetRealtimeMetrics	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:231	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/snapshot-v2	h.Admin.Dashboard.GetSnapshotV2	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:229	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/stats	h.Admin.Dashboard.GetStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:230	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/trend	h.Admin.Dashboard.GetUsageTrend	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:232	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/user-breakdown	h.Admin.Dashboard.GetUserBreakdown	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:240	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/users-ranking	h.Admin.Dashboard.GetUserSpendingRanking	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:237	admin/dashboard	no	http
+GET	/api/v1/admin/dashboard/users-trend	h.Admin.Dashboard.GetUserUsageTrend	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:236	admin/dashboard	no	http
+POST	/api/v1/admin/dashboard/users-usage	h.Admin.Dashboard.GetBatchUsersUsage	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:238	admin/dashboard	no	http
+GET	/api/v1/admin/data-management/agent/health	h.Admin.DataManagement.GetAgentHealth	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:499	admin/data-management	no	http
+GET	/api/v1/admin/data-management/backups	h.Admin.DataManagement.ListBackupJobs	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:514	admin/data-management	no	http
+POST	/api/v1/admin/data-management/backups	h.Admin.DataManagement.CreateBackupJob	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:513	admin/data-management	no	http
+GET	/api/v1/admin/data-management/backups/:job_id	h.Admin.DataManagement.GetBackupJob	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:515	admin/data-management	yes	http
+GET	/api/v1/admin/data-management/config	h.Admin.DataManagement.GetConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:500	admin/data-management	no	http
+PUT	/api/v1/admin/data-management/config	h.Admin.DataManagement.UpdateConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:501	admin/data-management	no	http
+GET	/api/v1/admin/data-management/s3/profiles	h.Admin.DataManagement.ListS3Profiles	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:508	admin/data-management	no	http
+POST	/api/v1/admin/data-management/s3/profiles	h.Admin.DataManagement.CreateS3Profile	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:509	admin/data-management	no	http
+DELETE	/api/v1/admin/data-management/s3/profiles/:profile_id	h.Admin.DataManagement.DeleteS3Profile	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:511	admin/data-management	yes	http
+PUT	/api/v1/admin/data-management/s3/profiles/:profile_id	h.Admin.DataManagement.UpdateS3Profile	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:510	admin/data-management	yes	http
+POST	/api/v1/admin/data-management/s3/profiles/:profile_id/activate	h.Admin.DataManagement.SetActiveS3Profile	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:512	admin/data-management	yes	http
+POST	/api/v1/admin/data-management/s3/test	h.Admin.DataManagement.TestS3	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:507	admin/data-management	no	http
+GET	/api/v1/admin/data-management/sources/:source_type/profiles	h.Admin.DataManagement.ListSourceProfiles	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:502	admin/data-management	yes	http
+POST	/api/v1/admin/data-management/sources/:source_type/profiles	h.Admin.DataManagement.CreateSourceProfile	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:503	admin/data-management	yes	http
+DELETE	/api/v1/admin/data-management/sources/:source_type/profiles/:profile_id	h.Admin.DataManagement.DeleteSourceProfile	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:505	admin/data-management	yes	http
+PUT	/api/v1/admin/data-management/sources/:source_type/profiles/:profile_id	h.Admin.DataManagement.UpdateSourceProfile	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:504	admin/data-management	yes	http
+POST	/api/v1/admin/data-management/sources/:source_type/profiles/:profile_id/activate	h.Admin.DataManagement.SetActiveSourceProfile	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:506	admin/data-management	yes	http
+GET	/api/v1/admin/error-passthrough-rules	h.Admin.ErrorPassthrough.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:618	admin/error-passthrough-rules	no	http
+POST	/api/v1/admin/error-passthrough-rules	h.Admin.ErrorPassthrough.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:620	admin/error-passthrough-rules	no	http
+DELETE	/api/v1/admin/error-passthrough-rules/:id	h.Admin.ErrorPassthrough.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:622	admin/error-passthrough-rules	yes	http
+GET	/api/v1/admin/error-passthrough-rules/:id	h.Admin.ErrorPassthrough.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:619	admin/error-passthrough-rules	yes	http
+PUT	/api/v1/admin/error-passthrough-rules/:id	h.Admin.ErrorPassthrough.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:621	admin/error-passthrough-rules	yes	http
+POST	/api/v1/admin/gemini/oauth/auth-url	h.Admin.GeminiOAuth.GenerateAuthURL	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:380	admin/gemini	no	http
+GET	/api/v1/admin/gemini/oauth/capabilities	h.Admin.GeminiOAuth.GetCapabilities	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:382	admin/gemini	no	http
+POST	/api/v1/admin/gemini/oauth/exchange-code	h.Admin.GeminiOAuth.ExchangeCode	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:381	admin/gemini	no	http
+GET	/api/v1/admin/grok/accounts/:id/quota	h.Admin.GrokOAuth.QueryQuota	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:403	admin/grok	yes	http
+POST	/api/v1/admin/grok/accounts/:id/refresh	h.Admin.GrokOAuth.RefreshAccountToken	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:402	admin/grok	yes	http
+POST	/api/v1/admin/grok/accounts/:id/reset-quota	h.Admin.GrokOAuth.ResetQuota	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:404	admin/grok	yes	http
+POST	/api/v1/admin/grok/oauth/auth-url	h.Admin.GrokOAuth.GenerateAuthURL	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:398	admin/grok	no	http
+POST	/api/v1/admin/grok/oauth/create-from-oauth	h.Admin.GrokOAuth.CreateAccountFromOAuth	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:401	admin/grok	no	http
+POST	/api/v1/admin/grok/oauth/exchange-code	h.Admin.GrokOAuth.ExchangeCode	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:399	admin/grok	no	http
+POST	/api/v1/admin/grok/oauth/refresh-token	h.Admin.GrokOAuth.RefreshToken	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:400	admin/grok	no	http
+GET	/api/v1/admin/grok/runtime-sanity	h.Admin.GrokOAuth.RuntimeSanity	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:405	admin/grok	no	http
+GET	/api/v1/admin/groups	h.Admin.Group.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:274	admin/groups	no	http
+POST	/api/v1/admin/groups	h.Admin.Group.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:281	admin/groups	no	http
+DELETE	/api/v1/admin/groups/:id	h.Admin.Group.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:283	admin/groups	yes	http
+GET	/api/v1/admin/groups/:id	h.Admin.Group.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:280	admin/groups	yes	http
+PUT	/api/v1/admin/groups/:id	h.Admin.Group.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:282	admin/groups	yes	http
+GET	/api/v1/admin/groups/:id/api-keys	h.Admin.Group.GetGroupAPIKeys	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:290	admin/groups	yes	http
+GET	/api/v1/admin/groups/:id/models-list-candidates	h.Admin.Group.GetModelsListCandidates	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:279	admin/groups	yes	http
+DELETE	/api/v1/admin/groups/:id/rate-multipliers	h.Admin.Group.ClearGroupRateMultipliers	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:287	admin/groups	yes	http
+GET	/api/v1/admin/groups/:id/rate-multipliers	h.Admin.Group.GetGroupRateMultipliers	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:285	admin/groups	yes	http
+PUT	/api/v1/admin/groups/:id/rate-multipliers	h.Admin.Group.BatchSetGroupRateMultipliers	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:286	admin/groups	yes	http
+DELETE	/api/v1/admin/groups/:id/rpm-overrides	h.Admin.Group.ClearGroupRPMOverrides	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:289	admin/groups	yes	http
+PUT	/api/v1/admin/groups/:id/rpm-overrides	h.Admin.Group.BatchSetGroupRPMOverrides	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:288	admin/groups	yes	http
+GET	/api/v1/admin/groups/:id/stats	h.Admin.Group.GetStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:284	admin/groups	yes	http
+GET	/api/v1/admin/groups/:id/subscriptions	h.Admin.Subscription.ListByGroup	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:571	admin/groups	yes	http
+GET	/api/v1/admin/groups/all	h.Admin.Group.GetAll	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:275	admin/groups	no	http
+GET	/api/v1/admin/groups/capacity-summary	h.Admin.Group.GetCapacitySummary	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:277	admin/groups	no	http
+PUT	/api/v1/admin/groups/sort-order	h.Admin.Group.UpdateSortOrder	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:278	admin/groups	no	http
+GET	/api/v1/admin/groups/usage-summary	h.Admin.Group.GetUsageSummary	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:276	admin/groups	no	http
+GET	/api/v1/admin/openai/accounts/:id/quota	h.Admin.OpenAIOAuth.QueryQuota	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:372	admin/openai	yes	http
+POST	/api/v1/admin/openai/accounts/:id/refresh	h.Admin.OpenAIOAuth.RefreshAccountToken	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:369	admin/openai	yes	http
+POST	/api/v1/admin/openai/accounts/:id/reset-quota	h.Admin.OpenAIOAuth.ResetQuota	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:373	admin/openai	yes	http
+POST	/api/v1/admin/openai/create-from-codex-pat	h.Admin.OpenAIOAuth.CreateAccountFromCodexPAT	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:371	admin/openai	no	http
+POST	/api/v1/admin/openai/create-from-oauth	h.Admin.OpenAIOAuth.CreateAccountFromOAuth	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:370	admin/openai	no	http
+POST	/api/v1/admin/openai/exchange-code	h.Admin.OpenAIOAuth.ExchangeCode	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:367	admin/openai	no	http
+POST	/api/v1/admin/openai/generate-auth-url	h.Admin.OpenAIOAuth.GenerateAuthURL	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:366	admin/openai	no	http
+POST	/api/v1/admin/openai/refresh-token	h.Admin.OpenAIOAuth.RefreshToken	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:368	admin/openai	no	http
+GET	/api/v1/admin/ops/account-availability	h.Admin.Ops.GetAccountAvailability	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:147	admin/ops	no	http
+GET	/api/v1/admin/ops/advanced-settings	h.Admin.Ops.GetAdvancedSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:175	admin/ops	no	http
+PUT	/api/v1/admin/ops/advanced-settings	h.Admin.Ops.UpdateAdvancedSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:176	admin/ops	no	http
+GET	/api/v1/admin/ops/alert-events	h.Admin.Ops.ListAlertEvents	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:155	admin/ops	no	http
+GET	/api/v1/admin/ops/alert-events/:id	h.Admin.Ops.GetAlertEvent	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:156	admin/ops	yes	http
+PUT	/api/v1/admin/ops/alert-events/:id/status	h.Admin.Ops.UpdateAlertEventStatus	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:157	admin/ops	yes	http
+GET	/api/v1/admin/ops/alert-rules	h.Admin.Ops.ListAlertRules	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:151	admin/ops	no	http
+POST	/api/v1/admin/ops/alert-rules	h.Admin.Ops.CreateAlertRule	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:152	admin/ops	no	http
+DELETE	/api/v1/admin/ops/alert-rules/:id	h.Admin.Ops.DeleteAlertRule	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:154	admin/ops	yes	http
+PUT	/api/v1/admin/ops/alert-rules/:id	h.Admin.Ops.UpdateAlertRule	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:153	admin/ops	yes	http
+POST	/api/v1/admin/ops/alert-silences	h.Admin.Ops.CreateAlertSilence	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:158	admin/ops	no	http
+GET	/api/v1/admin/ops/concurrency	h.Admin.Ops.GetConcurrencyStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:145	admin/ops	no	http
+GET	/api/v1/admin/ops/dashboard/error-distribution	h.Admin.Ops.GetDashboardErrorDistribution	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:221	admin/ops	no	http
+GET	/api/v1/admin/ops/dashboard/error-trend	h.Admin.Ops.GetDashboardErrorTrend	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:220	admin/ops	no	http
+GET	/api/v1/admin/ops/dashboard/latency-histogram	h.Admin.Ops.GetDashboardLatencyHistogram	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:219	admin/ops	no	http
+GET	/api/v1/admin/ops/dashboard/openai-token-stats	h.Admin.Ops.GetDashboardOpenAITokenStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:222	admin/ops	no	http
+GET	/api/v1/admin/ops/dashboard/overview	h.Admin.Ops.GetDashboardOverview	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:217	admin/ops	no	http
+GET	/api/v1/admin/ops/dashboard/snapshot-v2	h.Admin.Ops.GetDashboardSnapshotV2	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:216	admin/ops	no	http
+GET	/api/v1/admin/ops/dashboard/throughput-trend	h.Admin.Ops.GetDashboardThroughputTrend	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:218	admin/ops	no	http
+GET	/api/v1/admin/ops/email-notification/config	h.Admin.Ops.GetEmailNotificationConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:161	admin/ops	no	http
+PUT	/api/v1/admin/ops/email-notification/config	h.Admin.Ops.UpdateEmailNotificationConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:162	admin/ops	no	http
+GET	/api/v1/admin/ops/errors	h.Admin.Ops.GetErrorLogs	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:192	admin/ops	no	http
+GET	/api/v1/admin/ops/errors/:id	h.Admin.Ops.GetErrorLogByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:193	admin/ops	yes	http
+PUT	/api/v1/admin/ops/errors/:id/resolve	h.Admin.Ops.UpdateErrorResolution	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:194	admin/ops	yes	http
+GET	/api/v1/admin/ops/realtime-traffic	h.Admin.Ops.GetRealtimeTrafficSummary	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:148	admin/ops	no	http
+GET	/api/v1/admin/ops/request-errors	h.Admin.Ops.ListRequestErrors	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:197	admin/ops	no	http
+GET	/api/v1/admin/ops/request-errors/:id	h.Admin.Ops.GetRequestError	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:198	admin/ops	yes	http
+PUT	/api/v1/admin/ops/request-errors/:id/resolve	h.Admin.Ops.ResolveRequestError	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:200	admin/ops	yes	http
+GET	/api/v1/admin/ops/request-errors/:id/upstream-errors	h.Admin.Ops.ListRequestErrorUpstreamErrors	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:199	admin/ops	yes	http
+GET	/api/v1/admin/ops/requests	h.Admin.Ops.ListRequestDetails	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:208	admin/ops	no	http
+GET	/api/v1/admin/ops/runtime/alert	h.Admin.Ops.GetAlertRuntimeSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:167	admin/ops	no	http
+PUT	/api/v1/admin/ops/runtime/alert	h.Admin.Ops.UpdateAlertRuntimeSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:168	admin/ops	no	http
+GET	/api/v1/admin/ops/runtime/logging	h.Admin.Ops.GetRuntimeLogConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:169	admin/ops	no	http
+PUT	/api/v1/admin/ops/runtime/logging	h.Admin.Ops.UpdateRuntimeLogConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:170	admin/ops	no	http
+POST	/api/v1/admin/ops/runtime/logging/reset	h.Admin.Ops.ResetRuntimeLogConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:171	admin/ops	no	http
+GET	/api/v1/admin/ops/settings/metric-thresholds	h.Admin.Ops.GetMetricThresholds	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:181	admin/ops	no	http
+PUT	/api/v1/admin/ops/settings/metric-thresholds	h.Admin.Ops.UpdateMetricThresholds	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:182	admin/ops	no	http
+GET	/api/v1/admin/ops/system-logs	h.Admin.Ops.ListSystemLogs	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:211	admin/ops	no	http
+POST	/api/v1/admin/ops/system-logs/cleanup	h.Admin.Ops.CleanupSystemLogs	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:212	admin/ops	no	http
+GET	/api/v1/admin/ops/system-logs/health	h.Admin.Ops.GetSystemLogIngestionHealth	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:213	admin/ops	no	http
+GET	/api/v1/admin/ops/upstream-errors	h.Admin.Ops.ListUpstreamErrors	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:203	admin/ops	no	http
+GET	/api/v1/admin/ops/upstream-errors/:id	h.Admin.Ops.GetUpstreamError	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:204	admin/ops	yes	http
+PUT	/api/v1/admin/ops/upstream-errors/:id/resolve	h.Admin.Ops.ResolveUpstreamError	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:205	admin/ops	yes	http
+GET	/api/v1/admin/ops/user-concurrency	h.Admin.Ops.GetUserConcurrencyStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:146	admin/ops	no	http
+GET	/api/v1/admin/ops/ws/qps	h.Admin.Ops.QPSWSHandler	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:188	admin/ops-websocket	no	websocket
+GET	/api/v1/admin/payment/config	adminPaymentHandler.GetConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:77	admin/payment	no	http
+PUT	/api/v1/admin/payment/config	adminPaymentHandler.UpdateConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:78	admin/payment	no	http
+GET	/api/v1/admin/payment/dashboard	adminPaymentHandler.GetDashboard	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:74	admin/payment	no	http
+GET	/api/v1/admin/payment/orders	adminPaymentHandler.ListOrders	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:83	admin/payment	no	http
+GET	/api/v1/admin/payment/orders/:id	adminPaymentHandler.GetOrderDetail	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:84	admin/payment	yes	http
+POST	/api/v1/admin/payment/orders/:id/cancel	adminPaymentHandler.CancelOrder	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:85	admin/payment	yes	http
+POST	/api/v1/admin/payment/orders/:id/refund	adminPaymentHandler.ProcessRefund	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:87	admin/payment	yes	http
+POST	/api/v1/admin/payment/orders/:id/refund/query	adminPaymentHandler.QueryAndFinalizeRefund	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:88	admin/payment	yes	http
+POST	/api/v1/admin/payment/orders/:id/retry	adminPaymentHandler.RetryFulfillment	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:86	admin/payment	yes	http
+GET	/api/v1/admin/payment/plans	adminPaymentHandler.ListPlans	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:94	admin/payment	no	http
+POST	/api/v1/admin/payment/plans	adminPaymentHandler.CreatePlan	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:95	admin/payment	no	http
+DELETE	/api/v1/admin/payment/plans/:id	adminPaymentHandler.DeletePlan	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:97	admin/payment	yes	http
+PUT	/api/v1/admin/payment/plans/:id	adminPaymentHandler.UpdatePlan	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:96	admin/payment	yes	http
+GET	/api/v1/admin/payment/providers	adminPaymentHandler.ListProviders	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:103	admin/payment	no	http
+POST	/api/v1/admin/payment/providers	adminPaymentHandler.CreateProvider	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:104	admin/payment	no	http
+DELETE	/api/v1/admin/payment/providers/:id	adminPaymentHandler.DeleteProvider	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:106	admin/payment	yes	http
+PUT	/api/v1/admin/payment/providers/:id	adminPaymentHandler.UpdateProvider	admin JWT + AdminComplianceGuard	backend/internal/server/routes/payment.go:105	admin/payment	yes	http
+GET	/api/v1/admin/promo-codes	h.Admin.Promo.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:448	admin/promo-codes	no	http
+POST	/api/v1/admin/promo-codes	h.Admin.Promo.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:450	admin/promo-codes	no	http
+DELETE	/api/v1/admin/promo-codes/:id	h.Admin.Promo.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:452	admin/promo-codes	yes	http
+GET	/api/v1/admin/promo-codes/:id	h.Admin.Promo.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:449	admin/promo-codes	yes	http
+PUT	/api/v1/admin/promo-codes/:id	h.Admin.Promo.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:451	admin/promo-codes	yes	http
+GET	/api/v1/admin/promo-codes/:id/usages	h.Admin.Promo.GetUsages	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:453	admin/promo-codes	yes	http
+GET	/api/v1/admin/proxies	h.Admin.Proxy.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:412	admin/proxies	no	http
+POST	/api/v1/admin/proxies	h.Admin.Proxy.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:417	admin/proxies	no	http
+DELETE	/api/v1/admin/proxies/:id	h.Admin.Proxy.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:419	admin/proxies	yes	http
+GET	/api/v1/admin/proxies/:id	h.Admin.Proxy.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:416	admin/proxies	yes	http
+PUT	/api/v1/admin/proxies/:id	h.Admin.Proxy.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:418	admin/proxies	yes	http
+GET	/api/v1/admin/proxies/:id/accounts	h.Admin.Proxy.GetProxyAccounts	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:423	admin/proxies	yes	http
+POST	/api/v1/admin/proxies/:id/quality-check	h.Admin.Proxy.CheckQuality	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:421	admin/proxies	yes	http
+GET	/api/v1/admin/proxies/:id/stats	h.Admin.Proxy.GetStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:422	admin/proxies	yes	http
+POST	/api/v1/admin/proxies/:id/test	h.Admin.Proxy.Test	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:420	admin/proxies	yes	http
+GET	/api/v1/admin/proxies/all	h.Admin.Proxy.GetAll	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:413	admin/proxies	no	http
+POST	/api/v1/admin/proxies/batch	h.Admin.Proxy.BatchCreate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:425	admin/proxies	no	http
+POST	/api/v1/admin/proxies/batch-delete	h.Admin.Proxy.BatchDelete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:424	admin/proxies	no	http
+GET	/api/v1/admin/proxies/data	h.Admin.Proxy.ExportData	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:414	admin/proxies	no	http
+POST	/api/v1/admin/proxies/data	h.Admin.Proxy.ImportData	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:415	admin/proxies	no	http
+GET	/api/v1/admin/redeem-codes	h.Admin.Redeem.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:432	admin/redeem-codes	no	http
+DELETE	/api/v1/admin/redeem-codes/:id	h.Admin.Redeem.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:438	admin/redeem-codes	yes	http
+GET	/api/v1/admin/redeem-codes/:id	h.Admin.Redeem.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:435	admin/redeem-codes	yes	http
+POST	/api/v1/admin/redeem-codes/:id/expire	h.Admin.Redeem.Expire	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:441	admin/redeem-codes	yes	http
+POST	/api/v1/admin/redeem-codes/batch-delete	h.Admin.Redeem.BatchDelete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:439	admin/redeem-codes	no	http
+POST	/api/v1/admin/redeem-codes/batch-update	h.Admin.Redeem.BatchUpdate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:440	admin/redeem-codes	no	http
+POST	/api/v1/admin/redeem-codes/create-and-redeem	h.Admin.Redeem.CreateAndRedeem	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:436	admin/redeem-codes	no	http
+GET	/api/v1/admin/redeem-codes/export	h.Admin.Redeem.Export	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:434	admin/redeem-codes	no	http
+POST	/api/v1/admin/redeem-codes/generate	h.Admin.Redeem.Generate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:437	admin/redeem-codes	no	http
+GET	/api/v1/admin/redeem-codes/stats	h.Admin.Redeem.GetStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:433	admin/redeem-codes	no	http
+POST	/api/v1/admin/risk-control/api-keys/test	h.Admin.ContentModeration.TestAPIKeys	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:125	admin/risk-control	no	http
+GET	/api/v1/admin/risk-control/config	h.Admin.ContentModeration.GetConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:123	admin/risk-control	no	http
+PUT	/api/v1/admin/risk-control/config	h.Admin.ContentModeration.UpdateConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:124	admin/risk-control	no	http
+DELETE	/api/v1/admin/risk-control/hashes	h.Admin.ContentModeration.DeleteFlaggedHash	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:129	admin/risk-control	no	http
+DELETE	/api/v1/admin/risk-control/hashes/all	h.Admin.ContentModeration.ClearFlaggedHashes	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:130	admin/risk-control	no	http
+GET	/api/v1/admin/risk-control/logs	h.Admin.ContentModeration.ListLogs	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:127	admin/risk-control	no	http
+GET	/api/v1/admin/risk-control/status	h.Admin.ContentModeration.GetStatus	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:126	admin/risk-control	no	http
+POST	/api/v1/admin/risk-control/users/:user_id/unban	h.Admin.ContentModeration.UnbanUser	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:128	admin/risk-control	yes	http
+POST	/api/v1/admin/scheduled-test-plans	h.Admin.ScheduledTest.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:606	admin/scheduled-test-plans	no	http
+DELETE	/api/v1/admin/scheduled-test-plans/:id	h.Admin.ScheduledTest.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:608	admin/scheduled-test-plans	yes	http
+PUT	/api/v1/admin/scheduled-test-plans/:id	h.Admin.ScheduledTest.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:607	admin/scheduled-test-plans	yes	http
+GET	/api/v1/admin/scheduled-test-plans/:id/results	h.Admin.ScheduledTest.ListResults	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:609	admin/scheduled-test-plans	yes	http
+GET	/api/v1/admin/settings	h.Admin.Setting.GetSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:460	admin/settings	no	http
+PUT	/api/v1/admin/settings	h.Admin.Setting.UpdateSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:461	admin/settings	no	http
+DELETE	/api/v1/admin/settings/admin-api-key	h.Admin.Setting.DeleteAdminAPIKey	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:472	admin/settings	no	http
+GET	/api/v1/admin/settings/admin-api-key	h.Admin.Setting.GetAdminAPIKey	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:470	admin/settings	no	http
+POST	/api/v1/admin/settings/admin-api-key/regenerate	h.Admin.Setting.RegenerateAdminAPIKey	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:471	admin/settings	no	http
+GET	/api/v1/admin/settings/beta-policy	h.Admin.Setting.GetBetaPolicySettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:486	admin/settings	no	http
+PUT	/api/v1/admin/settings/beta-policy	h.Admin.Setting.UpdateBetaPolicySettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:487	admin/settings	no	http
+POST	/api/v1/admin/settings/email-template-preview	h.Admin.Setting.PreviewEmailTemplate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:465	admin/settings	no	http
+GET	/api/v1/admin/settings/email-templates	h.Admin.Setting.ListEmailTemplates	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:464	admin/settings	no	http
+GET	/api/v1/admin/settings/email-templates/:event/:locale	h.Admin.Setting.GetEmailTemplate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:466	admin/settings	yes	http
+PUT	/api/v1/admin/settings/email-templates/:event/:locale	h.Admin.Setting.UpdateEmailTemplate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:467	admin/settings	yes	http
+POST	/api/v1/admin/settings/email-templates/:event/:locale/restore-official	h.Admin.Setting.RestoreOfficialEmailTemplate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:468	admin/settings	yes	http
+GET	/api/v1/admin/settings/overload-cooldown	h.Admin.Setting.GetOverloadCooldownSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:474	admin/settings	no	http
+PUT	/api/v1/admin/settings/overload-cooldown	h.Admin.Setting.UpdateOverloadCooldownSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:475	admin/settings	no	http
+GET	/api/v1/admin/settings/rate-limit-429-cooldown	h.Admin.Setting.GetRateLimit429CooldownSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:477	admin/settings	no	http
+PUT	/api/v1/admin/settings/rate-limit-429-cooldown	h.Admin.Setting.UpdateRateLimit429CooldownSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:478	admin/settings	no	http
+GET	/api/v1/admin/settings/rectifier	h.Admin.Setting.GetRectifierSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:483	admin/settings	no	http
+PUT	/api/v1/admin/settings/rectifier	h.Admin.Setting.UpdateRectifierSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:484	admin/settings	no	http
+POST	/api/v1/admin/settings/send-test-email	h.Admin.Setting.SendTestEmail	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:463	admin/settings	no	http
+GET	/api/v1/admin/settings/stream-timeout	h.Admin.Setting.GetStreamTimeoutSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:480	admin/settings	no	http
+PUT	/api/v1/admin/settings/stream-timeout	h.Admin.Setting.UpdateStreamTimeoutSettings	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:481	admin/settings	no	http
+POST	/api/v1/admin/settings/test-smtp	h.Admin.Setting.TestSMTPConnection	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:462	admin/settings	no	http
+GET	/api/v1/admin/settings/web-search-emulation	h.Admin.Setting.GetWebSearchEmulationConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:489	admin/settings	no	http
+PUT	/api/v1/admin/settings/web-search-emulation	h.Admin.Setting.UpdateWebSearchEmulationConfig	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:490	admin/settings	no	http
+POST	/api/v1/admin/settings/web-search-emulation/reset-usage	h.Admin.Setting.ResetWebSearchUsage	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:492	admin/settings	no	http
+POST	/api/v1/admin/settings/web-search-emulation/test	h.Admin.Setting.TestWebSearchEmulation	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:491	admin/settings	no	http
+GET	/api/v1/admin/subscriptions	h.Admin.Subscription.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:558	admin/subscriptions	no	http
+DELETE	/api/v1/admin/subscriptions/:id	h.Admin.Subscription.Revoke	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:567	admin/subscriptions	yes	http
+GET	/api/v1/admin/subscriptions/:id	h.Admin.Subscription.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:559	admin/subscriptions	yes	http
+POST	/api/v1/admin/subscriptions/:id/extend	h.Admin.Subscription.Extend	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:563	admin/subscriptions	yes	http
+GET	/api/v1/admin/subscriptions/:id/progress	h.Admin.Subscription.GetProgress	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:560	admin/subscriptions	yes	http
+POST	/api/v1/admin/subscriptions/:id/reset-quota	h.Admin.Subscription.ResetQuota	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:564	admin/subscriptions	yes	http
+POST	/api/v1/admin/subscriptions/:id/restore	h.Admin.Subscription.Restore	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:566	admin/subscriptions	yes	http
+POST	/api/v1/admin/subscriptions/:id/revoke	h.Admin.Subscription.Revoke	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:565	admin/subscriptions	yes	http
+POST	/api/v1/admin/subscriptions/assign	h.Admin.Subscription.Assign	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:561	admin/subscriptions	no	http
+POST	/api/v1/admin/subscriptions/bulk-assign	h.Admin.Subscription.BulkAssign	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:562	admin/subscriptions	no	http
+GET	/api/v1/admin/system/check-updates	h.Admin.System.CheckUpdates	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:547	admin/system	no	http
+POST	/api/v1/admin/system/restart	h.Admin.System.RestartService	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:551	admin/system	no	http
+POST	/api/v1/admin/system/rollback	h.Admin.System.Rollback	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:550	admin/system	no	http
+GET	/api/v1/admin/system/rollback-versions	h.Admin.System.GetRollbackVersions	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:548	admin/system	no	http
+POST	/api/v1/admin/system/update	h.Admin.System.PerformUpdate	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:549	admin/system	no	http
+GET	/api/v1/admin/system/version	h.Admin.System.GetVersion	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:546	admin/system	no	http
+GET	/api/v1/admin/tls-fingerprint-profiles	h.Admin.TLSFingerprintProfile.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:629	admin/tls-fingerprint-profiles	no	http
+POST	/api/v1/admin/tls-fingerprint-profiles	h.Admin.TLSFingerprintProfile.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:631	admin/tls-fingerprint-profiles	no	http
+DELETE	/api/v1/admin/tls-fingerprint-profiles/:id	h.Admin.TLSFingerprintProfile.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:633	admin/tls-fingerprint-profiles	yes	http
+GET	/api/v1/admin/tls-fingerprint-profiles/:id	h.Admin.TLSFingerprintProfile.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:630	admin/tls-fingerprint-profiles	yes	http
+PUT	/api/v1/admin/tls-fingerprint-profiles/:id	h.Admin.TLSFingerprintProfile.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:632	admin/tls-fingerprint-profiles	yes	http
+GET	/api/v1/admin/usage	h.Admin.Usage.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:580	admin/usage	no	http
+GET	/api/v1/admin/usage/cleanup-tasks	h.Admin.Usage.ListCleanupTasks	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:585	admin/usage	no	http
+POST	/api/v1/admin/usage/cleanup-tasks	h.Admin.Usage.CreateCleanupTask	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:586	admin/usage	no	http
+POST	/api/v1/admin/usage/cleanup-tasks/:id/cancel	h.Admin.Usage.CancelCleanupTask	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:587	admin/usage	yes	http
+GET	/api/v1/admin/usage/pending	h.Admin.Usage.PendingStats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:582	admin/usage	no	http
+GET	/api/v1/admin/usage/search-api-keys	h.Admin.Usage.SearchAPIKeys	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:584	admin/usage	no	http
+GET	/api/v1/admin/usage/search-users	h.Admin.Usage.SearchUsers	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:583	admin/usage	no	http
+GET	/api/v1/admin/usage/stats	h.Admin.Usage.Stats	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:581	admin/usage	no	http
+GET	/api/v1/admin/user-attributes	h.Admin.UserAttribute.ListDefinitions	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:594	admin/user-attributes	no	http
+POST	/api/v1/admin/user-attributes	h.Admin.UserAttribute.CreateDefinition	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:595	admin/user-attributes	no	http
+DELETE	/api/v1/admin/user-attributes/:id	h.Admin.UserAttribute.DeleteDefinition	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:599	admin/user-attributes	yes	http
+PUT	/api/v1/admin/user-attributes/:id	h.Admin.UserAttribute.UpdateDefinition	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:598	admin/user-attributes	yes	http
+POST	/api/v1/admin/user-attributes/batch	h.Admin.UserAttribute.GetBatchUserAttributes	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:596	admin/user-attributes	no	http
+PUT	/api/v1/admin/user-attributes/reorder	h.Admin.UserAttribute.ReorderDefinitions	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:597	admin/user-attributes	no	http
+GET	/api/v1/admin/users	h.Admin.User.List	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:248	admin/users	no	http
+POST	/api/v1/admin/users	h.Admin.User.Create	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:251	admin/users	no	http
+DELETE	/api/v1/admin/users/:id	h.Admin.User.Delete	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:253	admin/users	yes	http
+GET	/api/v1/admin/users/:id	h.Admin.User.GetByID	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:249	admin/users	yes	http
+PUT	/api/v1/admin/users/:id	h.Admin.User.Update	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:252	admin/users	yes	http
+GET	/api/v1/admin/users/:id/api-keys	h.Admin.User.GetUserAPIKeys	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:255	admin/users	yes	http
+GET	/api/v1/admin/users/:id/attributes	h.Admin.UserAttribute.GetUserAttributes	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:266	admin/users	yes	http
+PUT	/api/v1/admin/users/:id/attributes	h.Admin.UserAttribute.UpdateUserAttributes	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:267	admin/users	yes	http
+POST	/api/v1/admin/users/:id/auth-identities	h.Admin.User.BindAuthIdentity	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:250	admin/users	yes	http
+POST	/api/v1/admin/users/:id/balance	h.Admin.User.UpdateBalance	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:254	admin/users	yes	http
+GET	/api/v1/admin/users/:id/balance-history	h.Admin.User.GetBalanceHistory	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:257	admin/users	yes	http
+GET	/api/v1/admin/users/:id/platform-quotas	h.Admin.User.GetUserPlatformQuotas	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:261	admin/users	yes	http
+PUT	/api/v1/admin/users/:id/platform-quotas	h.Admin.User.UpdateUserPlatformQuotas	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:262	admin/users	yes	http
+POST	/api/v1/admin/users/:id/platform-quotas/reset	h.Admin.User.ResetUserPlatformQuotaWindow	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:263	admin/users	yes	http
+POST	/api/v1/admin/users/:id/replace-group	h.Admin.User.ReplaceGroup	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:258	admin/users	yes	http
+GET	/api/v1/admin/users/:id/rpm-status	h.Admin.User.GetUserRPMStatus	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:259	admin/users	yes	http
+GET	/api/v1/admin/users/:id/subscriptions	h.Admin.Subscription.ListByUser	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:574	admin/users	yes	http
+GET	/api/v1/admin/users/:id/usage	h.Admin.User.GetUserUsage	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:256	admin/users	yes	http
+POST	/api/v1/admin/users/batch-concurrency	h.Admin.User.BatchUpdateConcurrency	admin JWT + AdminComplianceGuard	backend/internal/server/routes/admin.go:260	admin/users	no	http
+GET	/api/v1/announcements	h.Announcement.List	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:100	user/announcements	no	http
+POST	/api/v1/announcements/:id/read	h.Announcement.MarkRead	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:101	user/announcements	yes	http
+POST	/api/v1/auth/forgot-password	h.Auth.ForgotPassword	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:58	auth/session-identity	no	http
+POST	/api/v1/auth/login	h.Auth.Login	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:34	auth/session-identity	no	http
+POST	/api/v1/auth/login/2fa	h.Auth.Login2FA	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:37	auth/session-identity	no	http
+POST	/api/v1/auth/logout	h.Auth.Logout	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:48	auth/session-identity	no	http
+GET	/api/v1/auth/me	h.Auth.GetCurrentUser	JWT + BackendModeUserGuard	backend/internal/server/routes/auth.go:225	auth/session-identity	no	http
+POST	/api/v1/auth/oauth/bind-token	h.Auth.PrepareOAuthBindAccessTokenCookie	JWT + BackendModeUserGuard	backend/internal/server/routes/auth.go:228	auth/oauth	no	http
+GET	/api/v1/auth/oauth/dingtalk/bind/start	h.Auth.DingTalkOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:186	auth/oauth	no	http
+POST	/api/v1/auth/oauth/dingtalk/bind-login	h.Auth.BindDingTalkOAuthLogin	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:199	auth/oauth	no	http
+GET	/api/v1/auth/oauth/dingtalk/callback	h.Auth.DingTalkOAuthCallback	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:192	auth/oauth	no	http
+POST	/api/v1/auth/oauth/dingtalk/complete-registration	h.Auth.CompleteDingTalkOAuthRegistration	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:193	auth/oauth	no	http
+POST	/api/v1/auth/oauth/dingtalk/create-account	h.Auth.CreateDingTalkOAuthAccount	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:205	auth/oauth	no	http
+GET	/api/v1/auth/oauth/dingtalk/start	h.Auth.DingTalkOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:185	auth/oauth	no	http
+GET	/api/v1/auth/oauth/github/callback	h.Auth.GitHubOAuthCallback	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:67	auth/oauth	no	http
+POST	/api/v1/auth/oauth/github/complete-registration	h.Auth.CompleteGitHubOAuthRegistration	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:68	auth/oauth	no	http
+GET	/api/v1/auth/oauth/github/start	h.Auth.GitHubOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:66	auth/oauth	no	http
+GET	/api/v1/auth/oauth/google/callback	h.Auth.GoogleOAuthCallback	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:75	auth/oauth	no	http
+POST	/api/v1/auth/oauth/google/complete-registration	h.Auth.CompleteGoogleOAuthRegistration	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:76	auth/oauth	no	http
+GET	/api/v1/auth/oauth/google/start	h.Auth.GoogleOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:74	auth/oauth	no	http
+GET	/api/v1/auth/oauth/linuxdo/bind/start	h.Auth.LinuxDoOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:82	auth/oauth	no	http
+POST	/api/v1/auth/oauth/linuxdo/bind-login	h.Auth.BindLinuxDoOAuthLogin	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:129	auth/oauth	no	http
+GET	/api/v1/auth/oauth/linuxdo/callback	h.Auth.LinuxDoOAuthCallback	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:88	auth/oauth	no	http
+POST	/api/v1/auth/oauth/linuxdo/complete-registration	h.Auth.CompleteLinuxDoOAuthRegistration	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:123	auth/oauth	no	http
+POST	/api/v1/auth/oauth/linuxdo/create-account	h.Auth.CreateLinuxDoOAuthAccount	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:135	auth/oauth	no	http
+GET	/api/v1/auth/oauth/linuxdo/start	h.Auth.LinuxDoOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:65	auth/oauth	no	http
+GET	/api/v1/auth/oauth/oidc/bind/start	h.Auth.OIDCOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:160	auth/oauth	no	http
+POST	/api/v1/auth/oauth/oidc/bind-login	h.Auth.BindOIDCOAuthLogin	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:173	auth/oauth	no	http
+GET	/api/v1/auth/oauth/oidc/callback	h.Auth.OIDCOAuthCallback	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:166	auth/oauth	no	http
+POST	/api/v1/auth/oauth/oidc/complete-registration	h.Auth.CompleteOIDCOAuthRegistration	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:167	auth/oauth	no	http
+POST	/api/v1/auth/oauth/oidc/create-account	h.Auth.CreateOIDCOAuthAccount	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:179	auth/oauth	no	http
+GET	/api/v1/auth/oauth/oidc/start	h.Auth.OIDCOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:159	auth/oauth	no	http
+POST	/api/v1/auth/oauth/pending/bind-login	h.Auth.BindPendingOAuthLogin	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:117	auth/oauth	no	http
+POST	/api/v1/auth/oauth/pending/create-account	h.Auth.CreatePendingOAuthAccount	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:111	auth/oauth	no	http
+POST	/api/v1/auth/oauth/pending/exchange	h.Auth.ExchangePendingOAuthCompletion	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:99	auth/oauth	no	http
+POST	/api/v1/auth/oauth/pending/send-verify-code	h.Auth.SendPendingOAuthVerifyCode	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:105	auth/oauth	no	http
+GET	/api/v1/auth/oauth/wechat/bind/start	h.Auth.WeChatOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:90	auth/oauth	no	http
+POST	/api/v1/auth/oauth/wechat/bind-login	h.Auth.BindWeChatOAuthLogin	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:147	auth/oauth	no	http
+GET	/api/v1/auth/oauth/wechat/callback	h.Auth.WeChatOAuthCallback	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:96	auth/oauth	no	http
+POST	/api/v1/auth/oauth/wechat/complete-registration	h.Auth.CompleteWeChatOAuthRegistration	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:141	auth/oauth	no	http
+POST	/api/v1/auth/oauth/wechat/create-account	h.Auth.CreateWeChatOAuthAccount	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:153	auth/oauth	no	http
+GET	/api/v1/auth/oauth/wechat/payment/callback	h.Auth.WeChatPaymentOAuthCallback	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:98	auth/oauth	no	http
+GET	/api/v1/auth/oauth/wechat/payment/start	h.Auth.WeChatPaymentOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:97	auth/oauth	no	http
+GET	/api/v1/auth/oauth/wechat/start	h.Auth.WeChatOAuthStart	public + BackendModeAuthGuard	backend/internal/server/routes/auth.go:89	auth/oauth	no	http
+POST	/api/v1/auth/refresh	h.Auth.RefreshToken	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:44	auth/session-identity	no	http
+POST	/api/v1/auth/register	h.Auth.Register	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:31	auth/session-identity	no	http
+POST	/api/v1/auth/reset-password	h.Auth.ResetPassword	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:62	auth/session-identity	no	http
+POST	/api/v1/auth/revoke-all-sessions	h.Auth.RevokeAllSessions	JWT + BackendModeUserGuard	backend/internal/server/routes/auth.go:227	auth/session-identity	no	http
+POST	/api/v1/auth/send-verify-code	h.Auth.SendVerifyCode	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:40	auth/session-identity	no	http
+POST	/api/v1/auth/validate-invitation-code	h.Auth.ValidateInvitationCode	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:54	auth/session-identity	no	http
+POST	/api/v1/auth/validate-promo-code	h.Auth.ValidatePromoCode	public + BackendModeAuthGuard + L1/Redis rate limit (fail-close in Go)	backend/internal/server/routes/auth.go:50	auth/session-identity	no	http
+GET	/api/v1/channel-monitors	h.ChannelMonitor.List	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:123	user/channel-monitors	no	http
+GET	/api/v1/channel-monitors/:id/status	h.ChannelMonitor.GetStatus	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:124	user/channel-monitors	yes	http
+GET	/api/v1/channels/available	h.AvailableChannel.List	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:78	user/channels	no	http
+GET	/api/v1/groups/available	h.APIKey.GetAvailableGroups	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:71	user/groups	no	http
+GET	/api/v1/groups/rates	h.APIKey.GetUserGroupRates	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:72	user/groups	no	http
+GET	/api/v1/keys	h.APIKey.List	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:61	user/keys	no	http
+POST	/api/v1/keys	h.APIKey.Create	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:63	user/keys	no	http
+DELETE	/api/v1/keys/:id	h.APIKey.Delete	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:65	user/keys	yes	http
+GET	/api/v1/keys/:id	h.APIKey.GetByID	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:62	user/keys	yes	http
+PUT	/api/v1/keys/:id	h.APIKey.Update	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:64	user/keys	yes	http
+GET	/api/v1/pages	h.ListPages	admin JWT + AdminComplianceGuard	backend/internal/handler/page_handler.go:282	admin/pages	no	http
+GET	/api/v1/pages/:slug	h.GetPageContent	JWT + per-page visibility	backend/internal/handler/page_handler.go:268	pages/content	yes	http
+GET	/api/v1/pages/:slug/images/*filename	h.ServePageImage	public + handler visibility (admin pages denied)	backend/internal/handler/page_handler.go:274	pages/static-assets	yes	http
+GET	/api/v1/payment/channels	paymentHandler.GetChannels	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:31	payment/user	no	http
+GET	/api/v1/payment/checkout-info	paymentHandler.GetCheckoutInfo	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:29	payment/user	no	http
+GET	/api/v1/payment/config	paymentHandler.GetPaymentConfig	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:28	payment/user	no	http
+GET	/api/v1/payment/limits	paymentHandler.GetLimits	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:32	payment/user	no	http
+POST	/api/v1/payment/orders	paymentHandler.CreateOrder	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:36	payment/user	no	http
+GET	/api/v1/payment/orders/:id	paymentHandler.GetOrder	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:39	payment/user	yes	http
+POST	/api/v1/payment/orders/:id/cancel	paymentHandler.CancelOrder	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:40	payment/user	yes	http
+POST	/api/v1/payment/orders/:id/refund-request	paymentHandler.RequestRefund	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:41	payment/user	yes	http
+GET	/api/v1/payment/orders/my	paymentHandler.GetMyOrders	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:38	payment/user	no	http
+GET	/api/v1/payment/orders/refund-eligible-providers	paymentHandler.GetRefundEligibleProviders	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:42	payment/user	no	http
+POST	/api/v1/payment/orders/verify	paymentHandler.VerifyOrder	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:37	payment/user	no	http
+GET	/api/v1/payment/plans	paymentHandler.GetPlans	JWT + BackendModeUserGuard	backend/internal/server/routes/payment.go:30	payment/user	no	http
+POST	/api/v1/payment/public/orders/resolve	paymentHandler.ResolveOrderPublicByResumeToken	public (webhook signature/provider verification in handler where applicable)	backend/internal/server/routes/payment.go:53	payment/public-resume	no	http
+POST	/api/v1/payment/public/orders/verify	paymentHandler.VerifyOrderPublic	public (webhook signature/provider verification in handler where applicable)	backend/internal/server/routes/payment.go:52	payment/public-resume	no	http
+POST	/api/v1/payment/webhook/airwallex	webhookHandler.AirwallexWebhook	public (webhook signature/provider verification in handler where applicable)	backend/internal/server/routes/payment.go:65	payment/webhook	no	http
+POST	/api/v1/payment/webhook/alipay	webhookHandler.AlipayNotify	public (webhook signature/provider verification in handler where applicable)	backend/internal/server/routes/payment.go:62	payment/webhook	no	http
+GET	/api/v1/payment/webhook/easypay	webhookHandler.EasyPayNotify	public (webhook signature/provider verification in handler where applicable)	backend/internal/server/routes/payment.go:60	payment/webhook	no	http
+POST	/api/v1/payment/webhook/easypay	webhookHandler.EasyPayNotify	public (webhook signature/provider verification in handler where applicable)	backend/internal/server/routes/payment.go:61	payment/webhook	no	http
+POST	/api/v1/payment/webhook/stripe	webhookHandler.StripeWebhook	public (webhook signature/provider verification in handler where applicable)	backend/internal/server/routes/payment.go:64	payment/webhook	no	http
+POST	/api/v1/payment/webhook/wxpay	webhookHandler.WxpayNotify	public (webhook signature/provider verification in handler where applicable)	backend/internal/server/routes/payment.go:63	payment/webhook	no	http
+POST	/api/v1/redeem	h.Redeem.Redeem	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:107	user/redeem	no	http
+GET	/api/v1/redeem/history	h.Redeem.GetHistory	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:108	user/redeem	no	http
+GET	/api/v1/settings/email-unsubscribe	h.Setting.UnsubscribeNotificationEmail	public	backend/internal/server/routes/auth.go:217	settings/public	no	http
+GET	/api/v1/settings/public	h.Setting.GetPublicSettings	public	backend/internal/server/routes/auth.go:216	settings/public	no	http
+GET	/api/v1/subscriptions	h.Subscription.List	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:114	user/subscriptions	no	http
+GET	/api/v1/subscriptions/active	h.Subscription.GetActive	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:115	user/subscriptions	no	http
+GET	/api/v1/subscriptions/progress	h.Subscription.GetProgress	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:116	user/subscriptions	no	http
+GET	/api/v1/subscriptions/summary	h.Subscription.GetSummary	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:117	user/subscriptions	no	http
+GET	/api/v1/usage	h.Usage.List	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:84	user/usage	no	http
+GET	/api/v1/usage/:id	h.Usage.GetByID	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:87	user/usage	yes	http
+POST	/api/v1/usage/dashboard/api-keys-usage	h.Usage.DashboardAPIKeysUsage	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:94	user/usage	no	http
+GET	/api/v1/usage/dashboard/models	h.Usage.DashboardModels	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:92	user/usage	no	http
+GET	/api/v1/usage/dashboard/snapshot-v2	h.Usage.DashboardSnapshotV2	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:93	user/usage	no	http
+GET	/api/v1/usage/dashboard/stats	h.Usage.DashboardStats	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:90	user/usage	no	http
+GET	/api/v1/usage/dashboard/trend	h.Usage.DashboardTrend	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:91	user/usage	no	http
+GET	/api/v1/usage/errors	h.Usage.ListErrors	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:85	user/usage	no	http
+GET	/api/v1/usage/errors/:id	h.Usage.GetErrorDetail	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:86	user/usage	yes	http
+GET	/api/v1/usage/stats	h.Usage.Stats	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:88	user/usage	no	http
+PUT	/api/v1/user	h.User.UpdateProfile	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:27	user/user	no	http
+DELETE	/api/v1/user/account-bindings/:provider	h.User.UnbindIdentity	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:32	user/user	yes	http
+POST	/api/v1/user/account-bindings/email	h.User.BindEmailIdentity	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:31	user/user	no	http
+POST	/api/v1/user/account-bindings/email/send-code	h.User.SendEmailBindingCode	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:30	user/user	no	http
+GET	/api/v1/user/aff	h.User.GetAffiliate	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:28	user/user	no	http
+POST	/api/v1/user/aff/transfer	h.User.TransferAffiliateQuota	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:29	user/user	no	http
+GET	/api/v1/user/api-keys/:id/usage/daily	h.Usage.GetMyAPIKeyDailyUsage	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:34	user/user	yes	http
+POST	/api/v1/user/auth-identities/bind/start	h.User.StartIdentityBinding	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:33	user/user	no	http
+DELETE	/api/v1/user/notify-email	h.User.RemoveNotifyEmail	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:43	user/user	no	http
+POST	/api/v1/user/notify-email/send-code	h.User.SendNotifyEmailCode	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:40	user/user	no	http
+PUT	/api/v1/user/notify-email/toggle	h.User.ToggleNotifyEmail	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:42	user/user	no	http
+POST	/api/v1/user/notify-email/verify	h.User.VerifyNotifyEmail	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:41	user/user	no	http
+PUT	/api/v1/user/password	h.User.ChangePassword	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:26	user/user	no	http
+GET	/api/v1/user/platform-quotas	h.User.GetMyPlatformQuotas	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:35	user/user	no	http
+GET	/api/v1/user/profile	h.User.GetProfile	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:25	user/user	no	http
+POST	/api/v1/user/totp/disable	h.Totp.Disable	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:54	user/user	no	http
+POST	/api/v1/user/totp/enable	h.Totp.Enable	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:53	user/user	no	http
+POST	/api/v1/user/totp/send-code	h.Totp.SendVerifyCode	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:51	user/user	no	http
+POST	/api/v1/user/totp/setup	h.Totp.InitiateSetup	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:52	user/user	no	http
+GET	/api/v1/user/totp/status	h.Totp.GetStatus	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:49	user/user	no	http
+GET	/api/v1/user/totp/verification-method	h.Totp.GetVerificationMethod	JWT + BackendModeUserGuard	backend/internal/server/routes/user.go:50	user/user	no	http
+GET	/backend-api/codex/models	h.OpenAIGateway.CodexModels	API key + assigned group	backend/internal/server/routes/gateway.go:226	gateway/core	no	http
+GET	/backend-api/codex/responses	h.OpenAIGateway.ResponsesWebSocket	API key + assigned group	backend/internal/server/routes/gateway.go:223	gateway/websocket	no	websocket
+POST	/backend-api/codex/responses	responsesHandler=>h.OpenAIGateway.Responses|h.Gateway.Responses	API key + assigned group	backend/internal/server/routes/gateway.go:221	gateway/openai-responses-streaming	no	http/sse-when-streaming
+POST	/backend-api/codex/responses/*subpath	responsesHandler=>h.OpenAIGateway.Responses|h.Gateway.Responses	API key + assigned group	backend/internal/server/routes/gateway.go:222	gateway/openai-responses-streaming	yes	http/sse-when-streaming
+POST	/chat/completions	h.OpenAIGateway.ChatCompletions|h.Gateway.ChatCompletions	API key + assigned group	backend/internal/server/routes/gateway.go:229	gateway/openai-chat-streaming	no	http/sse-when-streaming
+POST	/embeddings	h.OpenAIGateway.Embeddings	API key + assigned group	backend/internal/server/routes/gateway.go:236	gateway/core	no	http
+GET	/health	inline:health	public	backend/internal/server/routes/common.go:12	common/health-control	no	http
+POST	/images/edits	imagesHandler=>h.OpenAIGateway.Images|h.OpenAIGateway.GrokImages	API key + assigned group	backend/internal/server/routes/gateway.go:250	gateway/media	no	http
+POST	/images/generations	imagesHandler=>h.OpenAIGateway.Images|h.OpenAIGateway.GrokImages	API key + assigned group	backend/internal/server/routes/gateway.go:249	gateway/media	no	http
+GET	/responses	h.OpenAIGateway.ResponsesWebSocket	API key + assigned group	backend/internal/server/routes/gateway.go:215	gateway/websocket	no	websocket
+POST	/responses	responsesHandler=>h.OpenAIGateway.Responses|h.Gateway.Responses	API key + assigned group	backend/internal/server/routes/gateway.go:213	gateway/openai-responses-streaming	no	http/sse-when-streaming
+POST	/responses/*subpath	responsesHandler=>h.OpenAIGateway.Responses|h.Gateway.Responses	API key + assigned group	backend/internal/server/routes/gateway.go:214	gateway/openai-responses-streaming	yes	http/sse-when-streaming
+POST	/setup/install	install	setupGuard (setup mode only)	backend/internal/setup/handler.go:34	setup/postgres-bootstrap	no	http
+GET	/setup/status	inline:normalSetupStatus	public	backend/internal/server/routes/common.go:23	common/health-control	no	http
+GET	/setup/status	getStatus	public (setup mode)	backend/internal/setup/handler.go:26	setup/postgres-bootstrap	no	http
+POST	/setup/test-db	testDatabase	setupGuard (setup mode only)	backend/internal/setup/handler.go:32	setup/postgres-bootstrap	no	http
+POST	/setup/test-redis	testRedis	setupGuard (setup mode only)	backend/internal/setup/handler.go:33	setup/remove-redis-contract	no	http
+POST	/v1/chat/completions	h.OpenAIGateway.ChatCompletions|h.Gateway.ChatCompletions	API key + assigned group	backend/internal/server/routes/gateway.go:154	gateway/openai-chat-streaming	no	http/sse-when-streaming
+POST	/v1/embeddings	h.OpenAIGateway.Embeddings	API key + assigned group	backend/internal/server/routes/gateway.go:161	gateway/core	no	http
+GET	/v1/images/batches	h.BatchImage.List	API key + assigned group	backend/internal/server/routes/gateway.go:177	gateway/media	no	http
+POST	/v1/images/batches	h.BatchImage.Submit	API key + assigned group	backend/internal/server/routes/gateway.go:176	gateway/media	no	http
+DELETE	/v1/images/batches/:id	h.BatchImage.DeleteRecord	API key + assigned group	backend/internal/server/routes/gateway.go:184	gateway/media	yes	http
+GET	/v1/images/batches/:id	h.BatchImage.Get	API key + assigned group	backend/internal/server/routes/gateway.go:179	gateway/media	yes	http
+POST	/v1/images/batches/:id/cancel	h.BatchImage.Cancel	API key + assigned group	backend/internal/server/routes/gateway.go:183	gateway/media	yes	http
+GET	/v1/images/batches/:id/download	h.BatchImage.Download	API key + assigned group	backend/internal/server/routes/gateway.go:182	gateway/media	yes	http
+GET	/v1/images/batches/:id/items	h.BatchImage.Items	API key + assigned group	backend/internal/server/routes/gateway.go:180	gateway/media	yes	http
+GET	/v1/images/batches/:id/items/:custom_id/content	h.BatchImage.ItemContent	API key + assigned group	backend/internal/server/routes/gateway.go:181	gateway/media	yes	http
+DELETE	/v1/images/batches/:id/outputs	h.BatchImage.DeleteOutputs	API key + assigned group	backend/internal/server/routes/gateway.go:185	gateway/media	yes	http
+GET	/v1/images/batches/models	h.BatchImage.Models	API key + assigned group	backend/internal/server/routes/gateway.go:178	gateway/media	no	http
+POST	/v1/images/edits	imagesHandler=>h.OpenAIGateway.Images|h.OpenAIGateway.GrokImages	API key + assigned group	backend/internal/server/routes/gateway.go:175	gateway/media	no	http
+POST	/v1/images/generations	imagesHandler=>h.OpenAIGateway.Images|h.OpenAIGateway.GrokImages	API key + assigned group	backend/internal/server/routes/gateway.go:174	gateway/media	no	http
+POST	/v1/messages	h.OpenAIGateway.Messages|h.Gateway.Messages	API key + assigned group	backend/internal/server/routes/gateway.go:97	gateway/core	no	http/sse-when-streaming
+POST	/v1/messages/count_tokens	h.OpenAIGateway.CountTokens|h.Gateway.CountTokens	API key + assigned group	backend/internal/server/routes/gateway.go:106	gateway/core	no	http
+GET	/v1/models	h.OpenAIGateway.CodexModels|h.Gateway.Models	API key + assigned group	backend/internal/server/routes/gateway.go:127	gateway/core	no	http
+GET	/v1/responses	h.OpenAIGateway.ResponsesWebSocket	API key + assigned group	backend/internal/server/routes/gateway.go:150	gateway/websocket	no	websocket
+POST	/v1/responses	h.OpenAIGateway.Responses|h.Gateway.Responses	API key + assigned group	backend/internal/server/routes/gateway.go:136	gateway/openai-responses-streaming	no	http/sse-when-streaming
+POST	/v1/responses/*subpath	h.OpenAIGateway.Responses|h.Gateway.Responses	API key + assigned group	backend/internal/server/routes/gateway.go:143	gateway/openai-responses-streaming	yes	http/sse-when-streaming
+GET	/v1/usage	h.Gateway.Usage	API key + assigned group	backend/internal/server/routes/gateway.go:134	gateway/core	no	http
+GET	/v1/videos/:request_id	videoStatusHandler=>h.OpenAIGateway.GrokVideoStatus	API key + assigned group	backend/internal/server/routes/gateway.go:187	gateway/media	yes	http
+POST	/v1/videos/generations	videoGenerationHandler=>h.OpenAIGateway.GrokVideoGeneration	API key + assigned group	backend/internal/server/routes/gateway.go:186	gateway/media	no	http
+GET	/v1beta/models	h.Gateway.GeminiV1BetaListModels	Google API key + subscription + assigned group	backend/internal/server/routes/gateway.go:199	gateway/gemini-native	no	http
+POST	/v1beta/models/*modelAction	h.Gateway.GeminiV1BetaModels	Google API key + subscription + assigned group	backend/internal/server/routes/gateway.go:202	gateway/gemini-native	yes	http/sse-when-streaming
+GET	/v1beta/models/:model	h.Gateway.GeminiV1BetaGetModel	Google API key + subscription + assigned group	backend/internal/server/routes/gateway.go:200	gateway/gemini-native	yes	http
+GET	/videos/:request_id	videoStatusHandler=>h.OpenAIGateway.GrokVideoStatus	API key + assigned group	backend/internal/server/routes/gateway.go:252	gateway/media	yes	http
+POST	/videos/generations	videoGenerationHandler=>h.OpenAIGateway.GrokVideoGeneration	API key + assigned group	backend/internal/server/routes/gateway.go:251	gateway/media	no	http

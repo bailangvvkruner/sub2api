@@ -221,7 +221,7 @@ export default {
         },
         backup: {
           title: '备份操作',
-          description: '触发 PostgreSQL、Redis 与全量备份任务。'
+          description: '触发 PostgreSQL 备份任务。'
         },
         history: {
           title: '备份历史',
@@ -232,13 +232,11 @@ export default {
         sourceMode: '源模式',
         backupRoot: '备份根目录',
         activePostgresProfile: '当前激活 PostgreSQL 配置',
-        activeRedisProfile: '当前激活 Redis 配置',
         activeS3Profile: '当前激活 S3 账号',
         retentionDays: '保留天数',
         keepLast: '至少保留最近任务数',
         uploadToS3: '上传到 S3',
         useActivePostgresProfile: '使用当前激活 PostgreSQL 配置',
-        useActiveRedisProfile: '使用当前激活 Redis 配置',
         useActiveS3Profile: '使用当前激活账号',
         idempotencyKey: '幂等键（可选）',
         secretConfigured: '已配置，留空不变',
@@ -255,14 +253,6 @@ export default {
           password: '密码',
           database: '数据库',
           sslMode: 'SSL 模式',
-          containerName: '容器名（docker_exec 模式）'
-        },
-        redis: {
-          title: 'Redis',
-          addr: '地址（host:port）',
-          username: '用户名',
-          password: '密码',
-          db: '数据库编号',
           containerName: '容器名（docker_exec 模式）'
         },
         s3: {
@@ -317,7 +307,6 @@ export default {
           status: '状态',
           triggeredBy: '触发人',
           pgProfile: 'PostgreSQL 配置',
-          redisProfile: 'Redis 配置',
           s3Profile: 'S3 账号',
           finishedAt: '完成时间',
           artifact: '产物',

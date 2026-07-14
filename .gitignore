@@ -37,7 +37,7 @@ backend/.tmp/
 # ===================
 node_modules/
 frontend/node_modules/
-frontend/dist/
+/frontend-dist/
 .pnpm-store/
 .vite/
 frontend/.corepack/
@@ -100,14 +100,9 @@ temp/
 dist/
 build/
 release/
+backend-rust/target/
 
-# 后端嵌入的前端构建产物
-# Keep a placeholder file so `//go:embed all:dist` always has a match in CI/lint,
-# while still ignoring generated frontend build outputs.
-backend/internal/web/dist/
-!backend/internal/web/dist/
-backend/internal/web/dist/*
-!backend/internal/web/dist/.keep
+# Generated frontend production bundle.
 
 # 后端运行时缓存数据
 backend/data/
@@ -123,6 +118,8 @@ backend/.installed
 # 其他
 # ===================
 tests
+!backend-rust/tests/
+!backend-rust/tests/**/*.rs
 CLAUDE.md
 .claude
 scripts

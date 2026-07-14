@@ -1,4 +1,4 @@
-name: Docker Hub Image
+name: Docker Hub Rust Image
 
 on:
   workflow_dispatch:
@@ -17,9 +17,80 @@ env:
   IMAGE_REPOSITORY: ${{ secrets.DOCKERHUB_USERNAME }}/sub2api
 
 jobs:
-  build-and-push:
-    name: Publish immutable image then latest
+  verify:
+    name: Verify main revision
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: sub2api
+          POSTGRES_PASSWORD: sub2api-test
+          POSTGRES_DB: sub2api_rust_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sub2api -d sub2api_rust_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://sub2api:sub2api-test@127.0.0.1:5432/sub2api_rust_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          components: clippy,rustfmt
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Rust and frontend
+        run: |
+          make test-rust
+          pnpm --dir frontend run lint:check
+          pnpm --dir frontend run typecheck
+          pnpm --dir frontend run test:run
+          pnpm --dir frontend run build
+
+      - name: Verify route coverage
+        working-directory: backend-rust
+        run: |
+          cargo run --example route_coverage --locked | tee route-coverage.tsv
+          grep -q $'SUMMARY\t.*intentional_absence=1\tmissing=0' route-coverage.tsv
+
+      - name: Verify PostgreSQL integration contracts
+        run: make test-rust-integration
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit Rust dependencies
+        working-directory: backend-rust
+        run: cargo audit --deny warnings
+
+  build-and-push:
+    name: Publish immutable image then rust/latest
+    runs-on: ubuntu-latest
+    needs: verify
 
     steps:
       - name: Checkout code
@@ -32,8 +103,8 @@ jobs:
 
       - name: Set image metadata
         run: |
-          base_version="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
-          echo "APP_VERSION=${base_version}-vmain" >>"$GITHUB_ENV"
+          base_version="$(awk -F ' *= *' '$1 == "version" { gsub(/"/, "", $2); print $2; exit }' backend-rust/Cargo.toml)"
+          echo "APP_VERSION=${base_version}" >>"$GITHUB_ENV"
           echo "IMAGE_TAG=sha-${GITHUB_SHA}" >>"$GITHUB_ENV"
 
       - name: Log in to Docker Hub
@@ -51,13 +122,13 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}
           build-args: |
-            VERSION=${{ env.APP_VERSION }}
-            COMMIT=${{ github.sha }}
+            SUB2API_BUILD_VERSION=${{ env.APP_VERSION }}+${{ github.sha }}
           no-cache: true
 
-      - name: Promote merged main image to latest
+      - name: Promote merged main image to rust and latest
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           docker buildx imagetools create \
+            --tag "${IMAGE_REPOSITORY}:rust" \
             --tag "${IMAGE_REPOSITORY}:latest" \
             "${IMAGE_REPOSITORY}:${IMAGE_TAG}"

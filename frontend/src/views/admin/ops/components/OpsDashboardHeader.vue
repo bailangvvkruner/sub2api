@@ -499,15 +499,6 @@ const diagnosisReport = computed<DiagnosisItem[]>(() => {
         action: t('admin.ops.diagnosis.dbDownAction')
       })
     }
-    if (sm.redis_ok === false) {
-      report.push({
-        type: 'warning',
-        message: t('admin.ops.diagnosis.redisDown'),
-        impact: t('admin.ops.diagnosis.redisDownImpact'),
-        action: t('admin.ops.diagnosis.redisDownAction')
-      })
-    }
-
     const cpuPct = sm.cpu_usage_percent ?? 0
     if (cpuPct > 90) {
       report.push({
@@ -717,91 +708,6 @@ const dbMiddleClass = computed(() => {
   }
   if (systemMetrics.value?.db_ok === true) return 'text-emerald-600 dark:text-emerald-400'
   return 'text-gray-900 dark:text-white'
-})
-
-const redisConnTotalValue = computed<number | null>(() => {
-  const v = systemMetrics.value?.redis_conn_total
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
-})
-
-const redisConnIdleValue = computed<number | null>(() => {
-  const v = systemMetrics.value?.redis_conn_idle
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
-})
-
-const redisConnActiveValue = computed<number | null>(() => {
-  if (redisConnTotalValue.value == null || redisConnIdleValue.value == null) return null
-  return Math.max(redisConnTotalValue.value - redisConnIdleValue.value, 0)
-})
-
-const redisPoolSizeValue = computed<number | null>(() => {
-  const v = systemMetrics.value?.redis_pool_size
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
-})
-
-const redisUsagePercent = computed<number | null>(() => {
-  if (redisConnTotalValue.value == null || redisPoolSizeValue.value == null || redisPoolSizeValue.value <= 0) return null
-  return Math.min(100, Math.max(0, (redisConnTotalValue.value / redisPoolSizeValue.value) * 100))
-})
-
-const redisMiddleLabel = computed(() => {
-  if (systemMetrics.value?.redis_ok === false) return 'FAIL'
-  if (redisUsagePercent.value != null) return `${redisUsagePercent.value.toFixed(0)}%`
-  if (systemMetrics.value?.redis_ok === true) return t('admin.ops.ok')
-  return t('admin.ops.noData')
-})
-
-const redisMiddleClass = computed(() => {
-  if (systemMetrics.value?.redis_ok === false) return 'text-rose-600 dark:text-rose-400'
-  if (redisUsagePercent.value != null) {
-    if (redisUsagePercent.value >= 90) return 'text-rose-600 dark:text-rose-400'
-    if (redisUsagePercent.value >= 70) return 'text-yellow-600 dark:text-yellow-400'
-    return 'text-emerald-600 dark:text-emerald-400'
-  }
-  if (systemMetrics.value?.redis_ok === true) return 'text-emerald-600 dark:text-emerald-400'
-  return 'text-gray-900 dark:text-white'
-})
-
-const goroutineCountValue = computed<number | null>(() => {
-  const v = systemMetrics.value?.goroutine_count
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
-})
-
-const goroutinesWarnThreshold = 8_000
-const goroutinesCriticalThreshold = 15_000
-
-const goroutineStatus = computed<'ok' | 'warning' | 'critical' | 'unknown'>(() => {
-  const n = goroutineCountValue.value
-  if (n == null) return 'unknown'
-  if (n >= goroutinesCriticalThreshold) return 'critical'
-  if (n >= goroutinesWarnThreshold) return 'warning'
-  return 'ok'
-})
-
-const goroutineStatusLabel = computed(() => {
-  switch (goroutineStatus.value) {
-    case 'ok':
-      return t('admin.ops.ok')
-    case 'warning':
-      return t('common.warning')
-    case 'critical':
-      return t('common.critical')
-    default:
-      return t('admin.ops.noData')
-  }
-})
-
-const goroutineStatusClass = computed(() => {
-  switch (goroutineStatus.value) {
-    case 'ok':
-      return 'text-emerald-600 dark:text-emerald-400'
-    case 'warning':
-      return 'text-yellow-600 dark:text-yellow-400'
-    case 'critical':
-      return 'text-rose-600 dark:text-rose-400'
-    default:
-      return 'text-gray-900 dark:text-white'
-  }
 })
 
 const jobHeartbeats = computed(() => overview.value?.job_heartbeats ?? [])
@@ -1434,7 +1340,7 @@ function handleToolbarRefresh() {
 
     <!-- Integrated: System health (cards) -->
     <div v-if="overview" class="mt-2 border-t border-gray-100 pt-4 dark:border-dark-700">
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <!-- CPU -->
         <div class="rounded-xl bg-gray-50 p-3 dark:bg-dark-900">
           <div class="flex items-center gap-1">
@@ -1481,41 +1387,6 @@ function handleToolbarRefresh() {
             · {{ t('admin.ops.active') }} {{ dbConnActiveValue ?? '-' }}
             · {{ t('admin.ops.idle') }} {{ dbConnIdleValue ?? '-' }}
             <span v-if="dbConnWaitingValue != null"> · {{ t('admin.ops.waiting') }} {{ dbConnWaitingValue }} </span>
-          </div>
-        </div>
-
-        <!-- Redis -->
-        <div class="rounded-xl bg-gray-50 p-3 dark:bg-dark-900">
-          <div class="flex items-center gap-1">
-            <div class="text-[10px] font-bold uppercase tracking-wider text-gray-400">Redis</div>
-            <HelpTooltip v-if="!props.fullscreen" :content="t('admin.ops.tooltips.redis')" />
-          </div>
-          <div class="mt-1 text-lg font-black" :class="redisMiddleClass">
-            {{ redisMiddleLabel }}
-          </div>
-          <div v-if="!props.fullscreen" class="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
-            {{ t('admin.ops.conns') }} {{ redisConnTotalValue ?? '-' }} / {{ redisPoolSizeValue ?? '-' }}
-            <span v-if="redisConnActiveValue != null"> · {{ t('admin.ops.active') }} {{ redisConnActiveValue }} </span>
-            <span v-if="redisConnIdleValue != null"> · {{ t('admin.ops.idle') }} {{ redisConnIdleValue }} </span>
-          </div>
-        </div>
-
-        <!-- Goroutines -->
-        <div class="rounded-xl bg-gray-50 p-3 dark:bg-dark-900">
-          <div class="flex items-center gap-1">
-            <div class="text-[10px] font-bold uppercase tracking-wider text-gray-400">{{ t('admin.ops.goroutines') }}</div>
-            <HelpTooltip v-if="!props.fullscreen" :content="t('admin.ops.tooltips.goroutines')" />
-          </div>
-          <div class="mt-1 text-lg font-black" :class="goroutineStatusClass">
-            {{ goroutineStatusLabel }}
-          </div>
-          <div v-if="!props.fullscreen" class="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
-            {{ t('admin.ops.current') }} <span class="font-mono">{{ goroutineCountValue ?? '-' }}</span>
-            · {{ t('common.warning') }} <span class="font-mono">{{ goroutinesWarnThreshold }}</span>
-            · {{ t('common.critical') }} <span class="font-mono">{{ goroutinesCriticalThreshold }}</span>
-            <span v-if="systemMetrics?.concurrency_queue_depth != null">
-              · {{ t('admin.ops.queue') }} <span class="font-mono">{{ systemMetrics.concurrency_queue_depth }}</span>
-            </span>
           </div>
         </div>
 

@@ -1,130 +1,63 @@
-# =============================================================================
-# Sub2API Docker Compose - Standalone Configuration
-# =============================================================================
-# This configuration runs only the Sub2API application.
-# PostgreSQL and Redis must be provided externally.
-#
-# Usage:
-#   1. Copy .env.example to .env and configure database/redis connection
-#   2. docker-compose -f docker-compose.standalone.yml up -d
-#   3. Access: http://localhost:8080
-# =============================================================================
-
+# Rust application only. PostgreSQL must be supplied externally.
 services:
   sub2api:
-    image: weishaw/sub2api:latest
+    image: ${SUB2API_RUST_IMAGE:-sub2api-rust:local}
+    build:
+      context: ${SUB2API_SOURCE_DIR:-..}
+      dockerfile: Dockerfile
+      args:
+        SUB2API_BUILD_VERSION: ${SUB2API_BUILD_VERSION:-development}
     container_name: sub2api
+    init: true
     restart: unless-stopped
-    stop_grace_period: 60s
-    ulimits:
-      nofile:
-        soft: 100000
-        hard: 100000
+    stop_grace_period: 180s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      RUN_MODE: ${RUN_MODE:-standard}
+      TZ: ${TZ:-Asia/Shanghai}
+      DATA_DIR: /app/data
+      SETUP_CONFIG_OVERRIDES_ENV: ${SETUP_CONFIG_OVERRIDES_ENV:-true}
+      DATABASE_HOST: ${DATABASE_HOST:?DATABASE_HOST is required}
+      DATABASE_PORT: ${DATABASE_PORT:-5432}
+      DATABASE_USER: ${DATABASE_USER:-sub2api}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      DATABASE_DBNAME: ${DATABASE_DBNAME:-sub2api}
+      DATABASE_SSLMODE: ${DATABASE_SSLMODE:-require}
+      DATABASE_MAX_OPEN_CONNS: ${DATABASE_MAX_OPEN_CONNS:-50}
+      DATABASE_MIN_CONNS: ${DATABASE_MIN_CONNS:-1}
+      MIGRATIONS_MODE: apply
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_EXPIRE_HOUR: ${JWT_EXPIRE_HOUR:-24}
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?TOTP_ENCRYPTION_KEY is required}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@sub2api.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      GATEWAY_MAX_BODY_SIZE: ${GATEWAY_MAX_BODY_SIZE:-268435456}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-true}
+      PRICING_DATA_FILE: /app/data/model_prices_and_context_window.json
+      BACKUP_MAX_RESTORE_BYTES: ${BACKUP_MAX_RESTORE_BYTES:-68719476736}
+      PRICING_REMOTE_URL: ${PRICING_REMOTE_URL:-https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json}
+      PRICING_HASH_URL: ${PRICING_HASH_URL:-https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256}
+      PRICING_ALLOWED_HOSTS: ${PRICING_ALLOWED_HOSTS:-raw.githubusercontent.com}
+      SUB2API_REDEPLOY_COMMAND: ${SUB2API_REDEPLOY_COMMAND:-}
+      SUB2API_BUILD_VERSION: ${SUB2API_BUILD_VERSION:-development}
+      SUB2API_RUST_BRANCH: ${SUB2API_RUST_BRANCH:-main}
+      SUB2API_RUST_ROLLBACK_REFS: ${SUB2API_RUST_ROLLBACK_REFS:-}
+      RUST_LOG: ${RUST_LOG:-sub2api_rust=info,tower_http=info}
     ports:
       - "${BIND_HOST:-0.0.0.0}:${SERVER_PORT:-8080}:8080"
     volumes:
       - sub2api_data:/app/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      # =======================================================================
-      # Auto Setup
-      # =======================================================================
-      - AUTO_SETUP=true
-
-      # =======================================================================
-      # Server Configuration
-      # =======================================================================
-      - SERVER_HOST=0.0.0.0
-      - SERVER_PORT=8080
-      - SERVER_MODE=${SERVER_MODE:-release}
-      - RUN_MODE=${RUN_MODE:-standard}
-
-      # =======================================================================
-      # Database Configuration (PostgreSQL) - Required
-      # =======================================================================
-      - DATABASE_HOST=${DATABASE_HOST:?DATABASE_HOST is required}
-      - DATABASE_PORT=${DATABASE_PORT:-5432}
-      - DATABASE_USER=${DATABASE_USER:-sub2api}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
-      - DATABASE_DBNAME=${DATABASE_DBNAME:-sub2api}
-      - DATABASE_SSLMODE=${DATABASE_SSLMODE:-disable}
-      - DATABASE_MAX_OPEN_CONNS=${DATABASE_MAX_OPEN_CONNS:-50}
-      - DATABASE_MAX_IDLE_CONNS=${DATABASE_MAX_IDLE_CONNS:-10}
-      - DATABASE_CONN_MAX_LIFETIME_MINUTES=${DATABASE_CONN_MAX_LIFETIME_MINUTES:-30}
-      - DATABASE_CONN_MAX_IDLE_TIME_MINUTES=${DATABASE_CONN_MAX_IDLE_TIME_MINUTES:-5}
-
-      # =======================================================================
-      # Redis Configuration - Required
-      # =======================================================================
-      - REDIS_HOST=${REDIS_HOST:?REDIS_HOST is required}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - REDIS_DB=${REDIS_DB:-0}
-      - REDIS_POOL_SIZE=${REDIS_POOL_SIZE:-1024}
-      - REDIS_MIN_IDLE_CONNS=${REDIS_MIN_IDLE_CONNS:-10}
-      - REDIS_ENABLE_TLS=${REDIS_ENABLE_TLS:-false}
-
-      # =======================================================================
-      # Admin Account (auto-created on first run)
-      # =======================================================================
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@sub2api.local}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
-
-      # =======================================================================
-      # JWT Configuration
-      # =======================================================================
-      - JWT_SECRET=${JWT_SECRET:-}
-      - JWT_EXPIRE_HOUR=${JWT_EXPIRE_HOUR:-24}
-
-      # =======================================================================
-      # Setup Configuration
-      # =======================================================================
-      - SETUP_MIGRATION_TIMEOUT_SECONDS=${SETUP_MIGRATION_TIMEOUT_SECONDS:-0}
-
-      # =======================================================================
-      # Timezone Configuration
-      # =======================================================================
-      - TZ=${TZ:-Asia/Shanghai}
-
-      # =======================================================================
-      # Gemini OAuth Configuration (optional)
-      # =======================================================================
-      - GEMINI_OAUTH_CLIENT_ID=${GEMINI_OAUTH_CLIENT_ID:-}
-      - GEMINI_OAUTH_CLIENT_SECRET=${GEMINI_OAUTH_CLIENT_SECRET:-}
-      - GEMINI_OAUTH_SCOPES=${GEMINI_OAUTH_SCOPES:-}
-      - GEMINI_QUOTA_POLICY=${GEMINI_QUOTA_POLICY:-}
-
-      # Built-in OAuth client secrets (optional)
-      # SECURITY: This repo does not embed third-party client_secret.
-      - GEMINI_CLI_OAUTH_CLIENT_SECRET=${GEMINI_CLI_OAUTH_CLIENT_SECRET:-}
-      - ANTIGRAVITY_OAUTH_CLIENT_SECRET=${ANTIGRAVITY_OAUTH_CLIENT_SECRET:-}
-      - ANTIGRAVITY_USER_AGENT_VERSION=${ANTIGRAVITY_USER_AGENT_VERSION:-}
-
-      # =======================================================================
-      # Image Generation Stream & Concurrency
-      # =======================================================================
-      # OpenAI HTTP upstream protocol/timeout
-      - GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT=${GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT:-0}
-      - GATEWAY_OPENAI_HTTP2_ENABLED=${GATEWAY_OPENAI_HTTP2_ENABLED:-true}
-      - GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1=${GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1:-true}
-      - GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD=${GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD:-2}
-      - GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS:-60}
-      - GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS:-600}
-      - GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT=${GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT:-900}
-      - GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL=${GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL:-10}
-      - GATEWAY_IMAGE_CONCURRENCY_ENABLED=${GATEWAY_IMAGE_CONCURRENCY_ENABLED:-false}
-      - GATEWAY_IMAGE_CONCURRENCY_MAX_CONCURRENT_REQUESTS=${GATEWAY_IMAGE_CONCURRENCY_MAX_CONCURRENT_REQUESTS:-0}
-      - GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE=${GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE:-reject}
-      - GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS=${GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS:-30}
-      - GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS=${GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS:-100}
     healthcheck:
-      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/ready"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 30s
 
 volumes:
   sub2api_data:
-    driver: local

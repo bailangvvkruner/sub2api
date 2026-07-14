@@ -149,7 +149,62 @@
                 </button>
               </div>
 
-              <!-- Priority 2: Update success - need restart -->
+              <!-- Priority 2: Immutable container deployment requires a host-side redeploy -->
+              <div v-else-if="updateSuccess && requiresRedeploy" class="space-y-2">
+                <div
+                  class="flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800/50 dark:bg-amber-900/20"
+                >
+                  <div
+                    class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/50"
+                  >
+                    <Icon
+                      name="server"
+                      size="sm"
+                      :stroke-width="2"
+                      class="text-amber-600 dark:text-amber-400"
+                    />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <p class="text-sm font-medium text-amber-700 dark:text-amber-300">
+                      {{ t('version.redeployRequired') }}
+                    </p>
+                    <p class="text-xs leading-4 text-amber-600/70 dark:text-amber-400/70">
+                      {{ t('version.redeployQueued') }}
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  v-if="redeployCommand"
+                  class="overflow-hidden rounded-lg border border-gray-200 dark:border-dark-600"
+                >
+                  <div
+                    class="flex items-center justify-between border-b border-gray-200 bg-gray-100 px-2 py-1.5 dark:border-dark-600 dark:bg-dark-700"
+                  >
+                    <span class="text-[11px] font-medium text-gray-500 dark:text-dark-300">
+                      {{ t('version.redeployCommand') }}
+                    </span>
+                    <button
+                      @click="copyToClipboard(redeployCommand)"
+                      class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-600 dark:text-dark-400 dark:hover:bg-dark-600 dark:hover:text-dark-200"
+                    >
+                      <Icon
+                        :name="copied ? 'check' : 'copy'"
+                        size="xs"
+                        :stroke-width="2"
+                        :class="copied ? 'text-green-500' : ''"
+                      />
+                      {{ copied ? t('version.copied') : t('version.copyCommand') }}
+                    </button>
+                  </div>
+                  <code
+                    class="block select-all whitespace-pre-wrap break-all bg-gray-50 p-2.5 font-mono text-[10px] leading-relaxed text-gray-600 dark:bg-dark-900 dark:text-dark-300"
+                    >{{ redeployCommand }}</code
+                  >
+                </div>
+              </div>
+
+              <!-- Priority 2b: In-place release update needs a process restart -->
               <div v-else-if="updateSuccess && needRestart" class="space-y-2">
                 <div
                   class="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800/50 dark:bg-green-900/20"
@@ -676,11 +731,14 @@ const latestVersion = computed(() => appStore.latestVersion)
 const hasUpdate = computed(() => appStore.hasUpdate)
 const releaseInfo = computed(() => appStore.releaseInfo)
 const buildType = computed(() => appStore.buildType)
+const isContainerBuild = computed(() => buildType.value === 'container')
 
 // Update process states (local to this component)
 const updating = ref(false)
 const restarting = ref(false)
 const needRestart = ref(false)
+const requiresRedeploy = ref(false)
+const redeployCommand = ref('')
 const updateError = ref('')
 const updateSuccess = ref(false)
 const restartCountdown = ref(0)
@@ -702,10 +760,12 @@ const { copied, copyToClipboard } = useClipboard()
 // docker deployments pin the image tag instead
 const manualTab = ref<'script' | 'docker'>('script')
 
-const manualTabs = computed(() => [
-  { key: 'script' as const, label: t('version.deployScript') },
-  { key: 'docker' as const, label: t('version.deployDocker') }
-])
+const manualTabs = computed(() => {
+  const docker = { key: 'docker' as const, label: t('version.deployDocker') }
+  return isContainerBuild.value
+    ? [docker]
+    : [{ key: 'script' as const, label: t('version.deployScript') }, docker]
+})
 
 const scriptRollbackCommand = computed(() => {
   if (!selectedRollbackVersion.value) return ''
@@ -715,6 +775,13 @@ const scriptRollbackCommand = computed(() => {
 
 const dockerRollbackCommand = computed(() => {
   if (!selectedRollbackVersion.value) return ''
+  if (isContainerBuild.value) {
+    return [
+      'git -C .source fetch --tags origin',
+      `git -C .source checkout --detach v${selectedRollbackVersion.value}`,
+      'docker compose up -d --build --remove-orphans'
+    ].join('\n')
+  }
   return [
     `# ${t('version.dockerEditCompose')}`,
     `image: ${DOCKER_IMAGE}:${selectedRollbackVersion.value}`,
@@ -729,7 +796,9 @@ const activeManualCommand = computed(() =>
 )
 
 // Only show update check for release builds (binary/docker deployment)
-const isReleaseBuild = computed(() => buildType.value === 'release')
+const isReleaseBuild = computed(
+  () => buildType.value === 'release' || isContainerBuild.value
+)
 
 function toggleDropdown() {
   dropdownOpen.value = !dropdownOpen.value
@@ -746,6 +815,8 @@ async function refreshVersion(force = true) {
   updateError.value = ''
   updateSuccess.value = false
   needRestart.value = false
+  requiresRedeploy.value = false
+  redeployCommand.value = ''
   resetRollbackState()
 
   await appStore.fetchVersion(force)
@@ -763,6 +834,8 @@ async function handleUpdate() {
     successKind.value = 'update'
     updateSuccess.value = true
     needRestart.value = result.need_restart
+    requiresRedeploy.value = result.requires_redeploy === true
+    redeployCommand.value = result.redeploy_command || ''
     // Clear version cache to reflect update completed
     appStore.clearVersionCache()
   } catch (error: unknown) {
@@ -785,6 +858,9 @@ function resetRollbackState() {
 async function toggleRollbackPanel() {
   if (!isAdmin.value) return
   rollbackPanelOpen.value = !rollbackPanelOpen.value
+  if (rollbackPanelOpen.value && isContainerBuild.value) {
+    manualTab.value = 'docker'
+  }
   // Source builds only show a hint, no version list to fetch
   if (
     rollbackPanelOpen.value &&
@@ -837,6 +913,8 @@ async function handleRollback() {
     successKind.value = 'rollback'
     updateSuccess.value = true
     needRestart.value = result.need_restart
+    requiresRedeploy.value = result.requires_redeploy === true
+    redeployCommand.value = result.redeploy_command || ''
     rollbackPanelOpen.value = false
     // Clear version cache so the next check reflects the rolled-back version
     appStore.clearVersionCache()

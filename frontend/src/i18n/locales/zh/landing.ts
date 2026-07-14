@@ -210,17 +210,6 @@ export default {
         verifyFull: '完全验证'
       }
     },
-    redis: {
-      title: 'Redis 配置',
-      description: '连接到您的 Redis 服务器',
-      host: '主机',
-      port: '端口',
-      password: '密码（可选）',
-      database: '数据库',
-      passwordPlaceholder: '密码',
-      enableTls: '启用 TLS',
-      enableTlsHint: '连接 Redis 时使用 TLS（公共 CA 证书）'
-    },
     admin: {
       title: '管理员账户',
       description: '创建您的管理员账户',
@@ -235,7 +224,6 @@ export default {
       title: '准备安装',
       description: '检查您的配置并完成安装',
       database: '数据库',
-      redis: 'Redis',
       adminEmail: '管理员邮箱'
     },
     status: {

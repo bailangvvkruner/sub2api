@@ -255,20 +255,14 @@ export interface OpsSystemMetricsSnapshot {
   memory_usage_percent?: number | null
 
   db_ok?: boolean | null
-  redis_ok?: boolean | null
 
   // Config-derived limits (best-effort) for rendering "current vs max".
   db_max_open_conns?: number | null
-  redis_pool_size?: number | null
-
-  redis_conn_total?: number | null
-  redis_conn_idle?: number | null
 
   db_conn_active?: number | null
   db_conn_idle?: number | null
   db_conn_waiting?: number | null
 
-  goroutine_count?: number | null
   concurrency_queue_depth?: number | null
   account_switch_count?: number | null
 }

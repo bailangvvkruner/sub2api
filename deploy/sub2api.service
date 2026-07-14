@@ -1,33 +1,34 @@
 [Unit]
-Description=Sub2API - AI API Gateway Platform
-Documentation=https://github.com/Wei-Shaw/sub2api
-After=network.target postgresql.service redis.service
-Wants=postgresql.service redis.service
+Description=Sub2API Rust API Gateway
+Documentation=https://github.com/bailangvvkruner/sub2api
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
 
 [Service]
 Type=simple
 User=sub2api
 Group=sub2api
 WorkingDirectory=/opt/sub2api
-ExecStart=/opt/sub2api/sub2api
-Restart=always
+EnvironmentFile=-/opt/sub2api/.env
+Environment=SERVER_HOST=0.0.0.0
+Environment=SERVER_PORT=8080
+Environment=DATA_DIR=/opt/sub2api/data
+Environment=FRONTEND_DIR=/opt/sub2api/frontend
+Environment=MIGRATIONS_MODE=apply
+Environment=RUST_LOG=sub2api_rust=info,tower_http=info
+ExecStart=/opt/sub2api/sub2api-rust
+Restart=on-failure
 RestartSec=5
+TimeoutStopSec=180
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sub2api
+SyslogIdentifier=sub2api-rust
 
-# Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/sub2api
-
-# Environment - Server configuration
-# Modify these values to change listen address and port
-Environment=GIN_MODE=release
-Environment=SERVER_HOST=0.0.0.0
-Environment=SERVER_PORT=8080
+ReadWritePaths=/opt/sub2api/data
 
 [Install]
 WantedBy=multi-user.target

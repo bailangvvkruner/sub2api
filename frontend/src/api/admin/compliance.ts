@@ -22,9 +22,11 @@ export interface AdminComplianceStatus {
   acknowledgement?: AdminComplianceAcknowledgement
 }
 
+export type AdminComplianceLanguage = 'zh' | 'en'
+
 export interface AcceptAdminComplianceRequest {
   phrase: string
-  language: string
+  language: AdminComplianceLanguage
 }
 
 export const adminComplianceAPI = {

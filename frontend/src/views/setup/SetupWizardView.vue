@@ -91,18 +91,6 @@
             </div>
           </div>
 
-          <div class="flex items-center justify-between rounded-xl border border-gray-200 p-3 dark:border-dark-700">
-            <div>
-              <p class="text-sm font-medium text-gray-900 dark:text-white">
-                {{ t("setup.redis.enableTls") }}
-              </p>
-              <p class="text-xs text-gray-500 dark:text-dark-400">
-                {{ t("setup.redis.enableTlsHint") }}
-              </p>
-            </div>
-            <Toggle v-model="formData.redis.enable_tls" />
-          </div>
-
           <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="input-label">{{ t('setup.database.username') }}</label>
@@ -184,115 +172,8 @@
           </button>
         </div>
 
-        <!-- Step 2: Redis -->
+        <!-- Step 2: Admin -->
         <div v-if="currentStep === 1" class="space-y-6">
-          <div class="mb-6 text-center">
-            <h2 class="text-xl font-semibold text-gray-900 dark:text-white">
-              {{ t('setup.redis.title') }}
-            </h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-dark-400">
-              {{ t('setup.redis.description') }}
-            </p>
-          </div>
-
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="input-label">{{ t('setup.redis.host') }}</label>
-              <input
-                v-model="formData.redis.host"
-                type="text"
-                class="input"
-                placeholder="localhost"
-              />
-            </div>
-            <div>
-              <label class="input-label">{{ t('setup.redis.port') }}</label>
-              <input
-                v-model.number="formData.redis.port"
-                type="number"
-                class="input"
-                placeholder="6379"
-              />
-            </div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="input-label">{{ t('setup.redis.password') }}</label>
-              <input
-                v-model="formData.redis.password"
-                type="password"
-                class="input"
-                :placeholder="t('setup.redis.passwordPlaceholder')"
-              />
-            </div>
-            <div>
-              <label class="input-label">{{ t('setup.redis.database') }}</label>
-              <input
-                v-model.number="formData.redis.db"
-                type="number"
-                class="input"
-                placeholder="0"
-              />
-            </div>
-          </div>
-
-          <div class="flex items-center justify-between rounded-xl border border-gray-200 p-3 dark:border-dark-700">
-            <div>
-              <p class="text-sm font-medium text-gray-900 dark:text-white">
-                {{ t("setup.redis.enableTls") }}
-              </p>
-              <p class="text-xs text-gray-500 dark:text-dark-400">
-                {{ t("setup.redis.enableTlsHint") }}
-              </p>
-            </div>
-            <Toggle v-model="formData.redis.enable_tls" />
-          </div>
-
-          <button
-            @click="testRedisConnection"
-            :disabled="testingRedis"
-            class="btn btn-secondary w-full"
-          >
-            <svg
-              v-if="testingRedis"
-              class="-ml-1 mr-2 h-4 w-4 animate-spin"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                class="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                stroke-width="4"
-              ></circle>
-              <path
-                class="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              ></path>
-            </svg>
-            <Icon
-              v-else-if="redisConnected"
-              name="check"
-              size="md"
-              class="mr-2 text-green-500"
-              :stroke-width="2"
-            />
-            {{
-              testingRedis
-                ? t('setup.status.testing')
-                : redisConnected
-                  ? t('setup.status.success')
-                  : t('setup.status.testConnection')
-            }}
-          </button>
-        </div>
-
-        <!-- Step 3: Admin -->
-        <div v-if="currentStep === 2" class="space-y-6">
           <div class="mb-6 text-center">
             <h2 class="text-xl font-semibold text-gray-900 dark:text-white">
               {{ t('setup.admin.title') }}
@@ -339,8 +220,8 @@
           </div>
         </div>
 
-        <!-- Step 4: Complete -->
-        <div v-if="currentStep === 3" class="space-y-6">
+        <!-- Step 3: Complete -->
+        <div v-if="currentStep === 2" class="space-y-6">
           <div class="mb-6 text-center">
             <h2 class="text-xl font-semibold text-gray-900 dark:text-white">
               {{ t('setup.ready.title') }}
@@ -359,15 +240,6 @@
                 {{ formData.database.user }}@{{ formData.database.host }}:{{
                   formData.database.port
                 }}/{{ formData.database.dbname }}
-              </p>
-            </div>
-
-            <div class="rounded-xl bg-gray-50 p-4 dark:bg-dark-700">
-              <h3 class="mb-2 text-sm font-medium text-gray-500 dark:text-dark-400">
-                {{ t('setup.ready.redis') }}
-              </h3>
-              <p class="text-gray-900 dark:text-white">
-                {{ formData.redis.host }}:{{ formData.redis.port }}
               </p>
             </div>
 
@@ -446,7 +318,7 @@
           <div v-else></div>
 
           <button
-            v-if="currentStep < 3"
+            v-if="currentStep < steps.length - 1"
             @click="nextStep"
             :disabled="!canProceed"
             class="btn btn-primary"
@@ -492,17 +364,15 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { testDatabase, testRedis, install, type InstallRequest } from '@/api/setup'
+import { testDatabase, install, type InstallRequest } from '@/api/setup'
 import { buildGatewayUrl } from '@/api/client'
 import Select from '@/components/common/Select.vue'
-import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
 
 const { t } = useI18n()
 
 const steps = computed(() => [
   { id: 'database', title: t('setup.database.title') },
-  { id: 'redis', title: t('setup.redis.title') },
   { id: 'admin', title: t('setup.admin.title') },
   { id: 'complete', title: t('setup.ready.title') }
 ])
@@ -513,9 +383,7 @@ const installSuccess = ref(false)
 
 // Connection test states
 const testingDb = ref(false)
-const testingRedis = ref(false)
 const dbConnected = ref(false)
-const redisConnected = ref(false)
 const installing = ref(false)
 const confirmPassword = ref('')
 const serviceReady = ref(false)
@@ -539,13 +407,6 @@ const formData = reactive<InstallRequest>({
     dbname: 'sub2api',
     sslmode: 'disable'
   },
-  redis: {
-    host: 'localhost',
-    port: 6379,
-    password: '',
-    db: 0,
-    enable_tls: false
-  },
   admin: {
     email: '',
     password: ''
@@ -562,8 +423,6 @@ const canProceed = computed(() => {
     case 0:
       return dbConnected.value
     case 1:
-      return redisConnected.value
-    case 2:
       return (
         formData.admin.email &&
         formData.admin.password.length >= 8 &&
@@ -591,23 +450,6 @@ async function testDatabaseConnection() {
   }
 }
 
-async function testRedisConnection() {
-  testingRedis.value = true
-  errorMessage.value = ''
-  redisConnected.value = false
-
-  try {
-    await testRedis(formData.redis)
-    redisConnected.value = true
-  } catch (error: unknown) {
-    const err = error as { response?: { data?: { detail?: string; message?: string } }; message?: string }
-    errorMessage.value =
-      err.response?.data?.detail || err.response?.data?.message || err.message || 'Connection failed'
-  } finally {
-    testingRedis.value = false
-  }
-}
-
 function nextStep() {
   if (canProceed.value) {
     errorMessage.value = ''
@@ -620,10 +462,16 @@ async function performInstall() {
   errorMessage.value = ''
 
   try {
-    await install(formData)
+    const result = await install(formData)
     installSuccess.value = true
-    // Start polling for service restart
-    waitForServiceRestart()
+    if (result.restart) {
+      waitForServiceRestart()
+    } else {
+      serviceReady.value = true
+      setTimeout(() => {
+        window.location.href = '/login'
+      }, 1500)
+    }
   } catch (error: unknown) {
     const err = error as { response?: { data?: { detail?: string; message?: string } }; message?: string }
     errorMessage.value =
