@@ -1140,8 +1140,9 @@ fn event_from_row(row: &sqlx::postgres::PgRow) -> Result<BillingEvent, Authority
             .try_get("model_mapping_chain")
             .map_err(AuthorityError::database)?,
         billing_mode: row
-            .try_get("billing_mode")
-            .map_err(AuthorityError::database)?,
+            .try_get::<Option<String>, _>("billing_mode")
+            .map_err(AuthorityError::database)?
+            .unwrap_or_else(|| "token".to_owned()),
         usage: TokenUsage {
             input_tokens: token_count(row, "input_tokens")?,
             output_tokens: token_count(row, "output_tokens")?,
@@ -1406,7 +1407,12 @@ mod tests {
         .execute(&pool_a)
         .await
         .unwrap();
-        assert_eq!(authority_a.claim_ready_events(10).await.unwrap().len(), 1);
+        let recovered = authority_a.claim_ready_events(10).await.unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(
+            recovered[0].billing_mode, "token",
+            "legacy ready rows without billing attribution must recover as token billing"
+        );
         assert!(authority_b.claim_ready_events(10).await.unwrap().is_empty());
         sqlx::query(
             "UPDATE gateway_billing_reservations SET updated_at=NOW()-INTERVAL '30 days' WHERE request_id=$1",
