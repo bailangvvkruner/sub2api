@@ -33,6 +33,15 @@ dist/
 build/
 frontend-dist/
 backend-rust/target/
+.gocache/
+.gomodcache/
+.gotmp/
+.pnpm-store/
+.vite/
+.tmp/
+frontend/.corepack/
+frontend/*.tsbuildinfo
+frontend/vite.config.js.timestamp-*
 
 # Node modules (will be installed in container)
 frontend/node_modules/

@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - codex/rust-postgres
 
 permissions:
   contents: read
@@ -18,7 +19,7 @@ env:
 
 jobs:
   verify:
-    name: Verify main revision
+    name: Verify Rust revision
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -88,7 +89,7 @@ jobs:
         run: cargo audit --deny warnings
 
   build-and-push:
-    name: Publish immutable image then rust/latest
+    name: Publish immutable image and channel tags
     runs-on: ubuntu-latest
     needs: verify
 
@@ -131,4 +132,11 @@ jobs:
           docker buildx imagetools create \
             --tag "${IMAGE_REPOSITORY}:rust" \
             --tag "${IMAGE_REPOSITORY}:latest" \
+            "${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+
+      - name: Promote verified migration image to rust
+        if: github.ref == 'refs/heads/codex/rust-postgres'
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE_REPOSITORY}:rust" \
             "${IMAGE_REPOSITORY}:${IMAGE_TAG}"

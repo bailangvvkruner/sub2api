@@ -106,12 +106,14 @@ docker compose logs sub2api | grep 'admin password'
 
 ### Docker Hub Rust channel
 
-Verified main builds publish `<dockerhub-user>/sub2api:rust` to the Docker Hub
-repository configured by the `DOCKERHUB_USERNAME` repository secret. Release
-workflows also publish versioned tags, while main builds retain immutable
-`sha-*` tags. The moving `:rust` tag is convenient for evaluation; pin a
-version or digest in production. Main builds currently publish `linux/amd64`;
-tagged releases publish both `linux/amd64` and `linux/arm64`.
+Verified builds publish immutable `sha-*` tags to the Docker Hub repository
+configured by the `DOCKERHUB_USERNAME` repository secret. Main builds promote
+the same image to `:rust` and `:latest`; while the Rust migration branch is
+active, its verified builds promote only `:rust` and cannot overwrite
+`:latest`. Release workflows also publish versioned tags. The moving `:rust`
+tag is convenient for evaluation; pin a version or digest in production.
+Branch builds currently publish `linux/amd64`; tagged releases publish both
+`linux/amd64` and `linux/arm64`.
 
 With a prepared deployment directory and `.env`:
 
