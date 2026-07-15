@@ -1,6 +1,6 @@
-From 8ae11ad906210b0355bda42a028c69323dddecdf Mon Sep 17 00:00:00 2001
+From 6842963a7d55c2f3608eef93294a5228623e70ec Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Wed, 15 Jul 2026 12:15:17 +0800
+Date: Wed, 15 Jul 2026 12:26:02 +0800
 Subject: [PATCH 7/7] fork: retain hotpath regression coverage
 
 ---
@@ -1311,6 +1311,31 @@ index 06deb7010c82fc9bdd4fe293b36eba7a1966fe1f..42f11f85cd83bc66f21082b798af310b
 -	}, 2*time.Second, 10*time.Millisecond)
 +	require.Equal(t, int64(0), cache.deductCalls.Load())
  }
+diff --git a/backend/internal/service/content_moderation_runtime_cache_test.go b/backend/internal/service/content_moderation_runtime_cache_test.go
+index 2b34d1fa578d1d71927ea0b3f8cbbae033c41ab0..329e89544d298f5e80870f2f82c1aee71f6b6032 100644
+--- a/backend/internal/service/content_moderation_runtime_cache_test.go
++++ b/backend/internal/service/content_moderation_runtime_cache_test.go
+@@ -265,13 +265,19 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
+ 		SettingKeyRiskControlEnabled:      "true",
+ 		SettingKeyContentModerationConfig: runtimeCacheTestConfig(t, "blocked"),
+ 	}}
+-	svc := runtimeCacheTestService(repo, time.Nanosecond)
++	svc := runtimeCacheTestService(repo, time.Minute)
+ 	input := runtimeCacheTestInput("blocked")
+ 
+ 	decision, err := svc.Check(context.Background(), input)
+ 	require.NoError(t, err)
+ 	require.True(t, decision.Blocked)
+ 
++	current := svc.runtimeSnapshot.Load()
++	require.NotNil(t, current)
++	expired := *current
++	expired.loadedAt = time.Now().Add(-2 * time.Minute)
++	svc.runtimeSnapshot.Store(&expired)
++
+ 	repo.failMultiple(errors.New("database unavailable"))
+ 	decision, err = svc.Check(context.Background(), input)
+ 	require.NoError(t, err)
 diff --git a/backend/internal/service/deferred_service_test.go b/backend/internal/service/deferred_service_test.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..b645b56d3a1bbc3799899f041f8c8951f60a01f8
