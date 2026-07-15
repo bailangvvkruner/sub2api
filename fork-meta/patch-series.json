@@ -2,7 +2,7 @@
   "schema_version": 2,
   "upstream_repository": "https://github.com/Wei-Shaw/sub2api.git",
   "upstream_branch": "main",
-  "base_upstream_sha": "cf6aa1a5c3259ce754032c9faab571105f73f594",
+  "base_upstream_sha": "3f605c35430b4c5deb720209aec032d38dfb7bb8",
   "patch_directory": "fork-meta/patches",
   "generators": [
     {

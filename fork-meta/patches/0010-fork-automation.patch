@@ -1,0 +1,1050 @@
+From 8ae11ad906210b0355bda42a028c69323dddecdf Mon Sep 17 00:00:00 2001
+From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
+Date: Wed, 15 Jul 2026 12:15:17 +0800
+Subject: [PATCH 1/7] fork: preserve patch queue and automation
+
+---
+diff --git a/.github/scripts/generate-patch-queue.sh b/.github/scripts/generate-patch-queue.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..248cb811108dc0cde4f80859f765074561cfcec3
+--- /dev/null
++++ b/.github/scripts/generate-patch-queue.sh
+@@ -0,0 +1,116 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++manifest="${1:-fork-meta/patch-series.json}"
++source_ref="${2:-HEAD}"
++output_dir="${3:-}"
++
++die() {
++  printf 'error: %s\n' "$*" >&2
++  exit 1
++}
++
++command -v jq >/dev/null 2>&1 || die "jq is required"
++command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
++git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run inside a git worktree"
++[ -f "$manifest" ] || die "manifest not found: $manifest"
++
++jq -e '
++  .schema_version == 2
++  and (.patch_directory | type == "string" and length > 0)
++  and (.series | type == "array" and length >= 5 and length <= 8)
++  and (all(.series[]; (.id | test("^[a-z0-9][a-z0-9-]*$")) and (.order | type == "number") and (.subject | type == "string" and length > 0) and (.include_regex | type == "array" and length > 0)))
++  and ([.series[].id] | length == (unique | length))
++  and ([.series[].order] | length == (unique | length))
++  and (all(.series[].include_regex[]; . as $re | try ("" | test($re) | true) catch false))
++  and (.generators | type == "array" and length > 0)
++  and (all(.generators[]; (.working_directory | type == "string") and (.command | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and (.outputs | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))))
++  and ([.generators[].outputs[]] | length == (unique | length))
++' "$manifest" >/dev/null || die "manifest schema is invalid"
++
++patch_directory="$(jq -er '.patch_directory' "$manifest" | tr -d '\r')"
++case "$patch_directory" in
++  fork-meta/patches) ;;
++  *) die "unsafe patch_directory: $patch_directory" ;;
++esac
++
++base_ref="$(jq -er '.base_upstream_sha' "$manifest" | tr -d '\r')"
++git cat-file -e "${base_ref}^{commit}" 2>/dev/null || die "base commit is unavailable: $base_ref"
++git cat-file -e "${source_ref}^{commit}" 2>/dev/null || die "source commit is unavailable: $source_ref"
++
++if [ -z "$output_dir" ]; then
++  output_dir="$(mktemp -d)"
++else
++  mkdir -p "$output_dir"
++  find "$output_dir" -mindepth 1 -maxdepth 1 -type f -delete
++fi
++
++mapfile -d '' -t changed_paths < <(git diff --name-only --no-renames -z "$base_ref" "$source_ref")
++[ "${#changed_paths[@]}" -gt 0 ] || die "fork source has no changes relative to recorded upstream base"
++
++declare -A series_files=()
++declare -A generated_paths=()
++while IFS= read -r generated_path; do
++  [ -n "$generated_path" ] || continue
++  generated_paths["$generated_path"]=1
++done < <(jq -r '[.generators[].outputs[]] | unique[]' "$manifest" | tr -d '\r')
++
++for path in "${changed_paths[@]}"; do
++  if [[ "$path" == "$patch_directory/"* ]]; then
++    printf 'skip canonical patch metadata: %s\n' "$path"
++    continue
++  fi
++  if [ "${generated_paths[$path]:-}" = 1 ]; then
++    printf 'skip generated path: %s\n' "$path"
++    continue
++  fi
++  mapfile -t owners < <(
++    jq -r --arg path "$path" '
++      .series[]
++      | select(any(.include_regex[]; . as $re | $path | test($re)))
++      | .id
++    ' "$manifest" | tr -d '\r'
++  )
++  if [ "${#owners[@]}" -eq 0 ]; then
++    die "changed path has no patch-series owner: $path"
++  fi
++  if [ "${#owners[@]}" -ne 1 ]; then
++    die "changed path matches multiple patch series (${owners[*]}): $path"
++  fi
++  series_files["${owners[0]}"]+="$path"$'\n'
++done
++
++source_sha="$(git rev-parse "$source_ref")"
++source_date="$(git show -s --format=%aD "$source_ref")"
++series_total="$(jq '.series | length' "$manifest" | tr -d '\r')"
++index_file="$output_dir/series"
++: >"$index_file"
++patch_index=0
++
++while IFS=$'\t' read -r order id subject; do
++  files_blob="${series_files[$id]:-}"
++  [ -n "$files_blob" ] || die "patch series is empty: $id"
++  mapfile -t files < <(printf '%s' "$files_blob" | sed '/^$/d')
++  patch_index=$((patch_index + 1))
++  patch_name="$(printf '%04d' "$order")-$id.patch"
++  patch_file="$output_dir/$patch_name"
++  {
++    printf 'From %s Mon Sep 17 00:00:00 2001\n' "$source_sha"
++    printf 'From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>\n'
++    printf 'Date: %s\n' "$source_date"
++    printf 'Subject: [PATCH %s/%s] %s\n' "$patch_index" "$series_total" "$subject"
++    printf '\n---\n'
++    git diff --binary --full-index --no-renames "$base_ref" "$source_ref" -- "${files[@]}"
++    printf '\n'
++  } >"$patch_file"
++  git mailinfo /dev/null /dev/null <"$patch_file" >/dev/null \
++    || die "generated mail patch is invalid: $patch_file"
++  printf '%s\n' "$patch_name" >>"$index_file"
++done < <(jq -r '.series | sort_by(.order)[] | [.order, .id, .subject] | @tsv' "$manifest" | tr -d '\r')
++
++[ "$patch_index" -eq "$series_total" ] || die "generated patch count does not match manifest"
++: >"$output_dir/SHA256SUMS"
++while IFS= read -r patch_name; do
++  (cd "$output_dir" && sha256sum "$patch_name") >>"$output_dir/SHA256SUMS"
++done <"$index_file"
++printf 'generated %s canonical patches in %s\n' "$patch_index" "$output_dir"
+diff --git a/.github/scripts/rebuild-fork.sh b/.github/scripts/rebuild-fork.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7df24283c4189784cf95af714a3b79cb2fdbc84
+--- /dev/null
++++ b/.github/scripts/rebuild-fork.sh
+@@ -0,0 +1,141 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++manifest="${1:-fork-meta/patch-series.json}"
++source_ref="${2:-origin/main}"
++upstream_ref="${3:-upstream/main}"
++branch_name="${4:-}"
++worktree_dir="${5:-}"
++
++die() {
++  printf 'error: %s\n' "$*" >&2
++  exit 1
++}
++
++[ -n "$branch_name" ] || die "sync branch name is required"
++[ -n "$worktree_dir" ] || die "worktree directory is required"
++case "$branch_name" in
++  sync/upstream-*) ;;
++  *) die "refusing unexpected sync branch name: $branch_name" ;;
++esac
++
++repo_root="$(git rev-parse --show-toplevel)"
++git cat-file -e "${source_ref}^{commit}" 2>/dev/null || die "source commit is unavailable: $source_ref"
++
++queue_root="$(mktemp -d)"
++source_manifest="$queue_root/patch-series.json"
++git show "$source_ref:$manifest" >"$source_manifest" || die "manifest is unavailable at $source_ref:$manifest"
++patch_directory="$(jq -er '.patch_directory' "$source_manifest" | tr -d '\r')"
++case "$patch_directory" in
++  fork-meta/patches) ;;
++  *) die "unsafe patch_directory: $patch_directory" ;;
++esac
++queue_dir="$queue_root/$patch_directory"
++mkdir -p "$queue_dir"
++for metadata in series SHA256SUMS; do
++  git show "$source_ref:$patch_directory/$metadata" >"$queue_dir/$metadata" \
++    || die "canonical patch metadata is missing: $patch_directory/$metadata"
++done
++while IFS= read -r patch_name; do
++  [[ "$patch_name" =~ ^[0-9]{4}-[a-z0-9-]+\.patch$ ]] || die "unsafe patch filename: $patch_name"
++  git show "$source_ref:$patch_directory/$patch_name" >"$queue_dir/$patch_name" \
++    || die "canonical patch is missing: $patch_name"
++done <"$queue_dir/series"
++(cd "$queue_dir" && sha256sum -c SHA256SUMS)
++
++base_ref="$(jq -er '.base_upstream_sha' "$source_manifest" | tr -d '\r')"
++target_sha="$(git rev-parse "$upstream_ref")"
++git merge-base --is-ancestor "$base_ref" "$target_sha" \
++  || die "upstream history was rewritten or the manifest base is invalid"
++[ "$base_ref" != "$target_sha" ] || die "upstream is already synchronized at $target_sha"
++
++[ ! -e "$worktree_dir" ] || die "worktree destination already exists: $worktree_dir"
++git show-ref --verify --quiet "refs/heads/$branch_name" \
++  && die "local sync branch already exists: $branch_name"
++
++cleanup() {
++  status=$?
++  if [ "$status" -ne 0 ] && [ -d "$worktree_dir" ]; then
++    git -C "$worktree_dir" am --abort >/dev/null 2>&1 || true
++    git worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
++    git branch -D "$branch_name" >/dev/null 2>&1 || true
++  fi
++  rm -rf "$queue_root"
++  exit "$status"
++}
++trap cleanup EXIT
++
++git worktree add -b "$branch_name" "$worktree_dir" "$target_sha"
++while IFS= read -r patch_name; do
++  [ -n "$patch_name" ] || continue
++  printf 'applying %s\n' "$patch_name"
++  if ! git -C "$worktree_dir" am --3way --keep-cr "$queue_dir/$patch_name"; then
++    printf 'error: patch conflict; no automatic resolution was attempted\n' >&2
++    git -C "$worktree_dir" status --short >&2 || true
++    exit 1
++  fi
++done <"$queue_dir/series"
++
++run_generators() {
++  local encoded working_directory
++  local -a command
++  while IFS= read -r encoded; do
++    working_directory="$(jq -r '.working_directory' <<<"$encoded" | tr -d '\r')"
++    mapfile -t command < <(jq -r '.command[]' <<<"$encoded" | tr -d '\r')
++    (cd "$worktree_dir/$working_directory" && "${command[@]}")
++  done < <(jq -c '.generators[]' "$source_manifest")
++}
++
++assert_only_generated_changes() {
++  local path
++  while IFS= read -r path; do
++    [ -n "$path" ] || continue
++    jq -e --arg path "$path" '[.generators[].outputs[]] | index($path) != null' "$source_manifest" >/dev/null \
++      || die "generator changed undeclared path: $path"
++  done < <(
++    {
++      git -C "$worktree_dir" diff --name-only
++      git -C "$worktree_dir" ls-files --others --exclude-standard
++    } | sort -u
++  )
++}
++
++run_generators
++assert_only_generated_changes
++
++tmp_manifest="$(mktemp)"
++jq --arg sha "$target_sha" '.base_upstream_sha = $sha' \
++  "$worktree_dir/$manifest" >"$tmp_manifest"
++mv "$tmp_manifest" "$worktree_dir/$manifest"
++
++patch_output="$worktree_dir/$patch_directory"
++mkdir -p "$patch_output"
++find "$patch_output" -mindepth 1 -maxdepth 1 -type f -delete
++git -C "$worktree_dir" add -A
++source_tree="$(git -C "$worktree_dir" write-tree)"
++source_commit="$({
++  printf 'canonical patch refresh for %s\n' "$target_sha"
++} | GIT_AUTHOR_NAME='sub2api fork automation' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
++    GIT_COMMITTER_NAME='sub2api fork automation' GIT_COMMITTER_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
++    git -C "$worktree_dir" commit-tree "$source_tree" -p "$target_sha")"
++bash "$worktree_dir/.github/scripts/generate-patch-queue.sh" \
++  "$worktree_dir/$manifest" "$source_commit" "$patch_output"
++
++git -C "$worktree_dir" diff --check -- . ":(exclude)$patch_directory/*.patch"
++git -C "$worktree_dir" diff --cached --check -- . ":(exclude)$patch_directory/*.patch"
++if [ -n "$(git -C "$worktree_dir" diff --name-only --diff-filter=U)" ]; then
++  die "unmerged paths remain after patch replay"
++fi
++
++if [ -n "${GITHUB_OUTPUT:-}" ]; then
++  {
++    printf 'changed=true\n'
++    printf 'branch=%s\n' "$branch_name"
++    printf 'target_sha=%s\n' "$target_sha"
++    printf 'worktree=%s\n' "$worktree_dir"
++  } >>"$GITHUB_OUTPUT"
++fi
++
++trap - EXIT
++rm -rf "$queue_root"
++printf 'fork rebuilt at %s on %s\n' "$worktree_dir" "$branch_name"
+diff --git a/.github/scripts/validate-patch-queue.sh b/.github/scripts/validate-patch-queue.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..ca389531ff2f73507b0a0d2589b72ae806c51e48
+--- /dev/null
++++ b/.github/scripts/validate-patch-queue.sh
+@@ -0,0 +1,111 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++source_ref="${1:-HEAD}"
++upstream_ref="${2:-upstream/main}"
++manifest="${3:-fork-meta/patch-series.json}"
++
++die() {
++  printf 'error: %s\n' "$*" >&2
++  exit 1
++}
++
++repo_root="$(git rev-parse --show-toplevel)"
++if [ "$(git rev-parse "$source_ref")" = "$(git rev-parse HEAD)" ] && [ -n "$(git status --porcelain)" ]; then
++  die "source worktree is dirty; commit the candidate before validating it"
++fi
++
++queue_root="$(mktemp -d)"
++source_manifest="$queue_root/patch-series.json"
++git show "$source_ref:$manifest" >"$source_manifest" || die "manifest is unavailable at $source_ref:$manifest"
++base_ref="$(jq -er '.base_upstream_sha' "$source_manifest" | tr -d '\r')"
++patch_directory="$(jq -er '.patch_directory' "$source_manifest" | tr -d '\r')"
++case "$patch_directory" in
++  fork-meta/patches) ;;
++  *) die "unsafe patch_directory: $patch_directory" ;;
++esac
++queue_dir="$queue_root/$patch_directory"
++mkdir -p "$queue_dir"
++for metadata in series SHA256SUMS; do
++  git show "$source_ref:$patch_directory/$metadata" >"$queue_dir/$metadata" \
++    || die "canonical patch metadata is missing: $patch_directory/$metadata"
++done
++while IFS= read -r patch_name; do
++  [[ "$patch_name" =~ ^[0-9]{4}-[a-z0-9-]+\.patch$ ]] || die "unsafe patch filename: $patch_name"
++  git show "$source_ref:$patch_directory/$patch_name" >"$queue_dir/$patch_name" \
++    || die "canonical patch is missing: $patch_name"
++done <"$queue_dir/series"
++(cd "$queue_dir" && sha256sum -c SHA256SUMS)
++
++worktree_root="$(mktemp -d)"
++base_worktree="$worktree_root/base"
++upstream_worktree="$worktree_root/upstream"
++
++cleanup() {
++  git worktree remove --force "$base_worktree" >/dev/null 2>&1 || true
++  git worktree remove --force "$upstream_worktree" >/dev/null 2>&1 || true
++  rm -rf "$queue_root" "$worktree_root"
++}
++trap cleanup EXIT
++
++apply_queue() {
++  local worktree="$1" patch_name
++  git -C "$worktree" config user.name "sub2api fork validation"
++  git -C "$worktree" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++  while IFS= read -r patch_name; do
++    [ -n "$patch_name" ] || continue
++    if ! git -C "$worktree" am --3way --keep-cr "$queue_dir/$patch_name"; then
++      git -C "$worktree" am --abort >/dev/null 2>&1 || true
++      die "patch replay failed in clean worktree: $patch_name"
++    fi
++  done <"$queue_dir/series"
++}
++
++run_generators() {
++  local worktree="$1" encoded working_directory
++  local -a command
++  while IFS= read -r encoded; do
++    working_directory="$(jq -r '.working_directory' <<<"$encoded" | tr -d '\r')"
++    mapfile -t command < <(jq -r '.command[]' <<<"$encoded" | tr -d '\r')
++    (cd "$worktree/$working_directory" && "${command[@]}")
++  done < <(jq -c '.generators[]' "$source_manifest")
++}
++
++assert_only_generated_changes() {
++  local worktree="$1" path
++  while IFS= read -r path; do
++    [ -n "$path" ] || continue
++    jq -e --arg path "$path" '[.generators[].outputs[]] | index($path) != null' "$source_manifest" >/dev/null \
++      || die "generator changed undeclared path: $path"
++  done < <(
++    {
++      git -C "$worktree" diff --name-only
++      git -C "$worktree" ls-files --others --exclude-standard
++    } | sort -u
++  )
++}
++
++git worktree add --detach "$base_worktree" "$base_ref"
++apply_queue "$base_worktree"
++run_generators "$base_worktree"
++assert_only_generated_changes "$base_worktree"
++mkdir -p "$base_worktree/$patch_directory"
++cp -R "$queue_dir/." "$base_worktree/$patch_directory/"
++git -C "$base_worktree" add -A
++git -C "$base_worktree" diff --cached --check -- . ":(exclude)$patch_directory/*.patch"
++source_tree="$(git rev-parse "${source_ref}^{tree}")"
++rebuilt_tree="$(git -C "$base_worktree" write-tree)"
++[ "$source_tree" = "$rebuilt_tree" ] || die "canonical patch queue does not reproduce the fork source tree"
++
++target_sha="$(git rev-parse "$upstream_ref")"
++git merge-base --is-ancestor "$base_ref" "$target_sha" \
++  || die "upstream target does not descend from recorded base"
++if [ "$target_sha" != "$base_ref" ]; then
++  git worktree add --detach "$upstream_worktree" "$target_sha"
++  apply_queue "$upstream_worktree"
++  run_generators "$upstream_worktree"
++  assert_only_generated_changes "$upstream_worktree"
++  git -C "$upstream_worktree" diff --check -- . ":(exclude)$patch_directory/*.patch"
++fi
++
++printf 'canonical patch queue validated: source=%s upstream=%s\n' "$source_ref" "$target_sha"
+diff --git a/.github/scripts/verify-fork-hotpath.sh b/.github/scripts/verify-fork-hotpath.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..e4c8c724016ebfcaf9b48722948453794b1df8e8
+--- /dev/null
++++ b/.github/scripts/verify-fork-hotpath.sh
+@@ -0,0 +1,145 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++require_file() {
++  if [ ! -f "$1" ]; then
++    echo "::error file=$1::Required fork patch file is missing"
++    exit 1
++  fi
++}
++
++require_fixed() {
++  local file="$1"
++  local needle="$2"
++  local message="$3"
++  if ! grep -Fq "$needle" "$file"; then
++    echo "::error file=$file::$message"
++    exit 1
++  fi
++}
++
++require_regex() {
++  local file="$1"
++  local pattern="$2"
++  local message="$3"
++  if ! grep -Eq "$pattern" "$file"; then
++    echo "::error file=$file::$message"
++    exit 1
++  fi
++}
++
++require_nearby_fixed() {
++  local file="$1"
++  local anchor="$2"
++  local needle="$3"
++  local message="$4"
++  if ! grep -F -A2 "$anchor" "$file" | grep -Fq "$needle"; then
++    echo "::error file=$file::$message"
++    exit 1
++  fi
++}
++
++# Keep the fork hot path intentionally L1-first: process cache > Redis > DB.
++require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.local_concurrency_slots", true)' "local concurrency slots must default to process memory"
++require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.persist_account_last_used", false)' "account last_used writes must default off"
++require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.local_billing_cache", true)' "local billing L1 cache must default on"
++require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.local_billing_cache_max_entries", 262144)' "local billing L1 cache size default changed"
++require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.local_billing_cache_write_through", false)' "local billing write-through must default off"
++require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.usage_billing_write_behind", true)' "usage billing write-behind must default on"
++require_fixed backend/internal/config/config.go 'viper.SetDefault("gateway.hotpath.usage_billing_flush_interval_ms", 30000)' "usage billing write-behind interval must default to 30s"
++require_fixed backend/internal/config/config.go 'viper.SetDefault("database.user_platform_quota_flusher_enabled", true)' "quota usage flusher must default on"
++require_fixed backend/internal/config/config.go 'viper.SetDefault("database.user_platform_quota_flush_interval_ms", 30000)' "quota usage flusher interval must default to 30s"
++require_fixed backend/internal/config/config.go 'fallback_selection_mode", "random"' "fork fallback selection default changed"
++
++local_concurrency_file="backend/internal/repository/local_concurrency_cache.go"
++local_billing_file="backend/internal/repository/local_billing_cache.go"
++if [ -d backend/internal/hotpath ]; then
++  local_concurrency_file="backend/internal/hotpath/concurrency_cache.go"
++  local_billing_file="backend/internal/hotpath/billing_cache.go"
++fi
++
++require_file "$local_concurrency_file"
++require_fixed "$local_concurrency_file" 'func NewLocalConcurrencyCache' "local concurrency cache constructor is missing"
++require_fixed "$local_concurrency_file" 'func (c *localConcurrencyCache) TrackAPIKeySlot' "local concurrency cache does not track API key request slots"
++require_fixed "$local_concurrency_file" 'func (c *localConcurrencyCache) GetAPIKeyConcurrencyBatch' "local concurrency cache does not expose API key request counts"
++require_fixed backend/internal/repository/wire.go 'if cfg.Gateway.HotPath.LocalConcurrencySlots {' "local concurrency cache is not config-gated"
++if [ "$local_concurrency_file" = "backend/internal/hotpath/concurrency_cache.go" ]; then
++  require_file backend/internal/repository/local_concurrency_cache.go
++  require_fixed backend/internal/repository/local_concurrency_cache.go 'hotpath.NewLocalConcurrencyCache(' "local concurrency compatibility provider does not delegate to internal/hotpath"
++  require_fixed backend/internal/repository/local_concurrency_cache.go 'type localConcurrencyCacheWithLeases struct' "local concurrency compatibility provider does not retain distributed lease capabilities"
++  require_fixed backend/internal/repository/local_concurrency_cache.go 'service.APIKeyConcurrencyCache' "local concurrency compatibility provider does not expose API key request slots"
++  require_fixed backend/internal/repository/local_concurrency_cache.go 'service.OpenAIWSIngressLeaseCache' "local concurrency compatibility provider does not expose WebSocket ingress leases"
++  require_fixed backend/internal/repository/wire.go 'localCache.(service.APIKeyConcurrencyCache)' "local concurrency provider does not retain process-local API key request slots"
++  require_fixed backend/internal/repository/wire.go 'redisCache.(service.OpenAIWSIngressLeaseCache)' "local concurrency provider does not retain Redis-backed WebSocket ingress leases"
++  require_fixed backend/internal/repository/wire.go 'return newLocalConcurrencyCacheWithLeases(' "local concurrency compatibility provider is not wired"
++else
++  require_fixed backend/internal/repository/wire.go 'return NewLocalConcurrencyCache(' "local concurrency cache is not wired"
++fi
++
++require_fixed backend/internal/service/deferred_service.go 'func NewDeferredServiceWithOptions' "deferred service options patch is missing"
++require_fixed backend/internal/service/wire.go 'persistLastUsed = cfg.Gateway.HotPath.PersistAccountLastUsed' "last_used persistence switch is not wired"
++require_regex backend/internal/repository/scheduler_cache.go 'func \(c \*schedulerCache\) UpdateLastUsed' "scheduler UpdateLastUsed hook is missing"
++require_nearby_fixed backend/internal/repository/scheduler_cache.go 'func (c *schedulerCache) UpdateLastUsed' 'return nil' "scheduler UpdateLastUsed must stay disabled"
++require_fixed backend/internal/repository/scheduler_cache.go 'account.LastUsedAt = nil' "scheduler cache rebuilds must scrub last_used"
++require_regex backend/internal/service/scheduler_snapshot_service.go 'func \(s \*SchedulerSnapshotService\) handleLastUsedEvent' "scheduler snapshot last_used handler is missing"
++require_nearby_fixed backend/internal/service/scheduler_snapshot_service.go 'func (s *SchedulerSnapshotService) handleLastUsedEvent' 'return nil' "scheduler snapshot last_used handler must stay disabled"
++
++require_file "$local_billing_file"
++require_fixed backend/internal/repository/billing_cache.go 'func ProvideBillingCache(rdb *redis.Client, cfg *config.Config) service.BillingCache {' "billing cache provider signature changed"
++if [ "$local_billing_file" = "backend/internal/hotpath/billing_cache.go" ]; then
++  require_file backend/internal/repository/local_billing_cache.go
++  require_fixed backend/internal/repository/billing_cache.go 'return newLocalBillingCacheWithOptions(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries, cfg.Gateway.HotPath.LocalBillingCacheWriteThrough)' "local billing cache compatibility provider is not wired"
++  require_fixed backend/internal/repository/local_billing_cache.go 'hotpath.NewLocalBillingCacheWithOptions(next, maxEntries, writeThrough)' "local billing compatibility provider does not delegate to internal/hotpath"
++  require_fixed "$local_billing_file" 'func NewLocalBillingCache(' "exported local billing cache constructor is missing"
++  require_fixed "$local_billing_file" 'func NewLocalBillingCacheWithOptions(' "exported local billing cache write-through constructor is missing"
++else
++  require_fixed backend/internal/repository/billing_cache.go 'return newLocalBillingCacheWithOptions(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries, cfg.Gateway.HotPath.LocalBillingCacheWriteThrough)' "local billing cache wrapper is not wired"
++  require_fixed "$local_billing_file" 'func newLocalBillingCache(next service.BillingCache, maxEntries int) service.BillingCache' "local billing cache constructor is missing"
++  require_fixed "$local_billing_file" 'func newLocalBillingCacheWithOptions(next service.BillingCache, maxEntries int, writeThrough bool) service.BillingCache' "local billing cache write-through option is missing"
++fi
++require_fixed "$local_billing_file" 'GetUserBalance' "local billing cache does not cover balance reads"
++require_fixed "$local_billing_file" 'DeductUserBalance' "local billing cache does not cover balance deductions"
++require_fixed "$local_billing_file" 'GetAPIKeyRateLimit' "local billing cache does not cover API key rate limit reads"
++require_fixed "$local_billing_file" 'IncrUserPlatformQuotaUsageCache' "local billing cache does not cover quota usage increments"
++require_fixed "$local_billing_file" 'PopDirtyUserPlatformQuotaKeys' "local billing cache dirty queue pop is missing"
++require_fixed "$local_billing_file" 'AcknowledgeUserPlatformQuotaFlush' "local billing cache in-flight flush ACK is missing"
++require_fixed "$local_billing_file" 'BatchGetUserPlatformQuotaCache' "local billing cache batch quota read is missing"
++
++require_file backend/internal/service/user_platform_quota_flusher.go
++require_fixed backend/internal/service/user_platform_quota_flusher.go 'type UserPlatformQuotaUsageFlusher struct' "quota usage flusher type is missing"
++require_fixed backend/internal/service/user_platform_quota_flusher.go 's.acknowledge(keys)' "quota flusher does not release in-flight protection on terminal outcomes"
++require_fixed backend/internal/service/wire.go 'ProvideUserPlatformQuotaUsageFlusher,' "quota usage flusher is not in the provider set"
++require_fixed backend/internal/service/wire.go 'func ProvideUserPlatformQuotaUsageFlusher(' "quota usage flusher provider is missing"
++require_fixed backend/internal/service/billing_cache_service.go 'markDirty := s.cfg != nil && s.cfg.Database.UserPlatformQuotaFlusherEnabled' "quota dirty marking is not config-gated"
++require_file backend/internal/service/usage_billing_write_behind.go
++require_fixed backend/internal/service/usage_billing_write_behind.go 'type UsageBillingWriteBehind struct' "usage billing write-behind type is missing"
++require_fixed backend/internal/service/usage_billing_write_behind.go 'func (s *UsageBillingWriteBehind) Apply' "usage billing write-behind apply path is missing"
++require_fixed backend/internal/service/usage_billing_write_behind.go 'func (s *UsageBillingWriteBehind) Flush' "usage billing write-behind flush path is missing"
++require_fixed backend/internal/service/api_key_service.go 'func (s *APIKeyService) UsageBillingWriteBehind() *UsageBillingWriteBehind' "API key service no longer exposes the write-behind worker"
++require_fixed backend/internal/service/gateway_usage_billing.go 'usageBillingWriteBehind = provider.UsageBillingWriteBehind()' "gateway billing no longer resolves write-behind from APIKeyService"
++require_fixed backend/internal/service/gateway_usage_billing.go 'usageBillingWriteBehind.Apply' "gateway billing does not use write-behind"
++require_fixed backend/internal/service/wire.go 'ProvideUsageBillingWriteBehind,' "usage billing write-behind is not in the provider set"
++
++require_file backend/internal/repository/usage_log_pending_repo.go
++require_fixed backend/internal/repository/usage_log_pending_repo.go 'defaultUsageLogPendingFlushInterval = 30 * time.Second' "usage logs no longer default to a 30s pending flush"
++require_fixed backend/internal/repository/usage_log_repo.go 'return NewUsageLogRepositoryWithPending(base, rdb, cfg)' "usage log repository no longer enables the pending wrapper"
++
++require_fixed backend/internal/service/admin_user.go 'ApplyUserBalanceDeltaRealtime' "admin balance changes no longer refresh L1/Redis in real time"
++require_fixed backend/internal/service/admin_group.go 'RefreshSubscription' "admin group changes no longer refresh subscription caches"
++require_fixed backend/internal/service/subscription_service.go 'func (s *SubscriptionService) refreshSubscriptionCaches' "subscription realtime refresh helper is missing"
++require_fixed backend/internal/service/subscription_service.go 's.billingCacheService.RefreshSubscription' "subscription changes no longer refresh billing caches"
++require_fixed backend/internal/service/gateway_scheduling.go 'func sortAccountsByPriorityAndLoad' "gateway scheduling reverted to LastUsedAt ordering"
++require_fixed backend/internal/service/gateway_scheduling.go 'func sortAccountsByPriorityOnlyRandom' "gateway random fallback helper is missing"
++require_fixed backend/internal/service/openai_gateway_scheduling.go 'sortAccountsByPriorityOnlyRandom(candidates, false)' "OpenAI fallback scheduling reverted to LastUsedAt ordering"
++require_fixed backend/internal/server/middleware/api_key_auth.go 'apiKeyService.IsQuotaExhausted(apiKey)' "main auth middleware no longer checks the write-behind quota shadow"
++require_fixed backend/internal/server/middleware/api_key_auth_google.go 'apiKeyService.IsQuotaExhausted(apiKey)' "Google auth middleware no longer checks the write-behind quota shadow"
++
++require_fixed README.md 'gateway.hotpath.local_billing_cache: true' "README no longer documents local billing L1 cache"
++require_fixed README.md 'gateway.hotpath.usage_billing_write_behind: true' "README no longer documents usage billing write-behind"
++require_fixed deploy/config.example.yaml 'local_billing_cache: true' "deploy example lost local billing cache switch"
++require_fixed deploy/config.example.yaml 'local_billing_cache_max_entries: 262144' "deploy example lost local billing cache size"
++require_fixed deploy/config.example.yaml 'local_billing_cache_write_through: false' "deploy example lost local billing write-through switch"
++require_fixed deploy/config.example.yaml 'usage_billing_write_behind: true' "deploy example lost usage billing write-behind switch"
++require_fixed deploy/config.example.yaml 'usage_billing_flush_interval_ms: 30000' "deploy example lost usage billing write-behind 30s interval"
++require_fixed deploy/config.example.yaml 'user_platform_quota_flusher_enabled: true' "deploy example lost quota flusher switch"
++require_fixed deploy/config.example.yaml 'user_platform_quota_flush_interval_ms: 30000' "deploy example lost quota flusher 30s interval"
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e6a7891853fd6825cc319378326266ef09f190f
+--- /dev/null
++++ b/.github/workflows/build.yml
+@@ -0,0 +1,63 @@
++name: Docker Hub Image
++
++on:
++  workflow_dispatch:
++  push:
++    branches:
++      - main
++
++permissions:
++  contents: read
++
++concurrency:
++  group: dockerhub-build-${{ github.ref }}
++  cancel-in-progress: false
++
++env:
++  IMAGE_REPOSITORY: ${{ secrets.DOCKERHUB_USERNAME }}/sub2api
++
++jobs:
++  build-and-push:
++    name: Publish immutable image then latest
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout code
++        uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++
++      - name: Set up Docker Buildx
++        uses: docker/setup-buildx-action@v3
++
++      - name: Set image metadata
++        run: |
++          base_version="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
++          echo "APP_VERSION=${base_version}-vmain" >>"$GITHUB_ENV"
++          echo "IMAGE_TAG=sha-${GITHUB_SHA}" >>"$GITHUB_ENV"
++
++      - name: Log in to Docker Hub
++        uses: docker/login-action@v3
++        with:
++          username: ${{ secrets.DOCKERHUB_USERNAME }}
++          password: ${{ secrets.DOCKERHUB_TOKEN }}
++
++      - name: Build and push immutable SHA tag
++        uses: docker/build-push-action@v6
++        with:
++          context: .
++          file: ./Dockerfile
++          platforms: linux/amd64
++          push: true
++          tags: ${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}
++          build-args: |
++            VERSION=${{ env.APP_VERSION }}
++            COMMIT=${{ github.sha }}
++          no-cache: true
++
++      - name: Promote merged main image to latest
++        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
++        run: |
++          docker buildx imagetools create \
++            --tag "${IMAGE_REPOSITORY}:latest" \
++            "${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+diff --git a/.github/workflows/sync-upstream.yml b/.github/workflows/sync-upstream.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..6bb29b3750c17a2bee384beaf9093cef960cd493
+--- /dev/null
++++ b/.github/workflows/sync-upstream.yml
+@@ -0,0 +1,169 @@
++name: Sync Upstream
++
++on:
++  workflow_dispatch:
++  schedule:
++    - cron: "0 20 * * *"
++
++permissions:
++  contents: write
++  pull-requests: write
++
++concurrency:
++  group: sync-upstream-main
++  cancel-in-progress: false
++
++jobs:
++  sync:
++    name: Rebuild fork patch queue
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout fork main
++        uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++          ref: main
++          token: ${{ secrets.SYNC_TOKEN }}
++
++      - name: Require synchronization credential
++        env:
++          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
++        run: |
++          if [ -z "$SYNC_TOKEN" ]; then
++            echo "::error::SYNC_TOKEN must be a GitHub App token or PAT with contents, pull request, actions, and workflow access"
++            exit 1
++          fi
++
++      - name: Configure git
++        run: |
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++
++      - name: Fetch upstream and fork main
++        run: |
++          upstream_url="$(jq -er '.upstream_repository' fork-meta/patch-series.json)"
++          upstream_branch="$(jq -er '.upstream_branch' fork-meta/patch-series.json)"
++          if git remote get-url upstream >/dev/null 2>&1; then
++            git remote set-url upstream "$upstream_url"
++          else
++            git remote add upstream "$upstream_url"
++          fi
++          git fetch --no-tags upstream "$upstream_branch"
++          git fetch --no-tags origin main
++          echo "UPSTREAM_REF=upstream/$upstream_branch" >>"$GITHUB_ENV"
++
++      - name: Set up Go
++        uses: actions/setup-go@v5
++        with:
++          go-version-file: backend/go.mod
++          cache-dependency-path: backend/go.sum
++
++      - name: Validate current fork contract
++        run: |
++          bash .github/scripts/validate-patch-queue.sh origin/main "$UPSTREAM_REF"
++          bash .github/scripts/verify-fork-hotpath.sh
++          git diff --check
++
++      - name: Test current fork hotpath
++        working-directory: backend
++        run: |
++          packages=(./internal/repository ./internal/service ./internal/handler ./internal/server)
++          if [ -d internal/hotpath ]; then
++            packages+=(./internal/hotpath)
++          fi
++          go test "${packages[@]}"
++
++      - name: Resolve synchronization metadata
++        id: meta
++        env:
++          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
++        run: |
++          target_sha="$(git rev-parse "$UPSTREAM_REF")"
++          base_sha="$(jq -er '.base_upstream_sha' fork-meta/patch-series.json)"
++          if [ "$target_sha" = "$base_sha" ]; then
++            echo "changed=false" >>"$GITHUB_OUTPUT"
++            exit 0
++          fi
++          branch="sync/upstream-${target_sha:0:12}"
++          source_sha="$(git rev-parse origin/main)"
++          echo "branch=$branch" >>"$GITHUB_OUTPUT"
++          echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
++          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then
++            pr_number="$(gh pr list --state open --base main --head "$branch" --json number --jq '.[0].number // empty')"
++            if [ -n "$pr_number" ]; then
++              echo "Existing sync PR #$pr_number already tracks $target_sha"
++              echo "changed=false" >>"$GITHUB_OUTPUT"
++              exit 0
++            fi
++            echo "::error::Remote sync branch exists without an open PR: $branch"
++            exit 1
++          fi
++          echo "changed=true" >>"$GITHUB_OUTPUT"
++          echo "target_sha=$target_sha" >>"$GITHUB_OUTPUT"
++
++      - name: Rebuild fork in clean upstream worktree
++        if: steps.meta.outputs.changed == 'true'
++        id: rebuild
++        run: |
++          bash .github/scripts/rebuild-fork.sh \
++            fork-meta/patch-series.json \
++            "${{ steps.meta.outputs.source_sha }}" \
++            "$UPSTREAM_REF" \
++            "${{ steps.meta.outputs.branch }}" \
++            "$RUNNER_TEMP/sub2api-sync"
++
++      - name: Verify fork contract
++        if: steps.meta.outputs.changed == 'true'
++        working-directory: ${{ steps.rebuild.outputs.worktree }}
++        run: |
++          bash .github/scripts/verify-fork-hotpath.sh
++          git diff --check
++
++      - name: Run focused backend tests
++        if: steps.meta.outputs.changed == 'true'
++        working-directory: ${{ steps.rebuild.outputs.worktree }}/backend
++        env:
++          GOCACHE: ${{ runner.temp }}/go-build-cache
++          GOTMPDIR: ${{ runner.temp }}/go-tmp
++        run: |
++          mkdir -p "$GOCACHE" "$GOTMPDIR"
++          packages=(./internal/repository ./internal/service ./internal/handler ./internal/server)
++          if [ -d internal/hotpath ]; then
++            packages+=(./internal/hotpath)
++          fi
++          go test "${packages[@]}"
++
++      - name: Commit synchronization metadata
++        if: steps.meta.outputs.changed == 'true'
++        working-directory: ${{ steps.rebuild.outputs.worktree }}
++        run: |
++          git add -A
++          git diff --cached --check -- . ':(exclude)fork-meta/patches/*.patch'
++          git commit -m "chore(fork): sync upstream ${{ steps.meta.outputs.target_sha }}"
++          git merge-base --is-ancestor "${{ steps.meta.outputs.target_sha }}" HEAD
++
++      - name: Push temporary sync branch
++        if: steps.meta.outputs.changed == 'true'
++        working-directory: ${{ steps.rebuild.outputs.worktree }}
++        run: |
++          git fetch --no-tags origin main
++          current_main="$(git rev-parse origin/main)"
++          if [ "$current_main" != "${{ steps.meta.outputs.source_sha }}" ]; then
++            echo "::error::main advanced during rebuild; aborting stale sync branch"
++            exit 1
++          fi
++          git push origin "HEAD:refs/heads/${{ steps.meta.outputs.branch }}"
++
++      - name: Open synchronization pull request
++        if: steps.meta.outputs.changed == 'true'
++        working-directory: ${{ steps.rebuild.outputs.worktree }}
++        env:
++          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
++        run: |
++          body="Rebuilds the ordered fork patch queue on upstream ${{ steps.meta.outputs.target_sha }}. Conflicts fail closed; no automatic conflict resolution or direct push to main is used. Merge only after the Fork patch validation check passes."
++          gh pr create \
++            --base main \
++            --head "${{ steps.meta.outputs.branch }}" \
++            --title "chore(fork): sync upstream ${{ steps.meta.outputs.target_sha }}" \
++            --body "$body"
+diff --git a/.github/workflows/validate-fork-patches.yml b/.github/workflows/validate-fork-patches.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..928c0e4d3a93b071af84b3b4a4f150b95f25a7ec
+--- /dev/null
++++ b/.github/workflows/validate-fork-patches.yml
+@@ -0,0 +1,90 @@
++name: Fork Patch Validation
++
++on:
++  workflow_dispatch:
++  schedule:
++    - cron: "30 20 * * *"
++  pull_request:
++    branches:
++      - main
++  push:
++    branches:
++      - main
++
++permissions:
++  contents: read
++
++concurrency:
++  group: fork-patch-validation-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  validate:
++    name: Fork patch validation
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout candidate
++        uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++
++      - name: Fetch upstream
++        run: |
++          upstream_url="$(jq -er '.upstream_repository' fork-meta/patch-series.json)"
++          upstream_branch="$(jq -er '.upstream_branch' fork-meta/patch-series.json)"
++          git remote add upstream "$upstream_url"
++          git fetch --no-tags upstream "$upstream_branch"
++          echo "UPSTREAM_REF=upstream/$upstream_branch" >>"$GITHUB_ENV"
++
++      - name: Set up Go
++        uses: actions/setup-go@v5
++        with:
++          go-version-file: backend/go.mod
++          cache-dependency-path: backend/go.sum
++
++      - name: Validate manifest and clean-worktree replay
++        run: |
++          jq -e . fork-meta/patch-series.json >/dev/null
++          bash .github/scripts/validate-patch-queue.sh HEAD "$UPSTREAM_REF"
++
++      - name: Verify fork contract
++        run: |
++          bash .github/scripts/verify-fork-hotpath.sh
++          git diff --check
++
++      - name: Run focused backend tests
++        working-directory: backend
++        run: |
++          packages=(./internal/repository ./internal/service ./internal/handler ./internal/server)
++          if [ -d internal/hotpath ]; then
++            packages+=(./internal/hotpath)
++          fi
++          go test "${packages[@]}"
++
++      - name: Set up pnpm
++        uses: pnpm/action-setup@v4
++        with:
++          version: 9
++
++      - name: Set up Node.js
++        uses: actions/setup-node@v4
++        with:
++          node-version: "20"
++          cache: pnpm
++          cache-dependency-path: frontend/pnpm-lock.yaml
++
++      - name: Install frontend dependencies
++        working-directory: frontend
++        run: |
++          pnpm install --frozen-lockfile
++
++      - name: Typecheck frontend
++        working-directory: frontend
++        run: |
++          pnpm typecheck
++
++      - name: Run frontend tests
++        working-directory: frontend
++        run: |
++          pnpm test:run
+diff --git a/fork-meta/README.md b/fork-meta/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..23e09059fc3321663ab3bf4837b7653f6ebc6586
+--- /dev/null
++++ b/fork-meta/README.md
+@@ -0,0 +1,59 @@
++# Fork patch queue
++
++This directory defines the canonical fork-owned changes replayed on top of
++upstream `main`. The seven patches in `patches/` are persisted, ordered, and
++covered by `SHA256SUMS`; they replace the historical 33-commit fork stack with
++feature-level patches.
++
++Local use requires Git, `jq` 1.6 or newer, and the Go toolchain declared in
++`backend/go.mod`. GitHub-hosted Ubuntu runners already provide `jq`.
++
++Automated synchronization requires a repository Actions secret named
++`SYNC_TOKEN`. Prefer a short-lived GitHub App installation token with contents,
++pull-request, actions, and workflow write access. A scoped PAT is a fallback for
++organizations that disable pull-request creation by the default `GITHUB_TOKEN`.
++
++`patch-series.json` is the ownership contract. Every changed path must match
++exactly one series. A missing owner, overlap, empty series, duplicate ID/order,
++or checksum mismatch fails validation before any patch is applied. Generator
++outputs are omitted from patches and regenerated after replay; currently this
++applies to Wire's `backend/cmd/server/wire_gen.go`.
++
++The synchronization flow is fail-closed:
++
++1. Fetch the recorded base, the fork source ref, and the new upstream tip.
++2. Verify the committed queue checksums and create a clean upstream worktree.
++3. Apply every canonical patch with `git am --3way`.
++4. Regenerate declared outputs and refresh the queue against the new base.
++5. Run fork validation and tests.
++6. Push `sync/upstream-<sha>` and open a pull request to `main`.
++
++Conflicts are never auto-resolved and no side-preference merge strategy is
++used. Resolve a conflict by rebuilding the affected fork feature against the
++new upstream tree, then update the manifest path ownership if files moved
++between series.
++
++The source branch does not need to contain the recorded upstream commit in its
++history. Exact clean-tree replay is the integrity check, so GitHub merge,
++squash, and rebase strategies remain compatible. Upstream-owned workflows stay
++untouched; only the fork workflow and script paths named in the manifest are
++part of the overlay.
++
++After a sync pull request is merged, `base_upstream_sha` points at the upstream
++tip used by that pull request. Do not advance it independently of a successful
++replay.
++
++Local validation:
++
++```bash
++bash .github/scripts/validate-patch-queue.sh HEAD upstream/main
++bash .github/scripts/verify-fork-hotpath.sh
++```
++
++After committing an intentional fork change, refresh the canonical queue and
++commit the resulting patch metadata before opening a pull request:
++
++```bash
++bash .github/scripts/generate-patch-queue.sh \
++  fork-meta/patch-series.json HEAD fork-meta/patches
++```
+diff --git a/fork-meta/patch-series.json b/fork-meta/patch-series.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..07be68127604f899a563e5af325b60dce689ad9e
+--- /dev/null
++++ b/fork-meta/patch-series.json
+@@ -0,0 +1,95 @@
++{
++  "schema_version": 2,
++  "upstream_repository": "https://github.com/Wei-Shaw/sub2api.git",
++  "upstream_branch": "main",
++  "base_upstream_sha": "3f605c35430b4c5deb720209aec032d38dfb7bb8",
++  "patch_directory": "fork-meta/patches",
++  "generators": [
++    {
++      "working_directory": "backend",
++      "command": [
++        "go",
++        "generate",
++        "./cmd/server"
++      ],
++      "outputs": [
++        "backend/cmd/server/wire_gen.go"
++      ]
++    }
++  ],
++  "series": [
++    {
++      "order": 10,
++      "id": "fork-automation",
++      "subject": "fork: preserve patch queue and automation",
++      "include_regex": [
++        "^\\.github/scripts/(generate-patch-queue|rebuild-fork|validate-patch-queue|verify-fork-hotpath)\\.sh$",
++        "^\\.github/workflows/(build|sync-upstream|validate-fork-patches)\\.yml$",
++        "^fork-meta/(README\\.md|patch-series\\.json)$"
++      ]
++    },
++    {
++      "order": 20,
++      "id": "hotpath-runtime",
++      "subject": "fork: restore L1 hotpath and write-behind runtime",
++      "include_regex": [
++        "^backend/cmd/server/(main|wire)\\.go$",
++        "^backend/go\\.sum$",
++        "^backend/internal/config/config\\.go$",
++        "^backend/internal/handler/admin/usage_handler\\.go$",
++        "^backend/internal/hotpath/(billing_cache|concurrency_cache|doc)\\.go$",
++        "^backend/internal/repository/(account_repo|billing_cache|local_billing_cache|local_concurrency_cache|scheduler_cache|usage_log_pending_repo|usage_log_repo|wire)\\.go$",
++        "^backend/internal/server/middleware/api_key_auth(_google)?\\.go$",
++        "^backend/internal/server/routes/admin\\.go$",
++        "^backend/internal/service/(api_key_service|billing_cache_service|deferred_service|gateway_scheduling|gateway_service|gateway_usage_billing|openai_gateway_scheduling|openai_gateway_service|scheduler_snapshot_service|usage_billing|usage_billing_write_behind|usage_pending|usage_service|user_platform_quota_flusher|wire)\\.go$"
++      ]
++    },
++    {
++      "order": 30,
++      "id": "control-plane-coherence",
++      "subject": "fork: keep control-plane cache coherence",
++      "include_regex": [
++        "^backend/internal/service/(admin_group|admin_user|affiliate_service|payment_refund|payment_service|promo_service|redeem_service|subscription_service|user_service)\\.go$"
++      ]
++    },
++    {
++      "order": 40,
++      "id": "database-hardening",
++      "subject": "fork: retain database and operations hardening",
++      "include_regex": [
++        "^backend/internal/repository/(migrations_runner|ops_repo)\\.go$"
++      ]
++    },
++    {
++      "order": 70,
++      "id": "regression-tests",
++      "subject": "fork: retain hotpath regression coverage",
++      "include_regex": [
++        "^backend/.*_test\\.go$",
++        "^frontend/.*(__tests__/|\\.spec\\.(ts|tsx|js|jsx)$)"
++      ]
++    },
++    {
++      "order": 50,
++      "id": "usage-visibility",
++      "subject": "fork: restore usage and cache visibility",
++      "include_regex": [
++        "^frontend/src/api/admin/usage\\.ts$",
++        "^frontend/src/components/admin/usage/UsageTable\\.vue$",
++        "^frontend/src/i18n/locales/(en|zh)/admin/resources\\.ts$",
++        "^frontend/src/views/admin/UsageView\\.vue$"
++      ]
++    },
++    {
++      "order": 60,
++      "id": "deployment-docs",
++      "subject": "fork: retain deployment defaults and documentation",
++      "include_regex": [
++        "^\\.gitignore$",
++        "^\\.gitattributes$",
++        "^README\\.md$",
++        "^deploy/"
++      ]
++    }
++  ]
++}
+
