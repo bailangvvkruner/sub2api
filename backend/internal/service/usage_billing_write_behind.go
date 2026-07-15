@@ -12,7 +12,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -47,6 +46,11 @@ type usageBillingAPIKeyQuotaShadow struct {
 	used      float64
 	quota     float64
 	expiresAt time.Time
+}
+
+type usageBillingPendingStore interface {
+	Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error
+	Trim(ctx context.Context, key string, n int64) error
 }
 
 type usageBillingPendingRecord struct {
@@ -102,7 +106,7 @@ type UsageBillingWriteBehind struct {
 	cfg      *config.Config
 	enabled  bool
 	interval time.Duration
-	rdb      *redis.Client
+	pending  usageBillingPendingStore
 	repo     UsageBillingRepository
 	l2Key    string
 	stopCh   chan struct{}
@@ -121,6 +125,7 @@ type UsageBillingWriteBehind struct {
 	apiKeyUpdaters map[int64]APIKeyQuotaUpdater
 	accountQuota   map[int64]float64
 	commands       []*UsageBillingCommand
+	balanceShadow  map[int64]float64
 	quotaShadow    map[int64]usageBillingAPIKeyQuotaShadow
 	dedup          map[string]usageBillingDedupEntry
 	l2Entries      int64
@@ -140,10 +145,10 @@ type UsageBillingWriteBehind struct {
 }
 
 func NewUsageBillingWriteBehind(cfg *config.Config) *UsageBillingWriteBehind {
-	return NewUsageBillingWriteBehindWithRedis(cfg, nil, nil)
+	return newUsageBillingWriteBehind(cfg, nil, nil)
 }
 
-func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, rdb *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
+func newUsageBillingWriteBehind(cfg *config.Config, pending usageBillingPendingStore, repo UsageBillingRepository) *UsageBillingWriteBehind {
 	interval := defaultUsageBillingFlushInterval
 	if cfg != nil && cfg.Gateway.HotPath.UsageBillingFlushIntervalMs > 0 {
 		interval = time.Duration(cfg.Gateway.HotPath.UsageBillingFlushIntervalMs) * time.Millisecond
@@ -152,7 +157,7 @@ func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, rdb *redis.Client, 
 		cfg:            cfg,
 		enabled:        cfg != nil && cfg.Gateway.HotPath.UsageBillingWriteBehind,
 		interval:       interval,
-		rdb:            rdb,
+		pending:        pending,
 		repo:           repo,
 		l2Key:          usagePendingInstanceKey("usage:pending:billing"),
 		stopCh:         make(chan struct{}),
@@ -163,6 +168,7 @@ func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, rdb *redis.Client, 
 		apiKeyUpdaters: make(map[int64]APIKeyQuotaUpdater),
 		accountQuota:   make(map[int64]float64),
 		commands:       make([]*UsageBillingCommand, 0),
+		balanceShadow:  make(map[int64]float64),
 		quotaShadow:    make(map[int64]usageBillingAPIKeyQuotaShadow),
 		dedup:          make(map[string]usageBillingDedupEntry),
 	}
@@ -211,7 +217,7 @@ func (s *UsageBillingWriteBehind) APIKeyQuotaExhausted(apiKey *APIKey) bool {
 }
 
 func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *UsageBillingCommand) error {
-	if s == nil || s.rdb == nil || cmd == nil {
+	if s == nil || s.pending == nil || cmd == nil {
 		return nil
 	}
 	record := usageBillingPendingRecord{
@@ -248,10 +254,7 @@ func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *Us
 	}
 	mirrorCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
 	defer cancel()
-	pipe := s.rdb.Pipeline()
-	pipe.RPush(mirrorCtx, s.l2Key, payload)
-	pipe.Expire(mirrorCtx, s.l2Key, usagePendingTTL())
-	if _, err := pipe.Exec(mirrorCtx); err != nil {
+	if err := s.pending.Append(mirrorCtx, s.l2Key, payload, usagePendingTTL()); err != nil {
 		return err
 	}
 	s.l2PendingEntries.Add(1)
@@ -259,7 +262,7 @@ func (s *UsageBillingWriteBehind) mirrorPendingToL2(ctx context.Context, cmd *Us
 }
 
 func (s *UsageBillingWriteBehind) trimPendingL2(ctx context.Context, n int64) error {
-	if s == nil || s.rdb == nil || n <= 0 {
+	if s == nil || s.pending == nil || n <= 0 {
 		return nil
 	}
 	if ctx == nil {
@@ -267,7 +270,7 @@ func (s *UsageBillingWriteBehind) trimPendingL2(ctx context.Context, n int64) er
 	}
 	trimCtx, cancel := context.WithTimeout(ctx, usagePendingRedisTimeout)
 	defer cancel()
-	if err := s.rdb.LTrim(trimCtx, s.l2Key, n, -1).Err(); err != nil {
+	if err := s.pending.Trim(trimCtx, s.l2Key, n); err != nil {
 		return err
 	}
 	for {
@@ -334,11 +337,6 @@ func (s *UsageBillingWriteBehind) Apply(ctx context.Context, cmd *UsageBillingCo
 	dedupKey := usageBillingWriteBehindDedupKey(cmd)
 
 	result := &UsageBillingApplyResult{Applied: true}
-	if cmd.BalanceCost > 0 && p.User != nil {
-		newBalance := p.User.Balance - cmd.BalanceCost
-		result.NewBalance = &newBalance
-		result.BalanceOverdrafted = p.User.Balance < cmd.BalanceCost
-	}
 	if cmd.AccountQuotaCost > 0 && p.Account != nil {
 		result.QuotaState = buildOptimisticAccountQuotaState(p.Account, cmd.AccountQuotaCost)
 	}
@@ -353,6 +351,22 @@ func (s *UsageBillingWriteBehind) Apply(ctx context.Context, cmd *UsageBillingCo
 		s.dedupSkippedTotal.Add(1)
 		s.mu.Unlock()
 		return &UsageBillingApplyResult{Applied: false}, true, nil
+	}
+	if cmd.BalanceCost > 0 {
+		currentBalance, balanceKnown, cacheSynced, err := s.deductCurrentBalanceLocked(ctx, cmd.UserID, cmd.BalanceCost, deps)
+		if err != nil {
+			s.mu.Unlock()
+			return nil, true, err
+		}
+		if balanceKnown {
+			newBalance := currentBalance - cmd.BalanceCost
+			if !cacheSynced {
+				s.balanceShadow[cmd.UserID] = newBalance
+			}
+			result.NewBalance = &newBalance
+			result.BalanceOverdrafted = currentBalance < cmd.BalanceCost
+			result.balanceCacheSynced = cacheSynced
+		}
 	}
 	s.dedup[dedupKey] = usageBillingDedupEntry{
 		fingerprint: strings.TrimSpace(cmd.RequestFingerprint),
@@ -403,6 +417,41 @@ func (s *UsageBillingWriteBehind) Apply(ctx context.Context, cmd *UsageBillingCo
 	}
 
 	return result, true, nil
+}
+
+// deductCurrentBalanceLocked uses the billing L1 as the balance authority.
+// The auth snapshot is intentionally ignored because it may be stale for its
+// full cache TTL. Apply holds s.mu while this method reads and deducts L1.
+func (s *UsageBillingWriteBehind) deductCurrentBalanceLocked(ctx context.Context, userID int64, cost float64, deps *billingDeps) (float64, bool, bool, error) {
+	if deps != nil && deps.billingCacheService != nil {
+		balance, err := deps.billingCacheService.GetUserBalance(ctx, userID)
+		if err != nil {
+			return 0, false, false, err
+		}
+		if deps.billingCacheService.applyUserBalanceDeltaLocal(userID, -cost) {
+			return balance, true, true, nil
+		}
+		// Non-local cache compatibility path. It is serialized by s.mu and is
+		// based on the just-read billing cache value, never the auth snapshot.
+		if err := deps.billingCacheService.SetUserBalanceRealtime(ctx, userID, balance-cost); err != nil {
+			return 0, false, false, err
+		}
+		return balance, true, true, nil
+	}
+	if balance, ok := s.balanceShadow[userID]; ok {
+		return balance, true, false, nil
+	}
+	if deps == nil || deps.userRepo == nil {
+		return 0, false, false, nil
+	}
+	user, err := deps.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return 0, false, false, err
+	}
+	if user == nil {
+		return 0, false, false, nil
+	}
+	return user.Balance, true, false, nil
 }
 
 func (s *UsageBillingWriteBehind) Flush(parentCtx context.Context, deps *billingDeps) {

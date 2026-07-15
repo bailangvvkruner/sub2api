@@ -218,8 +218,12 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				}
 			} else {
 				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
-				// Balance enforcement is handled by handler-level BillingCacheService
-				// so the hot path can use the freshest L1/Redis balance view.
+				// Handler-level BillingCacheService remains the primary, freshest check.
+				// Keep the historical fail-closed fallback for an exhausted auth snapshot.
+				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
+					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+					return
+				}
 			}
 		}
 

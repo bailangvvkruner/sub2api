@@ -4,98 +4,81 @@ import (
 	"context"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
-func TestLocalConcurrencyCacheAccountSlots(t *testing.T) {
-	ctx := context.Background()
-	cache := NewLocalConcurrencyCache(1, 60)
-
-	ok, err := cache.AcquireAccountSlot(ctx, 1001, 2, "req-1")
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	ok, err = cache.AcquireAccountSlot(ctx, 1001, 2, "req-2")
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	ok, err = cache.AcquireAccountSlot(ctx, 1001, 2, "req-3")
-	require.NoError(t, err)
-	require.False(t, ok)
-
-	current, err := cache.GetAccountConcurrency(ctx, 1001)
-	require.NoError(t, err)
-	require.Equal(t, 2, current)
-
-	require.NoError(t, cache.ReleaseAccountSlot(ctx, 1001, "req-1"))
-
-	current, err = cache.GetAccountConcurrency(ctx, 1001)
-	require.NoError(t, err)
-	require.Equal(t, 1, current)
+type ingressLeaseCacheStub struct {
+	acquireCalls int
+	refreshCalls int
+	releaseCalls int
 }
 
-func TestLocalConcurrencyCacheDuplicateRequestID(t *testing.T) {
-	ctx := context.Background()
-	cache := NewLocalConcurrencyCache(1, 60)
-
-	ok, err := cache.AcquireUserSlot(ctx, 2001, 1, "same-req")
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	ok, err = cache.AcquireUserSlot(ctx, 2001, 1, "same-req")
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	current, err := cache.GetUserConcurrency(ctx, 2001)
-	require.NoError(t, err)
-	require.Equal(t, 1, current)
+func (c *ingressLeaseCacheStub) AcquireOpenAIWSIngressLease(context.Context, int64, int, string) (bool, error) {
+	c.acquireCalls++
+	return true, nil
 }
 
-func TestLocalConcurrencyCacheLoadBatchIncludesWaitCounts(t *testing.T) {
-	ctx := context.Background()
-	cache := NewLocalConcurrencyCache(1, 60)
-
-	ok, err := cache.AcquireAccountSlot(ctx, 3001, 3, "req-1")
-	require.NoError(t, err)
-	require.True(t, ok)
-	ok, err = cache.AcquireAccountSlot(ctx, 3001, 3, "req-2")
-	require.NoError(t, err)
-	require.True(t, ok)
-	ok, err = cache.IncrementAccountWaitCount(ctx, 3001, 10)
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	loads, err := cache.GetAccountsLoadBatch(ctx, []service.AccountWithConcurrency{
-		{ID: 3001, MaxConcurrency: 3},
-		{ID: 3002, MaxConcurrency: 2},
-	})
-	require.NoError(t, err)
-
-	require.Equal(t, 2, loads[3001].CurrentConcurrency)
-	require.Equal(t, 1, loads[3001].WaitingCount)
-	require.Equal(t, 100, loads[3001].LoadRate)
-	require.Equal(t, 0, loads[3002].CurrentConcurrency)
-	require.Equal(t, 0, loads[3002].WaitingCount)
-	require.Equal(t, 0, loads[3002].LoadRate)
+func (c *ingressLeaseCacheStub) RefreshOpenAIWSIngressLease(context.Context, int64, string) (bool, error) {
+	c.refreshCalls++
+	return true, nil
 }
 
-func TestLocalConcurrencyCacheWaitCountLimitAndDecrement(t *testing.T) {
-	ctx := context.Background()
-	cache := NewLocalConcurrencyCache(1, 60)
+func (c *ingressLeaseCacheStub) ReleaseOpenAIWSIngressLease(context.Context, int64, string) error {
+	c.releaseCalls++
+	return nil
+}
 
-	ok, err := cache.IncrementWaitCount(ctx, 4001, 1)
+func TestLocalConcurrencyCacheWithLeasesKeepsSlotsLocal(t *testing.T) {
+	ctx := context.Background()
+	leases := &ingressLeaseCacheStub{}
+	local := NewLocalConcurrencyCache(1, 60)
+	apiKeys, ok := local.(service.APIKeyConcurrencyCache)
+	require.True(t, ok)
+	cache := newLocalConcurrencyCacheWithLeases(local, apiKeys, leases)
+
+	acquired, err := cache.AcquireAccountSlot(ctx, 101, 1, "request-1")
 	require.NoError(t, err)
+	require.True(t, acquired)
+	require.Zero(t, leases.acquireCalls)
+	require.NoError(t, apiKeys.TrackAPIKeySlot(ctx, 202, "request-1"))
+	counts, err := apiKeys.GetAPIKeyConcurrencyBatch(ctx, []int64{202})
+	require.NoError(t, err)
+	require.Equal(t, 1, counts[202])
+	require.Zero(t, leases.acquireCalls)
+
+	leaseCache, ok := cache.(service.OpenAIWSIngressLeaseCache)
+	require.True(t, ok)
+	acquired, err = leaseCache.AcquireOpenAIWSIngressLease(ctx, 202, 1, "lease-1")
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	refreshed, err := leaseCache.RefreshOpenAIWSIngressLease(ctx, 202, "lease-1")
+	require.NoError(t, err)
+	require.True(t, refreshed)
+	require.NoError(t, leaseCache.ReleaseOpenAIWSIngressLease(ctx, 202, "lease-1"))
+	require.Equal(t, 1, leases.acquireCalls)
+	require.Equal(t, 1, leases.refreshCalls)
+	require.Equal(t, 1, leases.releaseCalls)
+}
+
+func TestProvideConcurrencyCacheLocalRetainsIngressLeaseCapability(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.HotPath.LocalConcurrencySlots = true
+	cfg.Gateway.ConcurrencySlotTTLMinutes = 1
+
+	cache := ProvideConcurrencyCache(nil, cfg)
+	_, ok := cache.(service.OpenAIWSIngressLeaseCache)
+	require.True(t, ok)
+	apiKeys, ok := cache.(service.APIKeyConcurrencyCache)
 	require.True(t, ok)
 
-	ok, err = cache.IncrementWaitCount(ctx, 4001, 1)
+	acquired, err := cache.AcquireUserSlot(context.Background(), 303, 1, "request-1")
 	require.NoError(t, err)
-	require.False(t, ok)
-
-	require.NoError(t, cache.DecrementWaitCount(ctx, 4001))
-
-	loads, err := cache.GetUsersLoadBatch(ctx, []service.UserWithConcurrency{{ID: 4001, MaxConcurrency: 1}})
+	require.True(t, acquired, "ordinary request slots must remain process-local")
+	require.NoError(t, apiKeys.TrackAPIKeySlot(context.Background(), 404, "request-1"))
+	counts, err := apiKeys.GetAPIKeyConcurrencyBatch(context.Background(), []int64{404})
 	require.NoError(t, err)
-	require.Equal(t, 0, loads[4001].WaitingCount)
-	require.Equal(t, 0, loads[4001].LoadRate)
+	require.Equal(t, 1, counts[404], "API key request slots must remain process-local")
 }
