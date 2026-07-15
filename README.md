@@ -1,3 +1,48 @@
+## 本分支性能补丁说明（单机激进模式默认开启）
+
+这个 fork 的目标是压低请求热路径里的 Redis/DB 写放大，适合单机或单进程部署。默认已开启：
+
+- `gateway.hotpath.local_concurrency_slots: true`：账号/用户并发槽与等待计数从 Redis ZSET/计数器切到本机内存，抢槽、释放槽、负载读取不再走 Redis。
+- `gateway.hotpath.persist_account_last_used: false`：账号 `last_used_at` 默认不再按请求延迟批量写数据库，减少高 QPS 下的 DB 写入与调度缓存刷新。
+- `gateway.hotpath.local_billing_cache: true`：余额、订阅用量、API key 限速、user×platform quota 增加 sub2api 进程内 L1 缓存。读路径优先级为 `sub2api 程序缓存 > Redis > PostgreSQL`；默认 `local_billing_cache_write_through: false`，热路径写入先更新本机快照，不再每次透传 Redis。
+- `gateway.hotpath.usage_billing_write_behind: true`：余额扣费、订阅用量、API key quota/限速用量、账号 quota 默认先进入进程内聚合器，再按 `usage_billing_flush_interval_ms: 30000` 批量刷入 PostgreSQL；正常退出 cleanup 会先 flush，减少每请求事务和磁盘写入。
+- `database.user_platform_quota_flusher_enabled: true`：user×platform quota usage 默认不再每请求同步直写 PostgreSQL，而是先累加到本机热快照，再由 flusher 默认每 30 秒批量刷入 PostgreSQL，降低 DB 写入次数和磁盘 IOPS。
+- 调度默认走 priority/load/random 类 tie-break；`fallback_selection_mode: last_used` 仍保留兼容，但激进模式下不建议依赖它。
+- 上游同步工作流会检查这些补丁是否仍在，避免同步后被上游改动悄悄冲掉。
+
+边界说明：请求数据面默认 L1 优先，但不是所有数据都只放内存。支付订单、充值记录、管理员配置变更、账号/API key/用户创建修改等控制面仍直接以 PostgreSQL 为权威。`usage_billing_write_behind` 会把请求扣费延迟到 30 秒批量刷盘；正常停止会 flush，断电、宿主机崩溃、`docker kill -9` 可能丢失未 flush 的窗口。多实例部署如果需要跨进程强一致热快照，应打开 `local_billing_cache_write_through` 或关闭激进 L1 模式。
+
+Docker 部署已加正常退出保护：`sub2api` 停机宽限期 90 秒，HTTP 排水最多等待 15 秒，应用内部 cleanup 最多等待 45 秒；PostgreSQL/Redis 停机宽限期 120 秒；Redis 收到 `docker compose stop/down` 的 SIGTERM 时会执行 `SHUTDOWN SAVE`，尽量在退出前把 RDB/AOF 写盘。这个保护只覆盖正常停止流程，不能保证断电、宿主机崩溃、`docker kill -9` 这类强杀场景。
+
+### 本机热路径 QPS 对比
+
+口径：只测并发控制缓存热路径，不代表完整 HTTP 网关吞吐。完整吞吐还会受上游响应、数据库查询、日志、鉴权、流式传输等影响。
+
+测试命令：
+
+```powershell
+$env:GOMAXPROCS='2'
+cd backend
+go test -run '^$' -bench '^BenchmarkConcurrencyCacheHotPath$' -benchtime=3s -count=1 -cpu=2 ./internal/repository
+```
+
+测试环境：Windows/amd64，Intel i5-10400，`GOMAXPROCS=2`。本机未配置 `TEST_REDIS_URL`，Redis 基线使用内嵌 `miniredis`，所以绝对值仅作本机参考；真实 Redis 会受网络、部署方式和实例性能影响。
+
+| 场景 | 优化前：Redis ZSET | 优化后：本机内存 | 提升 |
+| --- | ---: | ---: | ---: |
+| 抢槽+释放槽（单线程） | 4,557 QPS | 3,286,863 QPS | 约 721x |
+| 抢槽+释放槽（2 核并行） | 5,303 QPS | 2,327,639 QPS | 约 439x |
+| 100 个账号负载批量读取 | 248 QPS | 53,012 QPS | 约 214x |
+
+### 中国大陆构建命令
+
+```powershell
+$env:GOPROXY='https://goproxy.cn,direct'
+$env:GOSUMDB='sum.golang.google.cn'
+cd backend
+go build -o '..\.tmp\sub2api-server.exe' .\cmd\server
+```
+
 # Sub2API
 
 <div align="center">

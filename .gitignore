@@ -27,6 +27,10 @@ vendor/
 
 # Go 编译缓存
 backend/.gocache/
+backend/.gomodcache/
+backend/.gotmp/
+backend/.tmp/
+.tmp/
 
 # ===================
 # Node.js / Vue 前端
@@ -34,6 +38,9 @@ backend/.gocache/
 node_modules/
 frontend/node_modules/
 frontend/dist/
+.pnpm-store/
+.vite/
+frontend/.corepack/
 *.local
 *.tsbuildinfo
 vite.config.d.ts
@@ -121,6 +128,8 @@ tests
 CLAUDE.md
 .claude
 scripts
+!.github/scripts/
+!.github/scripts/*.sh
 !backend/scripts/
 !backend/scripts/resolve-version.sh
 .code-review-state
@@ -130,6 +139,8 @@ AGENTS.md
 backend/cmd/server/server
 deploy/docker-compose.override.yml
 .gocache/
+.gomodcache/
+.gotmp/
 vite.config.js
 docs/*
 !docs/PAYMENT.md
