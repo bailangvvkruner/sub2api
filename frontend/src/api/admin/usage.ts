@@ -92,6 +92,46 @@ export interface AdminUsageQueryParams extends UsageQueryParams {
   status_code?: number | null
 }
 
+export interface UsageLogPendingStats {
+  pending_l1_entries: number
+  pending_l2_entries: number
+  enqueued_total: number
+  flushed_total: number
+  flush_error_total: number
+  l2_mirror_error_total: number
+  l2_trim_error_total: number
+  dropped_after_stopped: number
+}
+
+export interface UsageBillingPendingStats {
+  pending_l1_entries: number
+  pending_balance_keys: number
+  pending_subscription_keys: number
+  pending_api_key_quota_keys: number
+  pending_api_key_rate_keys: number
+  pending_api_key_updater_keys: number
+  pending_account_quota_keys: number
+  pending_l2_entries: number
+  dedup_entries: number
+  applied_total: number
+  dedup_skipped_total: number
+  l2_mirror_error_total: number
+  l2_trim_error_total: number
+  flush_success_total: number
+  flush_error_total: number
+  flush_balance_keys_total: number
+  flush_subscription_keys_total: number
+  flush_api_key_quota_keys_total: number
+  flush_api_key_rate_keys_total: number
+  flush_account_quota_keys_total: number
+}
+
+export interface UsagePendingStatsResponse {
+  usage_log: UsageLogPendingStats
+  usage_billing: UsageBillingPendingStats
+  updated_at: string
+}
+
 // ==================== API Functions ====================
 
 /**
@@ -132,6 +172,14 @@ export async function getStats(params: {
   const { data } = await apiClient.get<AdminUsageStatsResponse>('/admin/usage/stats', {
     params
   })
+  return data
+}
+
+/**
+ * Get L1/L2 pending usage write-behind counters.
+ */
+export async function getPendingStats(): Promise<UsagePendingStatsResponse> {
+  const { data } = await apiClient.get<UsagePendingStatsResponse>('/admin/usage/pending')
   return data
 }
 
@@ -207,6 +255,7 @@ export async function cancelCleanupTask(taskId: number): Promise<{ id: number; s
 export const adminUsageAPI = {
   list,
   getStats,
+  getPendingStats,
   searchUsers,
   searchApiKeys,
   listCleanupTasks,
