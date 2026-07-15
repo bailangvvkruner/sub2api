@@ -7,7 +7,6 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
@@ -21,6 +20,8 @@ type balanceEligibilityCacheStub struct {
 	invalidated              atomic.Bool
 	deductCalls              atomic.Int64
 	invalidateCalls          atomic.Int64
+	setCalls                 atomic.Int64
+	lastSetBalance           float64
 }
 
 func (s *balanceEligibilityCacheStub) GetUserBalance(context.Context, int64) (float64, error) {
@@ -32,6 +33,13 @@ func (s *balanceEligibilityCacheStub) GetUserBalance(context.Context, int64) (fl
 
 func (s *balanceEligibilityCacheStub) DeductUserBalance(context.Context, int64, float64) error {
 	s.deductCalls.Add(1)
+	return nil
+}
+
+func (s *balanceEligibilityCacheStub) SetUserBalance(_ context.Context, _ int64, balance float64) error {
+	s.setCalls.Add(1)
+	s.lastSetBalance = balance
+	s.balance = balance
 	return nil
 }
 
@@ -83,12 +91,14 @@ func TestSyncBalanceCacheAfterDeduction_InvalidatesExhaustedBalance(t *testing.T
 		BalanceOverdrafted: true,
 	})
 
-	require.Equal(t, int64(1), cache.invalidateCalls.Load())
+	require.Equal(t, int64(1), cache.setCalls.Load())
+	require.Equal(t, -0.25, cache.lastSetBalance)
+	require.Equal(t, int64(0), cache.invalidateCalls.Load())
 	require.Equal(t, int64(0), cache.deductCalls.Load())
 
 	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil, "")
 	require.ErrorIs(t, err, ErrInsufficientBalance)
-	require.Equal(t, int64(1), userRepo.calls.Load())
+	require.Equal(t, int64(0), userRepo.calls.Load())
 }
 
 func TestSyncBalanceCacheAfterDeduction_InvalidatesWhenBalanceFallsBelowReserve(t *testing.T) {
@@ -104,11 +114,13 @@ func TestSyncBalanceCacheAfterDeduction_InvalidatesWhenBalanceFallsBelowReserve(
 		User: &User{ID: 1},
 	}, &billingDeps{billingCacheService: svc}, &UsageBillingApplyResult{NewBalance: &newBalance})
 
-	require.Equal(t, int64(1), cache.invalidateCalls.Load())
+	require.Equal(t, int64(1), cache.setCalls.Load())
+	require.Equal(t, 0.005, cache.lastSetBalance)
+	require.Equal(t, int64(0), cache.invalidateCalls.Load())
 	require.Equal(t, int64(0), cache.deductCalls.Load())
 }
 
-func TestSyncBalanceCacheAfterDeduction_QueuesDeductWhenBalanceStillEligible(t *testing.T) {
+func TestSyncBalanceCacheAfterDeduction_SetsFreshBalanceWhenStillEligible(t *testing.T) {
 	cache := &balanceEligibilityCacheStub{balance: 1}
 	cfg := &config.Config{}
 	cfg.Billing.MinimumBalanceReserve = 0.01
@@ -121,8 +133,8 @@ func TestSyncBalanceCacheAfterDeduction_QueuesDeductWhenBalanceStillEligible(t *
 		User: &User{ID: 1},
 	}, &billingDeps{billingCacheService: svc}, &UsageBillingApplyResult{NewBalance: &newBalance})
 
+	require.Equal(t, int64(1), cache.setCalls.Load())
+	require.Equal(t, 0.75, cache.lastSetBalance)
 	require.Equal(t, int64(0), cache.invalidateCalls.Load())
-	require.Eventually(t, func() bool {
-		return cache.deductCalls.Load() == 1
-	}, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(0), cache.deductCalls.Load())
 }
