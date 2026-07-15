@@ -985,7 +985,7 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	// but they are always client-visible blocked requests that belong in admin + user error
 	// lists.  Without the exemption the entire streaming-path cyber sink would be invisible.
 	if !opsFilterIncludesRecoveredProviderRows(filter, phaseFilter) {
-		clauses = append(clauses, "(COALESCE(e.status_code, 0) >= 400 OR e.error_type = 'cyber_policy')")
+		clauses = append(clauses, "(COALESCE(e.upstream_status_code, e.status_code, 0) >= 400 OR e.error_type = 'cyber_policy')")
 	}
 
 	if filter.StartTime != nil && !filter.StartTime.IsZero() {
