@@ -547,6 +547,12 @@ export default {
       clickToViewBalance: 'Click to view balance history',
       failedToLoadUser: 'Failed to load user info',
       userDeletedBadge: 'Deleted',
+      pending: {
+        title: 'Pending',
+        logs: 'Logs',
+        billing: 'Billing',
+        errors: 'Errors'
+      },
       tokenRanking: {
         subtitle: 'Per-user token usage for the current filters and time range',
         rowHint: "Click to view this user's usage details",
