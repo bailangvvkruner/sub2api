@@ -714,18 +714,16 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
 	}
 	// 注意：user_group_rate_multipliers 表通过外键 ON DELETE CASCADE 自动清理
 
-	// 事务成功后，异步失效受影响用户的订阅缓存
+	// 事务成功后，同步刷新受影响用户的订阅缓存。
 	if len(affectedUserIDs) > 0 && s.billingCacheService != nil {
 		groupID := id
-		go func() {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			for _, userID := range affectedUserIDs {
-				if err := s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID); err != nil {
-					logger.LegacyPrintf("service.admin", "invalidate subscription cache failed: user_id=%d group_id=%d err=%v", userID, groupID, err)
-				}
+		cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		for _, userID := range affectedUserIDs {
+			if err := s.billingCacheService.RefreshSubscription(cacheCtx, userID, groupID); err != nil {
+				logger.LegacyPrintf("service.admin", "refresh subscription cache failed: user_id=%d group_id=%d err=%v", userID, groupID, err)
 			}
-		}()
+		}
+		cancel()
 	}
 	if s.authCacheInvalidator != nil {
 		for _, key := range groupKeys {

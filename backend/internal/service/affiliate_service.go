@@ -418,7 +418,7 @@ func (s *AffiliateService) TransferAffiliateQuota(ctx context.Context, userID in
 		return 0, 0, err
 	}
 	if transferred > 0 {
-		s.invalidateAffiliateCaches(ctx, userID)
+		s.invalidateAffiliateCaches(ctx, userID, transferred)
 	}
 	return transferred, balance, nil
 }
@@ -477,13 +477,13 @@ func maskSegment(s string) string {
 	return string(r[0]) + "***"
 }
 
-func (s *AffiliateService) invalidateAffiliateCaches(ctx context.Context, userID int64) {
+func (s *AffiliateService) invalidateAffiliateCaches(ctx context.Context, userID int64, balanceDelta float64) {
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
 	if s.billingCacheService != nil {
-		if err := s.billingCacheService.InvalidateUserBalance(ctx, userID); err != nil {
-			logger.LegacyPrintf("service.affiliate", "[Affiliate] Failed to invalidate billing cache for user %d: %v", userID, err)
+		if err := s.billingCacheService.ApplyUserBalanceDeltaRealtime(ctx, userID, balanceDelta); err != nil {
+			logger.LegacyPrintf("service.affiliate", "[Affiliate] Failed to update billing cache for user %d: %v", userID, err)
 		}
 	}
 }
