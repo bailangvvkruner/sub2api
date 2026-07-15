@@ -27,6 +27,12 @@ type UsageHandler struct {
 	cleanupService *service.UsageCleanupService
 }
 
+type UsagePendingStatsResponse struct {
+	UsageLog     service.UsageLogPendingStats         `json:"usage_log"`
+	UsageBilling service.UsageBillingWriteBehindStats `json:"usage_billing"`
+	UpdatedAt    time.Time                            `json:"updated_at"`
+}
+
 // NewUsageHandler creates a new admin usage handler
 func NewUsageHandler(
 	usageService *service.UsageService,
@@ -40,6 +46,26 @@ func NewUsageHandler(
 		adminService:   adminService,
 		cleanupService: cleanupService,
 	}
+}
+
+// PendingStats handles getting hot-path L1/L2 pending counts.
+// GET /api/v1/admin/usage/pending
+func (h *UsageHandler) PendingStats(c *gin.Context) {
+	var usageLogStats service.UsageLogPendingStats
+	if h != nil && h.usageService != nil {
+		usageLogStats = h.usageService.PendingStats()
+	}
+	var billingStats service.UsageBillingWriteBehindStats
+	if h != nil && h.apiKeyService != nil {
+		if wb := h.apiKeyService.UsageBillingWriteBehind(); wb != nil {
+			billingStats = wb.Stats()
+		}
+	}
+	c.JSON(http.StatusOK, UsagePendingStatsResponse{
+		UsageLog:     usageLogStats,
+		UsageBilling: billingStats,
+		UpdatedAt:    time.Now(),
+	})
 }
 
 // CreateUsageCleanupTaskRequest represents cleanup task creation request
