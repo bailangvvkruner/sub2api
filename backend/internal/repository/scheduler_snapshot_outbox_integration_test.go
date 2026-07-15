@@ -47,6 +47,10 @@ func TestSchedulerSnapshotOutboxReplay(t *testing.T) {
 	}
 	require.NoError(t, accountRepo.Create(ctx, account))
 	require.NoError(t, cache.SetAccount(ctx, account))
+	fullBefore, err := cache.GetAccount(ctx, account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, fullBefore)
+	require.Nil(t, fullBefore.LastUsedAt)
 
 	svc := service.NewSchedulerSnapshotService(cache, outboxRepo, accountRepo, nil, cfg)
 	svc.Start()
@@ -56,13 +60,17 @@ func TestSchedulerSnapshotOutboxReplay(t *testing.T) {
 	updated, err := accountRepo.GetByID(ctx, account.ID)
 	require.NoError(t, err)
 	require.NotNil(t, updated.LastUsedAt)
-	expectedUnix := updated.LastUsedAt.Unix()
 
 	require.Eventually(t, func() bool {
-		cached, err := cache.GetAccount(ctx, account.ID)
-		if err != nil || cached == nil || cached.LastUsedAt == nil {
+		watermark, err := cache.GetOutboxWatermark(ctx)
+		if err != nil {
 			return false
 		}
-		return cached.LastUsedAt.Unix() == expectedUnix
+		return watermark > 0
 	}, 5*time.Second, 100*time.Millisecond)
+
+	cached, err := cache.GetAccount(ctx, account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, cached)
+	require.Nil(t, cached.LastUsedAt)
 }

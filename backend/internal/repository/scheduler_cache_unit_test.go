@@ -68,7 +68,7 @@ func TestSchedulerCacheSetAccountClearsUnencodablePayload(t *testing.T) {
 	require.Nil(t, cached)
 }
 
-func TestSchedulerCacheUpdateLastUsedClearsUnencodablePayload(t *testing.T) {
+func TestSchedulerCacheUpdateLastUsedIsNoOp(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)
 	account := service.Account{ID: 114, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
@@ -79,7 +79,8 @@ func TestSchedulerCacheUpdateLastUsedClearsUnencodablePayload(t *testing.T) {
 
 	cached, err := cache.GetAccount(ctx, account.ID)
 	require.NoError(t, err)
-	require.Nil(t, cached)
+	require.NotNil(t, cached)
+	require.Nil(t, cached.LastUsedAt)
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {

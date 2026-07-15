@@ -481,6 +481,15 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
 	if cfg.Database.SSLMode != "prefer" {
 		t.Fatalf("Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "prefer")
 	}
+	if !cfg.Database.UserPlatformQuotaFlusherEnabled {
+		t.Fatalf("Database.UserPlatformQuotaFlusherEnabled = false, want true")
+	}
+	if cfg.Database.UserPlatformQuotaFlushIntervalMs != 30000 {
+		t.Fatalf("Database.UserPlatformQuotaFlushIntervalMs = %d, want 30000", cfg.Database.UserPlatformQuotaFlushIntervalMs)
+	}
+	if cfg.Database.UserPlatformQuotaFlushBatchSize != 1000 {
+		t.Fatalf("Database.UserPlatformQuotaFlushBatchSize = %d, want 1000", cfg.Database.UserPlatformQuotaFlushBatchSize)
+	}
 }
 
 func TestValidateLinuxDoFrontendRedirectURL(t *testing.T) {
@@ -1995,6 +2004,35 @@ func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
 	}
 	if cfg.Gateway.UsageRecord.AutoScaleCooldownSeconds != 10 {
 		t.Fatalf("auto_scale_cooldown_seconds = %d, want 10", cfg.Gateway.UsageRecord.AutoScaleCooldownSeconds)
+	}
+}
+
+func TestLoad_DefaultGatewayHotPathConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.Gateway.HotPath.LocalConcurrencySlots {
+		t.Fatalf("local_concurrency_slots = false, want true")
+	}
+	if cfg.Gateway.HotPath.PersistAccountLastUsed {
+		t.Fatalf("persist_account_last_used = true, want false")
+	}
+	if !cfg.Gateway.HotPath.LocalBillingCache {
+		t.Fatalf("local_billing_cache = false, want true")
+	}
+	if cfg.Gateway.HotPath.LocalBillingCacheMaxEntries != 262144 {
+		t.Fatalf("local_billing_cache_max_entries = %d, want 262144", cfg.Gateway.HotPath.LocalBillingCacheMaxEntries)
+	}
+	if cfg.Gateway.HotPath.LocalBillingCacheWriteThrough {
+		t.Fatalf("local_billing_cache_write_through = true, want false")
+	}
+	if !cfg.Gateway.HotPath.UsageBillingWriteBehind {
+		t.Fatalf("usage_billing_write_behind = false, want true")
+	}
+	if cfg.Gateway.HotPath.UsageBillingFlushIntervalMs != 30000 {
+		t.Fatalf("usage_billing_flush_interval_ms = %d, want 30000", cfg.Gateway.HotPath.UsageBillingFlushIntervalMs)
 	}
 }
 
