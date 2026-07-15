@@ -1,0 +1,95 @@
+{
+  "schema_version": 2,
+  "upstream_repository": "https://github.com/Wei-Shaw/sub2api.git",
+  "upstream_branch": "main",
+  "base_upstream_sha": "cf6aa1a5c3259ce754032c9faab571105f73f594",
+  "patch_directory": "fork-meta/patches",
+  "generators": [
+    {
+      "working_directory": "backend",
+      "command": [
+        "go",
+        "generate",
+        "./cmd/server"
+      ],
+      "outputs": [
+        "backend/cmd/server/wire_gen.go"
+      ]
+    }
+  ],
+  "series": [
+    {
+      "order": 10,
+      "id": "fork-automation",
+      "subject": "fork: preserve patch queue and automation",
+      "include_regex": [
+        "^\\.github/scripts/(generate-patch-queue|rebuild-fork|validate-patch-queue|verify-fork-hotpath)\\.sh$",
+        "^\\.github/workflows/(build|sync-upstream|validate-fork-patches)\\.yml$",
+        "^fork-meta/(README\\.md|patch-series\\.json)$"
+      ]
+    },
+    {
+      "order": 20,
+      "id": "hotpath-runtime",
+      "subject": "fork: restore L1 hotpath and write-behind runtime",
+      "include_regex": [
+        "^backend/cmd/server/(main|wire)\\.go$",
+        "^backend/go\\.sum$",
+        "^backend/internal/config/config\\.go$",
+        "^backend/internal/handler/admin/usage_handler\\.go$",
+        "^backend/internal/hotpath/(billing_cache|concurrency_cache|doc)\\.go$",
+        "^backend/internal/repository/(account_repo|billing_cache|local_billing_cache|local_concurrency_cache|scheduler_cache|usage_log_pending_repo|usage_log_repo|wire)\\.go$",
+        "^backend/internal/server/middleware/api_key_auth(_google)?\\.go$",
+        "^backend/internal/server/routes/admin\\.go$",
+        "^backend/internal/service/(api_key_service|billing_cache_service|deferred_service|gateway_scheduling|gateway_service|gateway_usage_billing|openai_gateway_scheduling|openai_gateway_service|scheduler_snapshot_service|usage_billing|usage_billing_write_behind|usage_pending|usage_service|user_platform_quota_flusher|wire)\\.go$"
+      ]
+    },
+    {
+      "order": 30,
+      "id": "control-plane-coherence",
+      "subject": "fork: keep control-plane cache coherence",
+      "include_regex": [
+        "^backend/internal/service/(admin_group|admin_user|affiliate_service|payment_refund|payment_service|promo_service|redeem_service|subscription_service|user_service)\\.go$"
+      ]
+    },
+    {
+      "order": 40,
+      "id": "database-hardening",
+      "subject": "fork: retain database and operations hardening",
+      "include_regex": [
+        "^backend/internal/repository/(migrations_runner|ops_repo)\\.go$"
+      ]
+    },
+    {
+      "order": 70,
+      "id": "regression-tests",
+      "subject": "fork: retain hotpath regression coverage",
+      "include_regex": [
+        "^backend/.*_test\\.go$",
+        "^frontend/.*(__tests__/|\\.spec\\.(ts|tsx|js|jsx)$)"
+      ]
+    },
+    {
+      "order": 50,
+      "id": "usage-visibility",
+      "subject": "fork: restore usage and cache visibility",
+      "include_regex": [
+        "^frontend/src/api/admin/usage\\.ts$",
+        "^frontend/src/components/admin/usage/UsageTable\\.vue$",
+        "^frontend/src/i18n/locales/(en|zh)/admin/resources\\.ts$",
+        "^frontend/src/views/admin/UsageView\\.vue$"
+      ]
+    },
+    {
+      "order": 60,
+      "id": "deployment-docs",
+      "subject": "fork: retain deployment defaults and documentation",
+      "include_regex": [
+        "^\\.gitignore$",
+        "^\\.gitattributes$",
+        "^README\\.md$",
+        "^deploy/"
+      ]
+    }
+  ]
+}

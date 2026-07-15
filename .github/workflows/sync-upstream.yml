@@ -1,0 +1,169 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 20 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Rebuild fork patch queue
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Require synchronization credential
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::SYNC_TOKEN must be a GitHub App token or PAT with contents, pull request, actions, and workflow access"
+            exit 1
+          fi
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream and fork main
+        run: |
+          upstream_url="$(jq -er '.upstream_repository' fork-meta/patch-series.json)"
+          upstream_branch="$(jq -er '.upstream_branch' fork-meta/patch-series.json)"
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "$upstream_url"
+          else
+            git remote add upstream "$upstream_url"
+          fi
+          git fetch --no-tags upstream "$upstream_branch"
+          git fetch --no-tags origin main
+          echo "UPSTREAM_REF=upstream/$upstream_branch" >>"$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Validate current fork contract
+        run: |
+          bash .github/scripts/validate-patch-queue.sh origin/main "$UPSTREAM_REF"
+          bash .github/scripts/verify-fork-hotpath.sh
+          git diff --check
+
+      - name: Test current fork hotpath
+        working-directory: backend
+        run: |
+          packages=(./internal/repository ./internal/service ./internal/handler ./internal/server)
+          if [ -d internal/hotpath ]; then
+            packages+=(./internal/hotpath)
+          fi
+          go test "${packages[@]}"
+
+      - name: Resolve synchronization metadata
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          target_sha="$(git rev-parse "$UPSTREAM_REF")"
+          base_sha="$(jq -er '.base_upstream_sha' fork-meta/patch-series.json)"
+          if [ "$target_sha" = "$base_sha" ]; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          branch="sync/upstream-${target_sha:0:12}"
+          source_sha="$(git rev-parse origin/main)"
+          echo "branch=$branch" >>"$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then
+            pr_number="$(gh pr list --state open --base main --head "$branch" --json number --jq '.[0].number // empty')"
+            if [ -n "$pr_number" ]; then
+              echo "Existing sync PR #$pr_number already tracks $target_sha"
+              echo "changed=false" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::Remote sync branch exists without an open PR: $branch"
+            exit 1
+          fi
+          echo "changed=true" >>"$GITHUB_OUTPUT"
+          echo "target_sha=$target_sha" >>"$GITHUB_OUTPUT"
+
+      - name: Rebuild fork in clean upstream worktree
+        if: steps.meta.outputs.changed == 'true'
+        id: rebuild
+        run: |
+          bash .github/scripts/rebuild-fork.sh \
+            fork-meta/patch-series.json \
+            "${{ steps.meta.outputs.source_sha }}" \
+            "$UPSTREAM_REF" \
+            "${{ steps.meta.outputs.branch }}" \
+            "$RUNNER_TEMP/sub2api-sync"
+
+      - name: Verify fork contract
+        if: steps.meta.outputs.changed == 'true'
+        working-directory: ${{ steps.rebuild.outputs.worktree }}
+        run: |
+          bash .github/scripts/verify-fork-hotpath.sh
+          git diff --check
+
+      - name: Run focused backend tests
+        if: steps.meta.outputs.changed == 'true'
+        working-directory: ${{ steps.rebuild.outputs.worktree }}/backend
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-cache
+          GOTMPDIR: ${{ runner.temp }}/go-tmp
+        run: |
+          mkdir -p "$GOCACHE" "$GOTMPDIR"
+          packages=(./internal/repository ./internal/service ./internal/handler ./internal/server)
+          if [ -d internal/hotpath ]; then
+            packages+=(./internal/hotpath)
+          fi
+          go test "${packages[@]}"
+
+      - name: Commit synchronization metadata
+        if: steps.meta.outputs.changed == 'true'
+        working-directory: ${{ steps.rebuild.outputs.worktree }}
+        run: |
+          git add -A
+          git diff --cached --check -- . ':(exclude)fork-meta/patches/*.patch'
+          git commit -m "chore(fork): sync upstream ${{ steps.meta.outputs.target_sha }}"
+          git merge-base --is-ancestor "${{ steps.meta.outputs.target_sha }}" HEAD
+
+      - name: Push temporary sync branch
+        if: steps.meta.outputs.changed == 'true'
+        working-directory: ${{ steps.rebuild.outputs.worktree }}
+        run: |
+          git fetch --no-tags origin main
+          current_main="$(git rev-parse origin/main)"
+          if [ "$current_main" != "${{ steps.meta.outputs.source_sha }}" ]; then
+            echo "::error::main advanced during rebuild; aborting stale sync branch"
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/${{ steps.meta.outputs.branch }}"
+
+      - name: Open synchronization pull request
+        if: steps.meta.outputs.changed == 'true'
+        working-directory: ${{ steps.rebuild.outputs.worktree }}
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          body="Rebuilds the ordered fork patch queue on upstream ${{ steps.meta.outputs.target_sha }}. Conflicts fail closed; no automatic conflict resolution or direct push to main is used. Merge only after the Fork patch validation check passes."
+          gh pr create \
+            --base main \
+            --head "${{ steps.meta.outputs.branch }}" \
+            --title "chore(fork): sync upstream ${{ steps.meta.outputs.target_sha }}" \
+            --body "$body"
