@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,9 +15,19 @@ type usageBillingWriteBehindUserRepoStub struct {
 	UserRepository
 
 	calls      int
+	getCalls   int
 	lastUserID int64
 	lastAmount float64
+	balance    float64
 	err        error
+}
+
+func (s *usageBillingWriteBehindUserRepoStub) GetByID(ctx context.Context, id int64) (*User, error) {
+	s.getCalls++
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &User{ID: id, Balance: s.balance}, nil
 }
 
 func (s *usageBillingWriteBehindUserRepoStub) DeductBalance(ctx context.Context, id int64, amount float64) error {
@@ -109,6 +120,68 @@ func (s *usageBillingWriteBehindRepoStub) ReleaseBatchImageBalance(context.Conte
 	return nil, nil
 }
 
+type usageBillingWriteBehindBalanceCacheStub struct {
+	BillingCache
+
+	mu       sync.Mutex
+	balances map[int64]float64
+	setCalls int
+}
+
+func newUsageBillingWriteBehindBalanceCacheStub(initial map[int64]float64) *usageBillingWriteBehindBalanceCacheStub {
+	balances := make(map[int64]float64, len(initial))
+	for userID, balance := range initial {
+		balances[userID] = balance
+	}
+	return &usageBillingWriteBehindBalanceCacheStub{balances: balances}
+}
+
+func (s *usageBillingWriteBehindBalanceCacheStub) GetUserBalance(_ context.Context, userID int64) (float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	balance, ok := s.balances[userID]
+	if !ok {
+		return 0, errors.New("balance cache miss")
+	}
+	return balance, nil
+}
+
+func (s *usageBillingWriteBehindBalanceCacheStub) GetUserBalanceForTest(userID int64) (float64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	balance, ok := s.balances[userID]
+	return balance, ok
+}
+
+func (s *usageBillingWriteBehindBalanceCacheStub) SetUserBalance(_ context.Context, userID int64, balance float64) error {
+	s.mu.Lock()
+	s.balances[userID] = balance
+	s.setCalls++
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *usageBillingWriteBehindBalanceCacheStub) SetCallsForTest() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setCalls
+}
+
+func (s *usageBillingWriteBehindBalanceCacheStub) LocalBillingWriteThroughEnabled() bool {
+	return false
+}
+
+func (s *usageBillingWriteBehindBalanceCacheStub) ApplyUserBalanceDeltaLocal(userID int64, delta float64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	balance, ok := s.balances[userID]
+	if !ok {
+		return false
+	}
+	s.balances[userID] = balance + delta
+	return true
+}
+
 func newUsageBillingWriteBehindForTest() *UsageBillingWriteBehind {
 	cfg := &config.Config{}
 	cfg.Gateway.HotPath.UsageBillingWriteBehind = true
@@ -116,6 +189,103 @@ func newUsageBillingWriteBehindForTest() *UsageBillingWriteBehind {
 	cfg.Idempotency.DefaultTTLSeconds = 60
 	cfg.APIKeyAuth.L2TTLSeconds = 60
 	return NewUsageBillingWriteBehind(cfg)
+}
+
+func TestUsageBillingWriteBehind_DeductsSequentiallyFromL1(t *testing.T) {
+	wb := newUsageBillingWriteBehindForTest()
+	cache := newUsageBillingWriteBehindBalanceCacheStub(map[int64]float64{42: 10})
+	cacheService := &BillingCacheService{cache: cache}
+	deps := &billingDeps{billingCacheService: cacheService}
+	p := &postUsageBillingParams{
+		Cost: &CostBreakdown{ActualCost: 1},
+		User: &User{ID: 42, Balance: 999}, // Deliberately stale auth snapshot.
+	}
+
+	var balances []float64
+	for _, requestID := range []string{"sequential-1", "sequential-2"} {
+		result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
+			RequestID:   requestID,
+			UserID:      42,
+			BalanceCost: 1,
+		}, p, deps)
+		require.NoError(t, err)
+		require.True(t, handled)
+		require.NotNil(t, result.NewBalance)
+		balances = append(balances, *result.NewBalance)
+
+		// finalize must not apply the write-behind deduction a second time.
+		syncBalanceCacheAfterDeduction(context.Background(), p, deps, result)
+	}
+
+	require.Equal(t, []float64{9, 8}, balances)
+	balance, ok := cache.GetUserBalanceForTest(42)
+	require.True(t, ok)
+	require.Equal(t, 8.0, balance)
+	require.Equal(t, 0, cache.SetCallsForTest(), "write-behind must use atomic deltas, not absolute balance writes")
+}
+
+func TestUsageBillingWriteBehind_ConcurrentDeductionsAreSerializedAgainstL1(t *testing.T) {
+	wb := newUsageBillingWriteBehindForTest()
+	cache := newUsageBillingWriteBehindBalanceCacheStub(map[int64]float64{42: 10})
+	deps := &billingDeps{billingCacheService: &BillingCacheService{cache: cache}}
+	p := &postUsageBillingParams{User: &User{ID: 42, Balance: 999}}
+
+	const deductions = 8
+	start := make(chan struct{})
+	errCh := make(chan error, deductions)
+	var wg sync.WaitGroup
+	for i := 0; i < deductions; i++ {
+		wg.Add(1)
+		go func(request int) {
+			defer wg.Done()
+			<-start
+			result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
+				RequestID:   "concurrent-" + string(rune('a'+request)),
+				UserID:      42,
+				BalanceCost: 1,
+			}, p, deps)
+			if err == nil && (!handled || result == nil || result.NewBalance == nil) {
+				err = errors.New("deduction was not applied")
+			}
+			errCh <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+	balance, ok := cache.GetUserBalanceForTest(42)
+	require.True(t, ok)
+	require.Equal(t, 2.0, balance)
+	require.Equal(t, 0, cache.SetCallsForTest())
+}
+
+func TestUsageBillingWriteBehind_L1MissLoadsBeforeDelta(t *testing.T) {
+	wb := newUsageBillingWriteBehindForTest()
+	cache := newUsageBillingWriteBehindBalanceCacheStub(nil)
+	userRepo := &usageBillingWriteBehindUserRepoStub{balance: 10}
+	deps := &billingDeps{
+		billingCacheService: &BillingCacheService{cache: cache, userRepo: userRepo},
+		userRepo:            userRepo,
+	}
+
+	result, handled, err := wb.Apply(context.Background(), &UsageBillingCommand{
+		RequestID:   "cache-miss",
+		UserID:      42,
+		BalanceCost: 1,
+	}, &postUsageBillingParams{User: &User{ID: 42, Balance: 999}}, deps)
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.NotNil(t, result.NewBalance)
+	require.Equal(t, 9.0, *result.NewBalance)
+	require.Equal(t, 1, userRepo.getCalls)
+	balance, ok := cache.GetUserBalanceForTest(42)
+	require.True(t, ok)
+	require.Equal(t, 9.0, balance)
+	require.Equal(t, 1, cache.SetCallsForTest(), "DB fallback must synchronously seed L1 before the delta")
 }
 
 func TestUsageBillingWriteBehind_AggregatesAndFlushesOnce(t *testing.T) {

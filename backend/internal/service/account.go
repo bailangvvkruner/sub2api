@@ -82,6 +82,8 @@ type Account struct {
 
 type OpenAIEndpointCapability string
 
+const openAILongContextBillingEnabledKey = "openai_long_context_billing_enabled"
+
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
@@ -1191,6 +1193,14 @@ func (a *Account) IsOpenAI() bool {
 	return a.Platform == PlatformOpenAI
 }
 
+func (a *Account) IsOpenAILongContextBillingEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra[openAILongContextBillingEnabledKey].(bool)
+	return ok && enabled
+}
+
 func (a *Account) IsAnthropic() bool {
 	return a.Platform == PlatformAnthropic
 }
@@ -1250,15 +1260,39 @@ func (a *Account) GetOpenAIRefreshToken() string {
 	return a.GetCredential("refresh_token")
 }
 
+// GetGrokBaseURL selects the upstream used by Grok text and Responses traffic.
+// Grok media traffic has a different transport contract and must use
+// GetGrokMediaBaseURL instead.
 func (a *Account) GetGrokBaseURL() string {
 	if !a.IsGrok() {
 		return ""
+	}
+	if a.IsGrokOAuth() {
+		// OAuth bearer credentials are subscription credentials and may only be
+		// sent to the supported CLI gateway. Stored base_url values and unsafe
+		// development overrides apply exclusively to API-key accounts.
+		return xai.DefaultCLIBaseURL
 	}
 	baseURL := a.GetCredential("base_url")
 	if baseURL != "" {
 		return baseURL
 	}
 	return xai.DefaultBaseURL
+}
+
+// GetGrokMediaBaseURL selects the upstream used by Grok Imagine APIs.
+//
+// OAuth media credentials have the same trust boundary as OAuth text traffic:
+// they are pinned to the supported CLI gateway even for large request bodies.
+// API-key accounts retain their configured public/custom upstream behavior.
+func (a *Account) GetGrokMediaBaseURL() string {
+	if !a.IsGrok() {
+		return ""
+	}
+	if a.IsGrokOAuth() {
+		return xai.DefaultCLIBaseURL
+	}
+	return a.GetGrokBaseURL()
 }
 
 func (a *Account) GetGrokAccessToken() string {

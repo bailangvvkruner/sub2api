@@ -131,8 +131,67 @@ func ProvideOpenAIQuotaService(
 	proxyRepo ProxyRepository,
 	tokenProvider *OpenAITokenProvider,
 	privacyClientFactory PrivacyClientFactory,
+	openAIGatewayService *OpenAIGatewayService,
 ) *OpenAIQuotaService {
-	return NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory)
+	service := NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory)
+	service.agentIdentityWS = openAIGatewayService
+	return service
+}
+
+func ProvideAccountUsageService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageFetcher ClaudeUsageFetcher,
+	geminiQuotaService *GeminiQuotaService,
+	antigravityQuotaFetcher *AntigravityQuotaFetcher,
+	grokQuotaFetcher *GrokQuotaFetcher,
+	grokQuotaService *GrokQuotaService,
+	openAIQuotaService *OpenAIQuotaService,
+	cache *UsageCache,
+	identityCache IdentityCache,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	openAIGatewayService *OpenAIGatewayService,
+) *AccountUsageService {
+	service := NewAccountUsageService(
+		accountRepo,
+		usageLogRepo,
+		usageFetcher,
+		geminiQuotaService,
+		antigravityQuotaFetcher,
+		grokQuotaFetcher,
+		grokQuotaService,
+		openAIQuotaService,
+		cache,
+		identityCache,
+		tlsFPProfileService,
+	)
+	service.agentIdentityWS = openAIGatewayService
+	return service
+}
+
+func ProvideAccountTestService(
+	accountRepo AccountRepository,
+	geminiTokenProvider *GeminiTokenProvider,
+	claudeTokenProvider *ClaudeTokenProvider,
+	grokTokenProvider *GrokTokenProvider,
+	antigravityGatewayService *AntigravityGatewayService,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	openAIGatewayService *OpenAIGatewayService,
+) *AccountTestService {
+	service := NewAccountTestService(
+		accountRepo,
+		geminiTokenProvider,
+		claudeTokenProvider,
+		grokTokenProvider,
+		antigravityGatewayService,
+		httpUpstream,
+		cfg,
+		tlsFPProfileService,
+	)
+	service.agentIdentityWS = openAIGatewayService
+	return service
 }
 
 func ProvideGrokQuotaService(
@@ -140,8 +199,9 @@ func ProvideGrokQuotaService(
 	proxyRepo ProxyRepository,
 	tokenProvider *GrokTokenProvider,
 	httpUpstream HTTPUpstream,
+	usageLogRepo UsageLogRepository,
 ) *GrokQuotaService {
-	return NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream)
+	return NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream, usageLogRepo)
 }
 
 // ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
@@ -185,7 +245,7 @@ func ProvideGrokTokenProvider(
 	p := NewGrokTokenProvider(accountRepo, tokenCache)
 	executor := NewGrokTokenRefresher(grokOAuthService)
 	p.SetRefreshAPI(refreshAPI, executor)
-	p.SetRefreshPolicy(AntigravityProviderRefreshPolicy())
+	p.SetRefreshPolicy(GrokProviderRefreshPolicy())
 	p.SetTempUnschedCache(tempUnschedCache)
 	return p
 }
@@ -541,6 +601,30 @@ func ProvideBillingCacheService(
 	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
 }
 
+type usageBillingPendingRedisStore struct {
+	client *redis.Client
+}
+
+func (s *usageBillingPendingRedisStore) Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error {
+	pipe := s.client.Pipeline()
+	pipe.RPush(ctx, key, payload)
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (s *usageBillingPendingRedisStore) Trim(ctx context.Context, key string, n int64) error {
+	return s.client.LTrim(ctx, key, n, -1).Err()
+}
+
+func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, client *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
+	var pending usageBillingPendingStore
+	if client != nil {
+		pending = &usageBillingPendingRedisStore{client: client}
+	}
+	return newUsageBillingWriteBehind(cfg, pending, repo)
+}
+
 // ProvideUsageBillingWriteBehind creates and starts the request hot-path billing flusher.
 func ProvideUsageBillingWriteBehind(cfg *config.Config, redisClient *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
 	svc := NewUsageBillingWriteBehindWithRedis(cfg, redisClient, repo)
@@ -615,8 +699,8 @@ var ProviderSet = wire.NewSet(
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
-	NewAccountUsageService,
-	NewAccountTestService,
+	ProvideAccountUsageService,
+	ProvideAccountTestService,
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,

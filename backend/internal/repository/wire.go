@@ -22,10 +22,24 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
 	if waitTTLSeconds <= 0 {
 		waitTTLSeconds = cfg.Gateway.ConcurrencySlotTTLMinutes * 60
 	}
+	redisCache := NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
 	if cfg.Gateway.HotPath.LocalConcurrencySlots {
-		return NewLocalConcurrencyCache(cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+		localCache := NewLocalConcurrencyCache(cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+		apiKeyCache, ok := localCache.(service.APIKeyConcurrencyCache)
+		if !ok {
+			panic("local concurrency cache does not support API key request slots")
+		}
+		leaseCache, ok := redisCache.(service.OpenAIWSIngressLeaseCache)
+		if !ok {
+			panic("redis concurrency cache does not support OpenAI WebSocket ingress leases")
+		}
+		return newLocalConcurrencyCacheWithLeases(
+			localCache,
+			apiKeyCache,
+			leaseCache,
+		)
 	}
-	return NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+	return redisCache
 }
 
 // ProvideGitHubReleaseClient 创建 GitHub Release 客户端

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -164,6 +165,24 @@ func ValidatedBaseURL(override string) (string, error) {
 	return ValidateBaseURL(EffectiveBaseURL(override))
 }
 
+// BaseURLValidator applies the caller's outbound URL trust policy before xAI
+// endpoint paths are appended. The service layer uses this for API-key accounts
+// so the global security.url_allowlist policy remains the single source of
+// truth; OAuth callers keep using the strict trusted-host validator.
+type BaseURLValidator func(string) (string, error)
+
+func validatedBaseURLWithValidator(override string, validator BaseURLValidator) (string, error) {
+	if validator == nil {
+		return ValidatedBaseURL(override)
+	}
+	raw := EffectiveBaseURL(override)
+	validated, err := validator(raw)
+	if err != nil {
+		return "", err
+	}
+	return normalizeKnownBaseURLPath(validated)
+}
+
 type RuntimeSanityCheck struct {
 	Value     string `json:"value"`
 	Valid     bool   `json:"valid"`
@@ -191,7 +210,7 @@ func RuntimeSanity() RuntimeSanityReport {
 		UnsafeURLOverrides:    AllowUnsafeURLOverrides(),
 		UnsafeHighConcurrency: AllowUnsafeHighConcurrency(),
 		PublicGatewayScope:    "responses_only",
-		ProxyPolicy:           "account_proxy_optional; upstream URL allowlists enforced unless unsafe overrides are enabled",
+		ProxyPolicy:           "account_proxy_optional; OAuth URLs use trusted-host allowlists; API-key base URLs require public HTTPS unless unsafe overrides are enabled",
 	}
 }
 
@@ -256,6 +275,19 @@ func ValidateBaseURL(raw string) (string, error) {
 		return urlvalidator.ValidateURLFormat(raw, true)
 	}
 	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
+		AllowPrivate: false,
+	})
+	if err != nil {
+		return "", err
+	}
+	return normalizeKnownBaseURLPath(normalized)
+}
+
+func ValidateTrustedBaseURL(raw string) (string, error) {
+	if AllowUnsafeURLOverrides() {
+		return urlvalidator.ValidateURLFormat(raw, true)
+	}
+	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
 		AllowedHosts:     baseURLAllowedHosts,
 		RequireAllowlist: true,
 		AllowPrivate:     false,
@@ -269,7 +301,16 @@ func ValidateBaseURL(raw string) (string, error) {
 func normalizeKnownBaseURLPath(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("invalid url: %s", raw)
+		return "", errors.New("invalid base URL")
+	}
+	if parsed.User != nil {
+		return "", errors.New("base URL must not include userinfo")
+	}
+	if parsed.RawQuery != "" {
+		return "", errors.New("base URL must not include a query")
+	}
+	if parsed.Fragment != "" {
+		return "", errors.New("base URL must not include a fragment")
 	}
 	path := strings.TrimRight(parsed.Path, "/")
 	if path == "" {
@@ -422,7 +463,11 @@ func ParseAuthorizationInput(raw string) AuthorizationInput {
 }
 
 func BuildResponsesURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	return BuildResponsesURLWithValidator(baseURL, nil)
+}
+
+func BuildResponsesURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
@@ -430,7 +475,11 @@ func BuildResponsesURL(baseURL string) (string, error) {
 }
 
 func BuildChatCompletionsURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	return BuildChatCompletionsURLWithValidator(baseURL, nil)
+}
+
+func BuildChatCompletionsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
@@ -438,7 +487,11 @@ func BuildChatCompletionsURL(baseURL string) (string, error) {
 }
 
 func BuildImagesGenerationsURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	return BuildImagesGenerationsURLWithValidator(baseURL, nil)
+}
+
+func BuildImagesGenerationsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
@@ -446,7 +499,11 @@ func BuildImagesGenerationsURL(baseURL string) (string, error) {
 }
 
 func BuildImagesEditsURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	return BuildImagesEditsURLWithValidator(baseURL, nil)
+}
+
+func BuildImagesEditsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
@@ -454,15 +511,47 @@ func BuildImagesEditsURL(baseURL string) (string, error) {
 }
 
 func BuildVideosGenerationsURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	return BuildVideosGenerationsURLWithValidator(baseURL, nil)
+}
+
+func BuildVideosGenerationsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
 	return validatedBaseURL + "/videos/generations", nil
 }
 
+func BuildVideosEditsURL(baseURL string) (string, error) {
+	return BuildVideosEditsURLWithValidator(baseURL, nil)
+}
+
+func BuildVideosEditsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos/edits", nil
+}
+
+func BuildVideosExtensionsURL(baseURL string) (string, error) {
+	return BuildVideosExtensionsURLWithValidator(baseURL, nil)
+}
+
+func BuildVideosExtensionsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos/extensions", nil
+}
+
 func BuildVideoURL(baseURL, requestID string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	return BuildVideoURLWithValidator(baseURL, requestID, nil)
+}
+
+func BuildVideoURLWithValidator(baseURL, requestID string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}

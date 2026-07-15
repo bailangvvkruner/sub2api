@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/stretchr/testify/require"
 )
 
@@ -129,6 +130,14 @@ func TestBuildGrokMediaURLs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, DefaultBaseURL+"/videos/generations", videosURL)
 
+	videoEditsURL, err := BuildVideosEditsURL(DefaultBaseURL)
+	require.NoError(t, err)
+	require.Equal(t, DefaultBaseURL+"/videos/edits", videoEditsURL)
+
+	videoExtensionsURL, err := BuildVideosExtensionsURL(DefaultBaseURL)
+	require.NoError(t, err)
+	require.Equal(t, DefaultBaseURL+"/videos/extensions", videoExtensionsURL)
+
 	videoURL, err := BuildVideoURL(DefaultBaseURL, "req 123")
 	require.NoError(t, err)
 	require.Equal(t, DefaultBaseURL+"/videos/req%20123", videoURL)
@@ -137,11 +146,8 @@ func TestBuildGrokMediaURLs(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestValidateXAIURLsRejectArbitraryHostsByDefault(t *testing.T) {
+func TestValidateXAIURLsRejectUntrustedOAuthAndUnsafeBaseURLsByDefault(t *testing.T) {
 	_, err := ValidateOAuthEndpointURL("https://auth.example.test/oauth2/token")
-	require.Error(t, err)
-
-	_, err = ValidateBaseURL("https://xai.test/v1")
 	require.Error(t, err)
 
 	_, err = ValidateBaseURL("http://127.0.0.1:8080/v1")
@@ -149,6 +155,53 @@ func TestValidateXAIURLsRejectArbitraryHostsByDefault(t *testing.T) {
 
 	_, err = ValidateBaseURL("https://api.x.ai/custom")
 	require.Error(t, err)
+}
+
+func TestValidateBaseURLAllowsPublicThirdPartyGrokAPI(t *testing.T) {
+	baseURL, err := ValidateBaseURL("https://grok.example.test/v1/")
+	require.NoError(t, err)
+	require.Equal(t, "https://grok.example.test/v1", baseURL)
+
+	_, err = ValidateTrustedBaseURL("https://grok.example.test/v1")
+	require.Error(t, err)
+}
+
+func TestBuildResponsesURLWithValidatorUsesCallerPolicy(t *testing.T) {
+	validator := func(raw string) (string, error) {
+		return urlvalidator.ValidateURLFormat(raw, true)
+	}
+
+	target, err := BuildResponsesURLWithValidator("http://grok.example.test/v1/", validator)
+	require.NoError(t, err)
+	require.Equal(t, "http://grok.example.test/v1/responses", target)
+}
+
+func TestBuildResponsesURLPreservesUnsafeOverrideCustomPath(t *testing.T) {
+	t.Setenv(EnvAllowUnsafeURLOverrides, "true")
+
+	target, err := BuildResponsesURL("http://localhost:8080/custom")
+	require.NoError(t, err)
+	require.Equal(t, "http://localhost:8080/custom/responses", target)
+}
+
+func TestBuildResponsesURLWithValidatorRejectsBaseURLComponents(t *testing.T) {
+	permissive := func(raw string) (string, error) { return raw, nil }
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "userinfo", raw: "https://user:secret@grok.example.test/v1"},
+		{name: "query", raw: "https://grok.example.test/v1?token=secret"},
+		{name: "fragment", raw: "https://grok.example.test/v1#secret"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildResponsesURLWithValidator(tt.raw, permissive)
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "secret")
+		})
+	}
 }
 
 func TestValidateXAIURLsAllowUnsafeDevOverride(t *testing.T) {
@@ -182,6 +235,7 @@ func TestRuntimeSanityReportsSafeDefaults(t *testing.T) {
 	require.False(t, report.UnsafeHighConcurrency)
 	require.Equal(t, "responses_only", report.PublicGatewayScope)
 	require.Contains(t, report.ProxyPolicy, "account_proxy_optional")
+	require.Contains(t, report.ProxyPolicy, "API-key base URLs require public HTTPS")
 }
 
 func TestRuntimeSanityReportsInvalidOverridesWithoutSecrets(t *testing.T) {

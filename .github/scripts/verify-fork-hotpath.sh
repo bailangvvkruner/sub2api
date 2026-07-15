@@ -51,32 +51,63 @@ require_fixed backend/internal/config/config.go 'viper.SetDefault("database.user
 require_fixed backend/internal/config/config.go 'viper.SetDefault("database.user_platform_quota_flush_interval_ms", 30000)' "quota usage flusher interval must default to 30s"
 require_fixed backend/internal/config/config.go 'fallback_selection_mode", "random"' "fork fallback selection default changed"
 
-require_file backend/internal/repository/local_concurrency_cache.go
-require_fixed backend/internal/repository/local_concurrency_cache.go 'func NewLocalConcurrencyCache' "local concurrency cache constructor is missing"
+local_concurrency_file="backend/internal/repository/local_concurrency_cache.go"
+local_billing_file="backend/internal/repository/local_billing_cache.go"
+if [ -d backend/internal/hotpath ]; then
+  local_concurrency_file="backend/internal/hotpath/concurrency_cache.go"
+  local_billing_file="backend/internal/hotpath/billing_cache.go"
+fi
+
+require_file "$local_concurrency_file"
+require_fixed "$local_concurrency_file" 'func NewLocalConcurrencyCache' "local concurrency cache constructor is missing"
+require_fixed "$local_concurrency_file" 'func (c *localConcurrencyCache) TrackAPIKeySlot' "local concurrency cache does not track API key request slots"
+require_fixed "$local_concurrency_file" 'func (c *localConcurrencyCache) GetAPIKeyConcurrencyBatch' "local concurrency cache does not expose API key request counts"
 require_fixed backend/internal/repository/wire.go 'if cfg.Gateway.HotPath.LocalConcurrencySlots {' "local concurrency cache is not config-gated"
-require_fixed backend/internal/repository/wire.go 'return NewLocalConcurrencyCache(' "local concurrency cache is not wired"
+if [ "$local_concurrency_file" = "backend/internal/hotpath/concurrency_cache.go" ]; then
+  require_file backend/internal/repository/local_concurrency_cache.go
+  require_fixed backend/internal/repository/local_concurrency_cache.go 'hotpath.NewLocalConcurrencyCache(' "local concurrency compatibility provider does not delegate to internal/hotpath"
+  require_fixed backend/internal/repository/local_concurrency_cache.go 'type localConcurrencyCacheWithLeases struct' "local concurrency compatibility provider does not retain distributed lease capabilities"
+  require_fixed backend/internal/repository/local_concurrency_cache.go 'service.APIKeyConcurrencyCache' "local concurrency compatibility provider does not expose API key request slots"
+  require_fixed backend/internal/repository/local_concurrency_cache.go 'service.OpenAIWSIngressLeaseCache' "local concurrency compatibility provider does not expose WebSocket ingress leases"
+  require_fixed backend/internal/repository/wire.go 'localCache.(service.APIKeyConcurrencyCache)' "local concurrency provider does not retain process-local API key request slots"
+  require_fixed backend/internal/repository/wire.go 'redisCache.(service.OpenAIWSIngressLeaseCache)' "local concurrency provider does not retain Redis-backed WebSocket ingress leases"
+  require_fixed backend/internal/repository/wire.go 'return newLocalConcurrencyCacheWithLeases(' "local concurrency compatibility provider is not wired"
+else
+  require_fixed backend/internal/repository/wire.go 'return NewLocalConcurrencyCache(' "local concurrency cache is not wired"
+fi
 
 require_fixed backend/internal/service/deferred_service.go 'func NewDeferredServiceWithOptions' "deferred service options patch is missing"
 require_fixed backend/internal/service/wire.go 'persistLastUsed = cfg.Gateway.HotPath.PersistAccountLastUsed' "last_used persistence switch is not wired"
 require_regex backend/internal/repository/scheduler_cache.go 'func \(c \*schedulerCache\) UpdateLastUsed' "scheduler UpdateLastUsed hook is missing"
 require_nearby_fixed backend/internal/repository/scheduler_cache.go 'func (c *schedulerCache) UpdateLastUsed' 'return nil' "scheduler UpdateLastUsed must stay disabled"
+require_fixed backend/internal/repository/scheduler_cache.go 'account.LastUsedAt = nil' "scheduler cache rebuilds must scrub last_used"
 require_regex backend/internal/service/scheduler_snapshot_service.go 'func \(s \*SchedulerSnapshotService\) handleLastUsedEvent' "scheduler snapshot last_used handler is missing"
 require_nearby_fixed backend/internal/service/scheduler_snapshot_service.go 'func (s *SchedulerSnapshotService) handleLastUsedEvent' 'return nil' "scheduler snapshot last_used handler must stay disabled"
 
-require_file backend/internal/repository/local_billing_cache.go
+require_file "$local_billing_file"
 require_fixed backend/internal/repository/billing_cache.go 'func ProvideBillingCache(rdb *redis.Client, cfg *config.Config) service.BillingCache {' "billing cache provider signature changed"
-require_fixed backend/internal/repository/billing_cache.go 'return newLocalBillingCacheWithOptions(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries, cfg.Gateway.HotPath.LocalBillingCacheWriteThrough)' "local billing cache wrapper is not wired"
-require_fixed backend/internal/repository/local_billing_cache.go 'func newLocalBillingCache(next service.BillingCache, maxEntries int) service.BillingCache' "local billing cache constructor is missing"
-require_fixed backend/internal/repository/local_billing_cache.go 'func newLocalBillingCacheWithOptions(next service.BillingCache, maxEntries int, writeThrough bool) service.BillingCache' "local billing cache write-through option is missing"
-require_fixed backend/internal/repository/local_billing_cache.go 'func (c *localBillingCache) GetUserBalance' "local billing cache does not cover balance reads"
-require_fixed backend/internal/repository/local_billing_cache.go 'func (c *localBillingCache) DeductUserBalance' "local billing cache does not cover balance deductions"
-require_fixed backend/internal/repository/local_billing_cache.go 'func (c *localBillingCache) GetAPIKeyRateLimit' "local billing cache does not cover API key rate limit reads"
-require_fixed backend/internal/repository/local_billing_cache.go 'func (c *localBillingCache) IncrUserPlatformQuotaUsageCache' "local billing cache does not cover quota usage increments"
-require_fixed backend/internal/repository/local_billing_cache.go 'func (c *localBillingCache) PopDirtyUserPlatformQuotaKeys' "local billing cache dirty queue pop is missing"
-require_fixed backend/internal/repository/local_billing_cache.go 'func (c *localBillingCache) BatchGetUserPlatformQuotaCache' "local billing cache batch quota read is missing"
+if [ "$local_billing_file" = "backend/internal/hotpath/billing_cache.go" ]; then
+  require_file backend/internal/repository/local_billing_cache.go
+  require_fixed backend/internal/repository/billing_cache.go 'return newLocalBillingCacheWithOptions(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries, cfg.Gateway.HotPath.LocalBillingCacheWriteThrough)' "local billing cache compatibility provider is not wired"
+  require_fixed backend/internal/repository/local_billing_cache.go 'hotpath.NewLocalBillingCacheWithOptions(next, maxEntries, writeThrough)' "local billing compatibility provider does not delegate to internal/hotpath"
+  require_fixed "$local_billing_file" 'func NewLocalBillingCache(' "exported local billing cache constructor is missing"
+  require_fixed "$local_billing_file" 'func NewLocalBillingCacheWithOptions(' "exported local billing cache write-through constructor is missing"
+else
+  require_fixed backend/internal/repository/billing_cache.go 'return newLocalBillingCacheWithOptions(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries, cfg.Gateway.HotPath.LocalBillingCacheWriteThrough)' "local billing cache wrapper is not wired"
+  require_fixed "$local_billing_file" 'func newLocalBillingCache(next service.BillingCache, maxEntries int) service.BillingCache' "local billing cache constructor is missing"
+  require_fixed "$local_billing_file" 'func newLocalBillingCacheWithOptions(next service.BillingCache, maxEntries int, writeThrough bool) service.BillingCache' "local billing cache write-through option is missing"
+fi
+require_fixed "$local_billing_file" 'GetUserBalance' "local billing cache does not cover balance reads"
+require_fixed "$local_billing_file" 'DeductUserBalance' "local billing cache does not cover balance deductions"
+require_fixed "$local_billing_file" 'GetAPIKeyRateLimit' "local billing cache does not cover API key rate limit reads"
+require_fixed "$local_billing_file" 'IncrUserPlatformQuotaUsageCache' "local billing cache does not cover quota usage increments"
+require_fixed "$local_billing_file" 'PopDirtyUserPlatformQuotaKeys' "local billing cache dirty queue pop is missing"
+require_fixed "$local_billing_file" 'AcknowledgeUserPlatformQuotaFlush' "local billing cache in-flight flush ACK is missing"
+require_fixed "$local_billing_file" 'BatchGetUserPlatformQuotaCache' "local billing cache batch quota read is missing"
 
 require_file backend/internal/service/user_platform_quota_flusher.go
 require_fixed backend/internal/service/user_platform_quota_flusher.go 'type UserPlatformQuotaUsageFlusher struct' "quota usage flusher type is missing"
+require_fixed backend/internal/service/user_platform_quota_flusher.go 's.acknowledge(keys)' "quota flusher does not release in-flight protection on terminal outcomes"
 require_fixed backend/internal/service/wire.go 'ProvideUserPlatformQuotaUsageFlusher,' "quota usage flusher is not in the provider set"
 require_fixed backend/internal/service/wire.go 'func ProvideUserPlatformQuotaUsageFlusher(' "quota usage flusher provider is missing"
 require_fixed backend/internal/service/billing_cache_service.go 'markDirty := s.cfg != nil && s.cfg.Database.UserPlatformQuotaFlusherEnabled' "quota dirty marking is not config-gated"
