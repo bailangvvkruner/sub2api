@@ -300,8 +300,12 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
 }
 
 // ProvideDeferredService creates and starts DeferredService
-func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService) *DeferredService {
-	svc := NewDeferredService(accountRepo, timingWheel, 10*time.Second)
+func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService, cfg *config.Config) *DeferredService {
+	persistLastUsed := true
+	if cfg != nil {
+		persistLastUsed = cfg.Gateway.HotPath.PersistAccountLastUsed
+	}
+	svc := NewDeferredServiceWithOptions(accountRepo, timingWheel, 10*time.Second, persistLastUsed)
 	svc.Start()
 	return svc
 }
@@ -597,6 +601,37 @@ func ProvideBillingCacheService(
 	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
 }
 
+type usageBillingPendingRedisStore struct {
+	client *redis.Client
+}
+
+func (s *usageBillingPendingRedisStore) Append(ctx context.Context, key string, payload []byte, ttl time.Duration) error {
+	pipe := s.client.Pipeline()
+	pipe.RPush(ctx, key, payload)
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (s *usageBillingPendingRedisStore) Trim(ctx context.Context, key string, n int64) error {
+	return s.client.LTrim(ctx, key, n, -1).Err()
+}
+
+func NewUsageBillingWriteBehindWithRedis(cfg *config.Config, client *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
+	var pending usageBillingPendingStore
+	if client != nil {
+		pending = &usageBillingPendingRedisStore{client: client}
+	}
+	return newUsageBillingWriteBehind(cfg, pending, repo)
+}
+
+// ProvideUsageBillingWriteBehind creates and starts the request hot-path billing flusher.
+func ProvideUsageBillingWriteBehind(cfg *config.Config, redisClient *redis.Client, repo UsageBillingRepository) *UsageBillingWriteBehind {
+	svc := NewUsageBillingWriteBehindWithRedis(cfg, redisClient, repo)
+	svc.Start()
+	return svc
+}
+
 // ProvideAPIKeyService wires APIKeyService and connects rate-limit cache invalidation.
 func ProvideAPIKeyService(
 	apiKeyRepo APIKeyRepository,
@@ -607,10 +642,12 @@ func ProvideAPIKeyService(
 	cache APIKeyCache,
 	cfg *config.Config,
 	billingCacheService *BillingCacheService,
+	usageBillingWriteBehind *UsageBillingWriteBehind,
 	concurrencyService *ConcurrencyService,
 ) *APIKeyService {
 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
 	svc.SetRateLimitCacheInvalidator(billingCacheService)
+	svc.SetUsageBillingWriteBehind(usageBillingWriteBehind)
 	svc.SetConcurrencyService(concurrencyService)
 	return svc
 }
@@ -632,6 +669,7 @@ var ProviderSet = wire.NewSet(
 	ProvidePricingService,
 	NewBillingService,
 	ProvideBillingCacheService,
+	ProvideUsageBillingWriteBehind,
 	NewAnnouncementService,
 	NewAdminService,
 	NewGatewayService,
@@ -743,8 +781,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
 }
 
 // ProvidePaymentService creates PaymentService and attaches notification email delivery.
-func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, notificationEmailService *NotificationEmailService) *PaymentService {
-	svc := NewPaymentService(entClient, registry, loadBalancer, redeemService, subscriptionSvc, configService, userRepo, groupRepo, affiliateService)
+func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, billingCacheService *BillingCacheService, notificationEmailService *NotificationEmailService) *PaymentService {
+	svc := NewPaymentService(entClient, registry, loadBalancer, redeemService, subscriptionSvc, configService, userRepo, groupRepo, affiliateService, billingCacheService)
 	svc.SetNotificationEmailService(notificationEmailService)
 	return svc
 }

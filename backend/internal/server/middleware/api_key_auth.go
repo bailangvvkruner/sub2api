@@ -187,7 +187,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
 				return
 			}
-			if apiKey.IsQuotaExhausted() {
+			if apiKeyService.IsQuotaExhausted(apiKey) {
 				AbortWithError(c, 429, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
 				return
 			}
@@ -218,6 +218,8 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				}
 			} else {
 				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
+				// Handler-level BillingCacheService remains the primary, freshest check.
+				// Keep the historical fail-closed fallback for an exhausted auth snapshot.
 				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
 					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 					return

@@ -13,36 +13,56 @@ type DeferredService struct {
 	timingWheel *TimingWheelService
 	interval    time.Duration
 
-	lastUsedUpdates sync.Map
+	disableLastUsedPersistence bool
+	lastUsedUpdates            sync.Map
 }
 
 // NewDeferredService creates a new DeferredService instance
 func NewDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService, interval time.Duration) *DeferredService {
+	return NewDeferredServiceWithOptions(accountRepo, timingWheel, interval, true)
+}
+
+func NewDeferredServiceWithOptions(accountRepo AccountRepository, timingWheel *TimingWheelService, interval time.Duration, persistLastUsed bool) *DeferredService {
 	return &DeferredService{
-		accountRepo: accountRepo,
-		timingWheel: timingWheel,
-		interval:    interval,
+		accountRepo:                accountRepo,
+		timingWheel:                timingWheel,
+		interval:                   interval,
+		disableLastUsedPersistence: !persistLastUsed,
 	}
 }
 
 // Start starts the deferred service
 func (s *DeferredService) Start() {
+	if s.disableLastUsedPersistence {
+		log.Printf("[DeferredService] Account last_used persistence disabled")
+		return
+	}
 	s.timingWheel.ScheduleRecurring("deferred:last_used", s.interval, s.flushLastUsed)
 	log.Printf("[DeferredService] Started (interval: %v)", s.interval)
 }
 
 // Stop stops the deferred service
 func (s *DeferredService) Stop() {
+	if s.disableLastUsedPersistence {
+		log.Printf("[DeferredService] Service stopped")
+		return
+	}
 	s.timingWheel.Cancel("deferred:last_used")
 	s.flushLastUsed()
 	log.Printf("[DeferredService] Service stopped")
 }
 
 func (s *DeferredService) ScheduleLastUsedUpdate(accountID int64) {
+	if s == nil || s.disableLastUsedPersistence {
+		return
+	}
 	s.lastUsedUpdates.Store(accountID, time.Now())
 }
 
 func (s *DeferredService) flushLastUsed() {
+	if s == nil || s.disableLastUsedPersistence {
+		return
+	}
 	updates := make(map[int64]time.Time)
 	s.lastUsedUpdates.Range(func(key, value any) bool {
 		id, ok := key.(int64)

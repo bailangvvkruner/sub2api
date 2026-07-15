@@ -8,8 +8,10 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	gocache "github.com/patrickmn/go-cache"
+	"github.com/redis/go-redis/v9"
 )
 
 const rawUsageLogModelColumn = "model"
@@ -150,6 +152,14 @@ type usageLogRepository struct {
 
 func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLogRepository {
 	return newUsageLogRepositoryWithSQL(client, sqlDB)
+}
+
+func ProvideUsageLogRepository(client *dbent.Client, sqlDB *sql.DB, rdb *redis.Client, cfg *config.Config) service.UsageLogRepository {
+	base := newUsageLogRepositoryWithSQL(client, sqlDB)
+	if cfg == nil || !cfg.Gateway.HotPath.UsageBillingWriteBehind {
+		return base
+	}
+	return NewUsageLogRepositoryWithPending(base, rdb, cfg)
 }
 
 func newUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *usageLogRepository {

@@ -59,6 +59,10 @@ type apiKeyAuthCacheInvalidator interface {
 	InvalidateAuthCacheByKey(ctx context.Context, key string)
 }
 
+type usageBillingWriteBehindProvider interface {
+	UsageBillingWriteBehind() *UsageBillingWriteBehind
+}
+
 type usageLogBestEffortWriter interface {
 	CreateBestEffort(ctx context.Context, log *UsageLog) error
 }
@@ -135,8 +139,8 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
 			if err := deps.userRepo.DeductBalance(billingCtx, p.User.ID, cost.ActualCost); err != nil {
 				slog.Error("deduct balance failed", "user_id", p.User.ID, "error", err)
 			} else if deps.billingCacheService != nil {
-				if err := deps.billingCacheService.InvalidateUserBalance(billingCtx, p.User.ID); err != nil {
-					slog.Warn("invalidate balance cache after legacy deduction failed", "user_id", p.User.ID, "error", err)
+				if err := deps.billingCacheService.SyncBalanceAfterDeduction(billingCtx, p.User.ID, cost.ActualCost, nil); err != nil {
+					slog.Warn("sync balance cache after legacy deduction failed", "user_id", p.User.ID, "error", err)
 				}
 			}
 		}
@@ -280,13 +284,44 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	}
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
-	if cmd == nil || cmd.RequestID == "" || repo == nil {
+	if cmd == nil || cmd.RequestID == "" {
 		postUsageBilling(ctx, p, deps)
 		return true, nil
 	}
 
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
+
+	usageBillingWriteBehind := deps.usageBillingWriteBehind
+	if usageBillingWriteBehind == nil && p != nil {
+		if provider, ok := p.APIKeyService.(usageBillingWriteBehindProvider); ok {
+			usageBillingWriteBehind = provider.UsageBillingWriteBehind()
+		}
+	}
+	if usageBillingWriteBehind != nil && usageBillingWriteBehind.Enabled() {
+		result, handled, err := usageBillingWriteBehind.Apply(billingCtx, cmd, p, deps)
+		if err != nil {
+			return false, err
+		}
+		if handled {
+			if result == nil || !result.Applied {
+				deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+				return false, nil
+			}
+			if result.APIKeyQuotaExhausted {
+				if invalidator, ok := p.APIKeyService.(apiKeyAuthCacheInvalidator); ok && p.APIKey != nil && p.APIKey.Key != "" {
+					invalidator.InvalidateAuthCacheByKey(billingCtx, p.APIKey.Key)
+				}
+			}
+			finalizePostUsageBilling(billingCtx, p, deps, result)
+			return true, nil
+		}
+	}
+
+	if repo == nil {
+		postUsageBilling(billingCtx, p, deps)
+		return true, nil
+	}
 
 	result, err := repo.Apply(billingCtx, cmd)
 	if err != nil {
@@ -371,18 +406,22 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
 	if p == nil || p.Cost == nil || p.User == nil || deps == nil || deps.billingCacheService == nil {
 		return
 	}
-	if result != nil && result.NewBalance != nil && deps.billingCacheService.balanceBelowEligibilityThreshold(*result.NewBalance) {
-		if err := deps.billingCacheService.InvalidateUserBalance(ctx, p.User.ID); err != nil {
-			slog.Warn("invalidate balance cache after exhausted deduction failed",
-				"user_id", p.User.ID,
-				"new_balance", *result.NewBalance,
-				"balance_overdrafted", result.BalanceOverdrafted,
-				"error", err,
-			)
-		}
+	if result != nil && result.balanceCacheSynced {
 		return
 	}
-	deps.billingCacheService.QueueDeductBalance(p.User.ID, p.Cost.ActualCost)
+	var newBalance *float64
+	if result != nil {
+		newBalance = result.NewBalance
+	}
+	if err := deps.billingCacheService.SyncBalanceAfterDeduction(ctx, p.User.ID, p.Cost.ActualCost, newBalance); err != nil {
+		slog.Warn("sync balance cache after deduction failed",
+			"user_id", p.User.ID,
+			"has_new_balance", newBalance != nil,
+			"balance_overdrafted", result != nil && result.BalanceOverdrafted,
+			"error", err,
+		)
+		return
+	}
 }
 
 // notifyBalanceLow sends balance low notification after deduction.
@@ -484,26 +523,28 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
 
 // billingDeps 扣费逻辑依赖的服务（由各 gateway service 提供）
 type billingDeps struct {
-	accountRepo           AccountRepository
-	userRepo              UserRepository
-	userSubRepo           UserSubscriptionRepository
-	billingCacheService   *BillingCacheService
-	deferredService       *DeferredService
-	balanceNotifyService  *BalanceNotifyService
-	userPlatformQuotaRepo UserPlatformQuotaRepository
-	cfg                   *config.Config
+	accountRepo             AccountRepository
+	userRepo                UserRepository
+	userSubRepo             UserSubscriptionRepository
+	billingCacheService     *BillingCacheService
+	usageBillingWriteBehind *UsageBillingWriteBehind
+	deferredService         *DeferredService
+	balanceNotifyService    *BalanceNotifyService
+	userPlatformQuotaRepo   UserPlatformQuotaRepository
+	cfg                     *config.Config
 }
 
 func (s *GatewayService) billingDeps() *billingDeps {
 	return &billingDeps{
-		accountRepo:           s.accountRepo,
-		userRepo:              s.userRepo,
-		userSubRepo:           s.userSubRepo,
-		billingCacheService:   s.billingCacheService,
-		deferredService:       s.deferredService,
-		balanceNotifyService:  s.balanceNotifyService,
-		userPlatformQuotaRepo: s.userPlatformQuotaRepo,
-		cfg:                   s.cfg,
+		accountRepo:             s.accountRepo,
+		userRepo:                s.userRepo,
+		userSubRepo:             s.userSubRepo,
+		billingCacheService:     s.billingCacheService,
+		usageBillingWriteBehind: s.usageBillingWriteBehind,
+		deferredService:         s.deferredService,
+		balanceNotifyService:    s.balanceNotifyService,
+		userPlatformQuotaRepo:   s.userPlatformQuotaRepo,
+		cfg:                     s.cfg,
 	}
 }
 

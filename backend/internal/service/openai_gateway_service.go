@@ -363,31 +363,32 @@ var ErrNoAvailableCompactAccounts = errors.New("no available OpenAI accounts sup
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
-	accountRepo           AccountRepository
-	usageLogRepo          UsageLogRepository
-	usageBillingRepo      UsageBillingRepository
-	userRepo              UserRepository
-	userSubRepo           UserSubscriptionRepository
-	cache                 GatewayCache
-	cfg                   *config.Config
-	codexDetector         CodexClientRestrictionDetector
-	schedulerSnapshot     *SchedulerSnapshotService
-	concurrencyService    *ConcurrencyService
-	billingService        *BillingService
-	rateLimitService      *RateLimitService
-	billingCacheService   *BillingCacheService
-	userGroupRateResolver *userGroupRateResolver
-	httpUpstream          HTTPUpstream
-	deferredService       *DeferredService
-	openAITokenProvider   *OpenAITokenProvider
-	grokTokenProvider     *GrokTokenProvider
-	toolCorrector         *CodexToolCorrector
-	openaiWSResolver      OpenAIWSProtocolResolver
-	resolver              *ModelPricingResolver
-	channelService        *ChannelService
-	balanceNotifyService  *BalanceNotifyService
-	settingService        *SettingService
-	userPlatformQuotaRepo UserPlatformQuotaRepository
+	accountRepo             AccountRepository
+	usageLogRepo            UsageLogRepository
+	usageBillingRepo        UsageBillingRepository
+	usageBillingWriteBehind *UsageBillingWriteBehind // optional override; production resolves it from APIKeyService
+	userRepo                UserRepository
+	userSubRepo             UserSubscriptionRepository
+	cache                   GatewayCache
+	cfg                     *config.Config
+	codexDetector           CodexClientRestrictionDetector
+	schedulerSnapshot       *SchedulerSnapshotService
+	concurrencyService      *ConcurrencyService
+	billingService          *BillingService
+	rateLimitService        *RateLimitService
+	billingCacheService     *BillingCacheService
+	userGroupRateResolver   *userGroupRateResolver
+	httpUpstream            HTTPUpstream
+	deferredService         *DeferredService
+	openAITokenProvider     *OpenAITokenProvider
+	grokTokenProvider       *GrokTokenProvider
+	toolCorrector           *CodexToolCorrector
+	openaiWSResolver        OpenAIWSProtocolResolver
+	resolver                *ModelPricingResolver
+	channelService          *ChannelService
+	balanceNotifyService    *BalanceNotifyService
+	settingService          *SettingService
+	userPlatformQuotaRepo   UserPlatformQuotaRepository
 
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
@@ -442,19 +443,20 @@ func NewOpenAIGatewayService(
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
-		accountRepo:         accountRepo,
-		usageLogRepo:        usageLogRepo,
-		usageBillingRepo:    usageBillingRepo,
-		userRepo:            userRepo,
-		userSubRepo:         userSubRepo,
-		cache:               cache,
-		cfg:                 cfg,
-		codexDetector:       NewOpenAICodexClientRestrictionDetector(cfg),
-		schedulerSnapshot:   schedulerSnapshot,
-		concurrencyService:  concurrencyService,
-		billingService:      billingService,
-		rateLimitService:    rateLimitService,
-		billingCacheService: billingCacheService,
+		accountRepo:             accountRepo,
+		usageLogRepo:            usageLogRepo,
+		usageBillingRepo:        usageBillingRepo,
+		usageBillingWriteBehind: nil,
+		userRepo:                userRepo,
+		userSubRepo:             userSubRepo,
+		cache:                   cache,
+		cfg:                     cfg,
+		codexDetector:           NewOpenAICodexClientRestrictionDetector(cfg),
+		schedulerSnapshot:       schedulerSnapshot,
+		concurrencyService:      concurrencyService,
+		billingService:          billingService,
+		rateLimitService:        rateLimitService,
+		billingCacheService:     billingCacheService,
 		userGroupRateResolver: newUserGroupRateResolver(
 			userGroupRateRepo,
 			nil,
@@ -578,13 +580,15 @@ func (s *OpenAIGatewayService) getCodexSnapshotThrottle() *accountWriteThrottle 
 
 func (s *OpenAIGatewayService) billingDeps() *billingDeps {
 	return &billingDeps{
-		accountRepo:           s.accountRepo,
-		userRepo:              s.userRepo,
-		userSubRepo:           s.userSubRepo,
-		billingCacheService:   s.billingCacheService,
-		deferredService:       s.deferredService,
-		balanceNotifyService:  s.balanceNotifyService,
-		userPlatformQuotaRepo: s.userPlatformQuotaRepo,
+		accountRepo:             s.accountRepo,
+		userRepo:                s.userRepo,
+		userSubRepo:             s.userSubRepo,
+		billingCacheService:     s.billingCacheService,
+		usageBillingWriteBehind: s.usageBillingWriteBehind,
+		deferredService:         s.deferredService,
+		balanceNotifyService:    s.balanceNotifyService,
+		userPlatformQuotaRepo:   s.userPlatformQuotaRepo,
+		cfg:                     s.cfg,
 	}
 }
 

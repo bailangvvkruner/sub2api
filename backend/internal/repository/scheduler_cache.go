@@ -515,46 +515,7 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
 }
 
 func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
-	if len(updates) == 0 {
-		return nil
-	}
-
-	keys := make([]string, 0, len(updates))
-	ids := make([]int64, 0, len(updates))
-	for id := range updates {
-		keys = append(keys, schedulerAccountKey(strconv.FormatInt(id, 10)))
-		ids = append(ids, id)
-	}
-
-	values, err := c.mgetChunked(ctx, keys)
-	if err != nil {
-		return err
-	}
-
-	pipe := c.rdb.Pipeline()
-	for i, val := range values {
-		if val == nil {
-			continue
-		}
-		account, err := decodeCachedAccount(val)
-		if err != nil {
-			return err
-		}
-		account.LastUsedAt = ptrTime(updates[ids[i]])
-		updated, metaPayload, err := marshalSchedulerCacheAccount(*account)
-		if err != nil {
-			slog.Warn("scheduler cache removes account with unencodable payload",
-				"account_id", ids[i],
-				"error", err,
-			)
-			pipe.Del(ctx, keys[i], schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)))
-			continue
-		}
-		pipe.Set(ctx, keys[i], updated, 0)
-		pipe.Set(ctx, schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)), metaPayload, 0)
-	}
-	_, err = pipe.Exec(ctx)
-	return err
+	return nil
 }
 
 func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
@@ -622,10 +583,6 @@ func schedulerAccountMetaKey(id string) string {
 	return schedulerAccountMetaPrefix + id
 }
 
-func ptrTime(t time.Time) *time.Time {
-	return &t
-}
-
 func decodeCachedAccount(val any) (*service.Account, error) {
 	var payload []byte
 	switch raw := val.(type) {
@@ -664,6 +621,9 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
 	}
 
 	for _, account := range accounts {
+		// last_used is intentionally ephemeral in this fork. Scrub it at the
+		// only account write boundary so startup/full rebuilds cannot restore it.
+		account.LastUsedAt = nil
 		fullPayload, metaPayload, err := marshalSchedulerCacheAccount(account)
 		if err != nil {
 			slog.Warn("scheduler cache skips account with unencodable payload",

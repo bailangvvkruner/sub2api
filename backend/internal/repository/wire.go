@@ -22,7 +22,24 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
 	if waitTTLSeconds <= 0 {
 		waitTTLSeconds = cfg.Gateway.ConcurrencySlotTTLMinutes * 60
 	}
-	return NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+	redisCache := NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+	if cfg.Gateway.HotPath.LocalConcurrencySlots {
+		localCache := NewLocalConcurrencyCache(cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+		apiKeyCache, ok := localCache.(service.APIKeyConcurrencyCache)
+		if !ok {
+			panic("local concurrency cache does not support API key request slots")
+		}
+		leaseCache, ok := redisCache.(service.OpenAIWSIngressLeaseCache)
+		if !ok {
+			panic("redis concurrency cache does not support OpenAI WebSocket ingress leases")
+		}
+		return newLocalConcurrencyCacheWithLeases(
+			localCache,
+			apiKeyCache,
+			leaseCache,
+		)
+	}
+	return redisCache
 }
 
 // ProvideGitHubReleaseClient 创建 GitHub Release 客户端
@@ -75,7 +92,7 @@ var ProviderSet = wire.NewSet(
 	NewPromoCodeRepository,
 	NewAnnouncementRepository,
 	NewAnnouncementReadRepository,
-	NewUsageLogRepository,
+	ProvideUsageLogRepository,
 	NewUsageBillingRepository,
 	NewBatchImageRepository,
 	NewIdempotencyRepository,
@@ -99,7 +116,7 @@ var ProviderSet = wire.NewSet(
 
 	// Cache implementations
 	NewGatewayCache,
-	NewBillingCache,
+	ProvideBillingCache,
 	NewAPIKeyCache,
 	NewTempUnschedCache,
 	NewTimeoutCounterCache,

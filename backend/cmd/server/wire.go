@@ -103,9 +103,11 @@ func provideCleanup(
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
+	usageLogRepo service.UsageLogRepository,
+	usageBillingWriteBehind *service.UsageBillingWriteBehind,
 ) func() {
 	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
 		type cleanupStep struct {
@@ -279,6 +281,18 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"UsageLogPendingRepository", func() error {
+				if stopper, ok := usageLogRepo.(interface{ Stop() }); ok {
+					stopper.Stop()
+				}
+				return nil
+			}},
+			{"UsageBillingWriteBehind", func() error {
+				if usageBillingWriteBehind != nil {
+					usageBillingWriteBehind.Stop(nil)
+				}
+				return nil
+			}},
 		}
 
 		infraSteps := []cleanupStep{
@@ -330,7 +344,7 @@ func provideCleanup(
 		// Check if context timed out
 		select {
 		case <-ctx.Done():
-			log.Printf("[Cleanup] Warning: cleanup timed out after 10 seconds")
+			log.Printf("[Cleanup] Warning: cleanup timed out after 45 seconds")
 		default:
 			log.Printf("[Cleanup] All cleanup steps completed")
 		}

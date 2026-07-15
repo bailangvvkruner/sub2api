@@ -17,6 +17,10 @@ type quotaDirtyCache interface {
 	BatchGetUserPlatformQuotaCache(ctx context.Context, keys []UserPlatformQuotaKey) ([]*UserPlatformQuotaCacheEntry, error)
 }
 
+type quotaFlushAcknowledger interface {
+	AcknowledgeUserPlatformQuotaFlush(keys []UserPlatformQuotaKey)
+}
+
 // quotaSnapshotWriter 是 flusher 依赖的 DB 写入窄接口。
 // 使用 service 层的 UserPlatformQuotaSnapshot，避免与 repository 包形成循环依赖；
 // 实际实现由 repository adapter 在 B7 注入。
@@ -46,6 +50,8 @@ const maxFlushBatchSize = 6000
 
 // defaultFlushBatchSize 是配置 flush_batch_size 非法(≤0)时的回退值。
 const defaultFlushBatchSize = 1000
+
+const defaultQuotaFlushInterval = 30 * time.Second
 
 // UserPlatformQuotaUsageFlusher 将 Redis 脏集快照定期批量写入 DB。
 // 不维护任何 delta/in-process 状态；每批读取 Redis 当前绝对值覆盖写入。
@@ -77,8 +83,8 @@ func NewUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, qu
 	}
 	interval := time.Duration(cfg.Database.UserPlatformQuotaFlushIntervalMs) * time.Millisecond
 	if interval <= 0 {
-		logger.LegacyPrintf("quota_flusher", "[QuotaFlusher] flush_interval_ms %d 非法,回退 2000ms", cfg.Database.UserPlatformQuotaFlushIntervalMs)
-		interval = 2 * time.Second
+		logger.LegacyPrintf("quota_flusher", "[QuotaFlusher] flush_interval_ms %d 非法,回退 30000ms", cfg.Database.UserPlatformQuotaFlushIntervalMs)
+		interval = defaultQuotaFlushInterval
 	}
 	return &UserPlatformQuotaUsageFlusher{
 		cache:        cache,
@@ -113,6 +119,12 @@ func (s *UserPlatformQuotaUsageFlusher) readdOrCountLost(ctx context.Context, ke
 		return
 	}
 	s.metrics.DirtyReaddTotal.Add(int64(len(keys)))
+}
+
+func (s *UserPlatformQuotaUsageFlusher) acknowledge(keys []UserPlatformQuotaKey) {
+	if cache, ok := s.cache.(quotaFlushAcknowledger); ok {
+		cache.AcknowledgeUserPlatformQuotaFlush(keys)
+	}
 }
 
 // flushOneBatch 处理单批：Pop → BatchGet → 组装 snaps → BatchSnapshotUsage。
@@ -167,6 +179,7 @@ func (s *UserPlatformQuotaUsageFlusher) flushOneBatch(parentCtx context.Context)
 
 	// 4. 全部 MISS/异常跳过时
 	if len(snaps) == 0 {
+		s.acknowledge(keys)
 		// 若 Pop 数量已不满一批，表示脏集将空，停止
 		if len(keys) < s.batchSize {
 			return false
@@ -200,6 +213,7 @@ func (s *UserPlatformQuotaUsageFlusher) flushOneBatch(parentCtx context.Context)
 			// FK 违反：用户已被删除，直接丢弃不 Readd
 			s.metrics.FlushFKViolationTotal.Add(1)
 			s.metrics.FlushErrorTotal.Add(1)
+			s.acknowledge(keys)
 			logger.LegacyPrintf("quota_flusher", "[QuotaFlusher] FK violation (dropped %d snaps): %v", len(snaps), writeErr)
 		} else {
 			// 其他错误：回填脏集，保留下次重试
@@ -213,6 +227,7 @@ func (s *UserPlatformQuotaUsageFlusher) flushOneBatch(parentCtx context.Context)
 	// 6. 成功
 	s.metrics.FlushSuccessTotal.Add(1)
 	s.metrics.FlushBatchSizeTotal.Add(int64(len(snaps)))
+	s.acknowledge(keys)
 
 	// 若 Pop 数量不满一批，脏集已空，停止
 	if len(keys) < s.batchSize {

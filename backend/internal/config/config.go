@@ -846,6 +846,9 @@ type GatewayConfig struct {
 	// Scheduling: 账号调度相关配置
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
 
+	// HotPath: fork-only switches for reducing request-path Redis/DB writes.
+	HotPath GatewayHotPathConfig `mapstructure:"hotpath"`
+
 	// TLSFingerprint: TLS指纹伪装配置
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
 
@@ -1077,6 +1080,16 @@ type GatewayUsageRecordConfig struct {
 	AutoScaleCooldownSeconds int `mapstructure:"auto_scale_cooldown_seconds"`
 }
 
+type GatewayHotPathConfig struct {
+	LocalConcurrencySlots         bool `mapstructure:"local_concurrency_slots"`
+	PersistAccountLastUsed        bool `mapstructure:"persist_account_last_used"`
+	LocalBillingCache             bool `mapstructure:"local_billing_cache"`
+	LocalBillingCacheMaxEntries   int  `mapstructure:"local_billing_cache_max_entries"`
+	LocalBillingCacheWriteThrough bool `mapstructure:"local_billing_cache_write_through"`
+	UsageBillingWriteBehind       bool `mapstructure:"usage_billing_write_behind"`
+	UsageBillingFlushIntervalMs   int  `mapstructure:"usage_billing_flush_interval_ms"`
+}
+
 // TLSFingerprintConfig TLS指纹伪装配置
 // 用于模拟 Claude CLI (Node.js) 的 TLS 握手特征，避免被识别为非官方客户端
 type TLSFingerprintConfig struct {
@@ -1127,12 +1140,12 @@ type GatewaySchedulingConfig struct {
 	FallbackWaitTimeout time.Duration `mapstructure:"fallback_wait_timeout"`
 	FallbackMaxWaiting  int           `mapstructure:"fallback_max_waiting"`
 
-	// 兜底层账户选择策略: "last_used"(按最后使用时间排序，默认) 或 "random"(随机)
+	// 兜底层账户选择策略: "random"(随机，默认) 或 "last_used"(按最后使用时间排序)
 	FallbackSelectionMode string `mapstructure:"fallback_selection_mode"`
 
 	// PreferSoonestReset 开启后，负载感知选择会优先选用「会话窗口最早重置」的账号
 	// （use-it-or-lose-it：先用尽即将重置的账号，保留重置时间还很久的账号）。
-	// 默认 false，保持原有「优先级 → 负载率 → LRU」行为不变。
+	// 默认 false，保持「优先级 → 负载率 → 随机」行为。
 	PreferSoonestReset bool `mapstructure:"prefer_soonest_reset"`
 
 	// 负载计算
@@ -1780,8 +1793,8 @@ func setDefaults() {
 	viper.SetDefault("database.max_idle_conns", 128)
 	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
 	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
-	viper.SetDefault("database.user_platform_quota_flusher_enabled", false)
-	viper.SetDefault("database.user_platform_quota_flush_interval_ms", 2000)
+	viper.SetDefault("database.user_platform_quota_flusher_enabled", true)
+	viper.SetDefault("database.user_platform_quota_flush_interval_ms", 30000)
 	viper.SetDefault("database.user_platform_quota_flush_batch_size", 1000)
 
 	// Redis
@@ -2045,7 +2058,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
 	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 30*time.Second)
 	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 100)
-	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
+	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "random")
 	viper.SetDefault("gateway.scheduling.prefer_soonest_reset", false)
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
 	viper.SetDefault("gateway.scheduling.load_batch_cache_ttl_ms", 200)
@@ -2078,6 +2091,13 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_down_step", 16)
 	viper.SetDefault("gateway.usage_record.auto_scale_check_interval_seconds", 3)
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
+	viper.SetDefault("gateway.hotpath.local_concurrency_slots", true)
+	viper.SetDefault("gateway.hotpath.persist_account_last_used", false)
+	viper.SetDefault("gateway.hotpath.local_billing_cache", true)
+	viper.SetDefault("gateway.hotpath.local_billing_cache_max_entries", 262144)
+	viper.SetDefault("gateway.hotpath.local_billing_cache_write_through", false)
+	viper.SetDefault("gateway.hotpath.usage_billing_write_behind", true)
+	viper.SetDefault("gateway.hotpath.usage_billing_flush_interval_ms", 30000)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
@@ -2889,6 +2909,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.UsageRecord.WorkerCount <= 0 {
 		return fmt.Errorf("gateway.usage_record.worker_count must be positive")
+	}
+	if c.Gateway.HotPath.LocalBillingCacheMaxEntries < 0 {
+		return fmt.Errorf("gateway.hotpath.local_billing_cache_max_entries must be non-negative")
+	}
+	if c.Gateway.HotPath.UsageBillingWriteBehind && c.Gateway.HotPath.UsageBillingFlushIntervalMs <= 0 {
+		return fmt.Errorf("gateway.hotpath.usage_billing_flush_interval_ms must be positive")
 	}
 	if c.Gateway.UsageRecord.QueueSize <= 0 {
 		return fmt.Errorf("gateway.usage_record.queue_size must be positive")

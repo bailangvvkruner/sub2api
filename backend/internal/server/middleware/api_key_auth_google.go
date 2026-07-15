@@ -56,6 +56,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			abortWithGoogleError(c, 401, "API key is disabled")
 			return
 		}
+		if apiKeyService.IsQuotaExhausted(apiKey) {
+			abortWithGoogleError(c, 429, "API key 额度已用完")
+			return
+		}
 
 		// 检查 IP 限制（白名单/黑名单）。与主中间件保持一致，避免 Gemini 端点绕过 Key 的 IP ACL。
 		if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
@@ -162,10 +166,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			}
 
 			c.Set(string(ContextKeySubscription), subscription)
-		} else {
-			if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
-				abortWithGoogleError(c, 403, "Insufficient account balance")
-				return
+
+			if needsMaintenance {
+				maintenanceCopy := *subscription
+				subscriptionService.DoWindowMaintenance(&maintenanceCopy)
 			}
 		}
 

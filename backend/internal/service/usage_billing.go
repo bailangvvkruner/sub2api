@@ -100,6 +100,18 @@ func valueOrZero(v *int64) int64 {
 	return *v
 }
 
+func cloneUsageBillingCommand(in *UsageBillingCommand) *UsageBillingCommand {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.SubscriptionID != nil {
+		subID := *in.SubscriptionID
+		out.SubscriptionID = &subID
+	}
+	return &out
+}
+
 // AccountQuotaState holds the post-increment quota state returned by the DB transaction.
 // All values are post-update (i.e., already include the increment).
 type AccountQuotaState struct {
@@ -117,6 +129,7 @@ type UsageBillingApplyResult struct {
 	NewBalance           *float64           // post-deduction balance (nil = no balance deduction)
 	BalanceOverdrafted   bool               // true when the sufficient-balance guard missed and debt was still recorded
 	QuotaState           *AccountQuotaState // post-increment quota state (nil = no quota increment)
+	balanceCacheSynced   bool               // write-behind already applied the balance delta to L1
 }
 
 // BatchImageBalanceHoldCommand describes an idempotent balance hold operation.
