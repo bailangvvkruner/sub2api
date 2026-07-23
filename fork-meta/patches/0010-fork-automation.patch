@@ -1,6 +1,6 @@
-From 6842963a7d55c2f3608eef93294a5228623e70ec Mon Sep 17 00:00:00 2001
+From af28e28c7364f0240b5fc893d58a1070c23cb90d Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Wed, 15 Jul 2026 12:26:02 +0800
+Date: Thu, 23 Jul 2026 10:39:58 +0800
 Subject: [PATCH 1/7] fork: preserve patch queue and automation
 
 ---
@@ -948,15 +948,15 @@ index 0000000000000000000000000000000000000000..23e09059fc3321663ab3bf4837b7653f
 +```
 diff --git a/fork-meta/patch-series.json b/fork-meta/patch-series.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..07be68127604f899a563e5af325b60dce689ad9e
+index 0000000000000000000000000000000000000000..e0d0bb6867cc947456350439117b4f5c3f56f40d
 --- /dev/null
 +++ b/fork-meta/patch-series.json
 @@ -0,0 +1,95 @@
-+{
++﻿{
 +  "schema_version": 2,
 +  "upstream_repository": "https://github.com/Wei-Shaw/sub2api.git",
 +  "upstream_branch": "main",
-+  "base_upstream_sha": "3f605c35430b4c5deb720209aec032d38dfb7bb8",
++  "base_upstream_sha": "ba88cc239cdbe689bc5785dd36238caf6ecb14ef",
 +  "patch_directory": "fork-meta/patches",
 +  "generators": [
 +    {
