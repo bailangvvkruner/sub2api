@@ -1,6 +1,6 @@
-From c133b43eceec8c18fe5d81b0834d66144114429c Mon Sep 17 00:00:00 2001
+From af28e28c7364f0240b5fc893d58a1070c23cb90d Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Thu, 23 Jul 2026 10:26:50 +0800
+Date: Thu, 23 Jul 2026 10:39:58 +0800
 Subject: [PATCH 2/7] fork: restore L1 hotpath and write-behind runtime
 
 ---
@@ -2473,7 +2473,7 @@ index 0000000000000000000000000000000000000000..a3e3052120e0883c60b66a9b3d9c0c3d
 +	return make(map[int64]service.GeminiUsageTotals, len(accountIDs)), nil
 +}
 diff --git a/backend/internal/repository/usage_log_repo.go b/backend/internal/repository/usage_log_repo.go
-index 4359edc2ca1e1c9816c09b316b5ec4ce5082284e..1f2cb1c1c16a142b398c328abd640df5b3d864b8 100644
+index 94b605693daf4bba0ce9980155bf7a8015e46d3b..e3131b0b3c688284b5b31f76eb83df2d697a4835 100644
 --- a/backend/internal/repository/usage_log_repo.go
 +++ b/backend/internal/repository/usage_log_repo.go
 @@ -8,8 +8,10 @@ import (
@@ -2487,7 +2487,7 @@ index 4359edc2ca1e1c9816c09b316b5ec4ce5082284e..1f2cb1c1c16a142b398c328abd640df5
  )
  
  const rawUsageLogModelColumn = "model"
-@@ -152,6 +154,14 @@ func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLog
+@@ -154,6 +156,14 @@ func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLog
  	return newUsageLogRepositoryWithSQL(client, sqlDB)
  }
  
@@ -2503,7 +2503,7 @@ index 4359edc2ca1e1c9816c09b316b5ec4ce5082284e..1f2cb1c1c16a142b398c328abd640df5
  	// 使用 scanSingleRow 替代 QueryRowContext，保证 ent.Tx 作为 sqlExecutor 可用。
  	repo := &usageLogRepository{client: client, sql: sqlq}
 diff --git a/backend/internal/repository/wire.go b/backend/internal/repository/wire.go
-index 1ee3194ad6d07aaf31cff3df57279a64d8fa8c19..94e14b1c210d0feafd6c310ecb91bc64b94fe663 100644
+index 66588299ba7a2bb7b82b1bb1cca6ea0078ea5200..e64673a00e62c51eee1b2ceb6a726cdc0fcaea9b 100644
 --- a/backend/internal/repository/wire.go
 +++ b/backend/internal/repository/wire.go
 @@ -23,7 +23,24 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
@@ -2532,7 +2532,7 @@ index 1ee3194ad6d07aaf31cff3df57279a64d8fa8c19..94e14b1c210d0feafd6c310ecb91bc64
  }
  
  // ProvideGitHubReleaseClient 创建 GitHub Release 客户端
-@@ -78,7 +95,7 @@ var ProviderSet = wire.NewSet(
+@@ -79,7 +96,7 @@ var ProviderSet = wire.NewSet(
  	NewPromoCodeRepository,
  	NewAnnouncementRepository,
  	NewAnnouncementReadRepository,
@@ -2541,7 +2541,7 @@ index 1ee3194ad6d07aaf31cff3df57279a64d8fa8c19..94e14b1c210d0feafd6c310ecb91bc64
  	NewUsageBillingRepository,
  	NewBatchImageRepository,
  	NewIdempotencyRepository,
-@@ -103,7 +120,7 @@ var ProviderSet = wire.NewSet(
+@@ -104,7 +121,7 @@ var ProviderSet = wire.NewSet(
  
  	// Cache implementations
  	NewGatewayCache,
@@ -2603,10 +2603,10 @@ index 9efbbcb2cc99853c7affa25da81b00ff6290691d..f1b5f48d4190fd49eafa28c2251364bc
  		}
  
 diff --git a/backend/internal/server/routes/admin.go b/backend/internal/server/routes/admin.go
-index 7bc8afd7bbd7ea977581f11def2e4c6eeae62dbd..93d198fcf3ed5f7100e351b12d7ea525715e2260 100644
+index b64ec64b5600173d740ebe09aad32b2d0a634efa..e6830bccd0602ea6272d965539b4a1dc49bc3e4f 100644
 --- a/backend/internal/server/routes/admin.go
 +++ b/backend/internal/server/routes/admin.go
-@@ -641,6 +641,7 @@ func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+@@ -646,6 +646,7 @@ func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
  	{
  		usage.GET("", h.Admin.Usage.List)
  		usage.GET("/stats", h.Admin.Usage.Stats)
@@ -3016,10 +3016,10 @@ index a3dfe00826d20e2ee2c2ac70d0efdeac396cbeed..107ee58c0dbc71146d1ba2dd9ee78c62
  	s.lastUsedUpdates.Range(func(key, value any) bool {
  		id, ok := key.(int64)
 diff --git a/backend/internal/service/gateway_scheduling.go b/backend/internal/service/gateway_scheduling.go
-index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1ed70ef52d 100644
+index 99cfd02c4e72f8674e8ccb062c93799c90a735f4..28c9baa3c18ecd3678d023df64dc607c84105d24 100644
 --- a/backend/internal/service/gateway_scheduling.go
 +++ b/backend/internal/service/gateway_scheduling.go
-@@ -422,27 +422,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
+@@ -438,27 +438,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
  			}
  
  			if len(routingAvailable) > 0 {
@@ -3049,7 +3049,7 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  
  				// 4. 尝试获取槽位
  				for _, item := range routingAvailable {
-@@ -691,8 +672,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
+@@ -707,8 +688,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
  			}
  			// 3. 取负载率最低的集合
  			candidates = filterByMinLoadRate(candidates)
@@ -3060,7 +3060,7 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  			if selected == nil {
  				break
  			}
-@@ -741,7 +722,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
+@@ -757,7 +738,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
  
  func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
  	ordered := append([]*Account(nil), candidates...)
@@ -3073,7 +3073,7 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  
  	for _, acc := range ordered {
  		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
-@@ -1483,9 +1468,7 @@ func filterBySoonestReset(accounts []accountWithLoad) []accountWithLoad {
+@@ -1523,9 +1508,7 @@ func filterBySoonestReset(accounts []accountWithLoad) []accountWithLoad {
  	return result
  }
  
@@ -3084,7 +3084,7 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  	if len(accounts) == 0 {
  		return nil
  	}
-@@ -1493,52 +1476,19 @@ func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad
+@@ -1533,52 +1516,19 @@ func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad
  		return &accounts[0]
  	}
  
@@ -3144,7 +3144,7 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  	selectedIdx := candidateIdxs[mathrand.Intn(len(candidateIdxs))]
  	return &accounts[selectedIdx]
  }
-@@ -1566,16 +1516,34 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
+@@ -1606,16 +1556,34 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
  	shuffleWithinPriorityAndLastUsed(accounts, preferOAuth)
  }
  
@@ -3185,7 +3185,7 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  			j++
  		}
  		if j-i > 1 {
-@@ -1587,17 +1555,6 @@ func shuffleWithinSortGroups(accounts []accountWithLoad) {
+@@ -1627,17 +1595,6 @@ func shuffleWithinSortGroups(accounts []accountWithLoad) {
  	}
  }
  
@@ -3203,7 +3203,7 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  // shuffleWithinPriorityAndLastUsed 对排序后的 []*Account 切片，按 (Priority, LastUsedAt) 分组后组内随机打乱。
  //
  // 注意：当 preferOAuth=true 时，需要保证 OAuth 账号在同组内仍然优先，否则会把排序时的偏好打散掉。
-@@ -1668,8 +1625,7 @@ func sameLastUsedAt(a, b *time.Time) bool {
+@@ -1708,8 +1665,7 @@ func sameLastUsedAt(a, b *time.Time) bool {
  func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, preferOAuth bool, mode string) {
  	if mode == "random" {
  		// 先按优先级排序，然后在同优先级内随机打乱
@@ -3214,10 +3214,10 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  		// 默认按最后使用时间排序
  		sortAccountsByPriorityAndLastUsed(accounts, preferOAuth)
 diff --git a/backend/internal/service/gateway_service.go b/backend/internal/service/gateway_service.go
-index 23684af4aaacecce1b0735e15a9d556de5b67ba8..e584267c82f2fc8ab87149c82ff5b0ca7c239eb6 100644
+index 2f2f836ddd615c1f3b049ed28370bab4d8877011..85ef9a1f56695cd555cf1f785a486b4ed2643841 100644
 --- a/backend/internal/service/gateway_service.go
 +++ b/backend/internal/service/gateway_service.go
-@@ -676,42 +676,43 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
+@@ -676,43 +676,44 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
  
  // GatewayService handles API gateway operations
  type GatewayService struct {
@@ -3253,6 +3253,7 @@ index 23684af4aaacecce1b0735e15a9d556de5b67ba8..e584267c82f2fc8ab87149c82ff5b0ca
 -	debugClaudeMimic      atomic.Bool
 -	channelService        *ChannelService
 -	resolver              *ModelPricingResolver
+-	compositeResolver     *CompositeRouteResolver
 -	debugGatewayBodyFile  atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
 -	tlsFPProfileService   *TLSFingerprintProfileService
 -	balanceNotifyService  *BalanceNotifyService
@@ -3290,6 +3291,7 @@ index 23684af4aaacecce1b0735e15a9d556de5b67ba8..e584267c82f2fc8ab87149c82ff5b0ca
 +	debugClaudeMimic        atomic.Bool
 +	channelService          *ChannelService
 +	resolver                *ModelPricingResolver
++	compositeResolver       *CompositeRouteResolver
 +	debugGatewayBodyFile    atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
 +	tlsFPProfileService     *TLSFingerprintProfileService
 +	balanceNotifyService    *BalanceNotifyService
@@ -3297,7 +3299,7 @@ index 23684af4aaacecce1b0735e15a9d556de5b67ba8..e584267c82f2fc8ab87149c82ff5b0ca
  }
  
  // NewGatewayService creates a new GatewayService
-@@ -748,37 +749,38 @@ func NewGatewayService(
+@@ -750,38 +751,39 @@ func NewGatewayService(
  	modelsListTTL := resolveModelsListCacheTTL(cfg)
  
  	svc := &GatewayService{
@@ -3330,6 +3332,7 @@ index 23684af4aaacecce1b0735e15a9d556de5b67ba8..e584267c82f2fc8ab87149c82ff5b0ca
 -		tlsFPProfileService:   tlsFPProfileService,
 -		channelService:        channelService,
 -		resolver:              resolver,
+-		compositeResolver:     compositeResolver,
 -		balanceNotifyService:  balanceNotifyService,
 -		userPlatformQuotaRepo: userPlatformQuotaRepo,
 +		accountRepo:             accountRepo,
@@ -3362,13 +3365,14 @@ index 23684af4aaacecce1b0735e15a9d556de5b67ba8..e584267c82f2fc8ab87149c82ff5b0ca
 +		tlsFPProfileService:     tlsFPProfileService,
 +		channelService:          channelService,
 +		resolver:                resolver,
++		compositeResolver:       compositeResolver,
 +		balanceNotifyService:    balanceNotifyService,
 +		userPlatformQuotaRepo:   userPlatformQuotaRepo,
  	}
  	svc.userGroupRateResolver = newUserGroupRateResolver(
  		userGroupRateRepo,
 diff --git a/backend/internal/service/gateway_usage_billing.go b/backend/internal/service/gateway_usage_billing.go
-index 71236b69bdcc46a0ce27aef6b5c6bba3e96f6ea0..3b8a856e231c87ab46586f4559637db7fdae014d 100644
+index 1606f0f3c1613ac2e30fb56ef1b299a439a34a11..c6708c1d77594f5e5882e88b02dbaca60288a14e 100644
 --- a/backend/internal/service/gateway_usage_billing.go
 +++ b/backend/internal/service/gateway_usage_billing.go
 @@ -64,6 +64,10 @@ type apiKeyAuthCacheInvalidator interface {
@@ -3382,7 +3386,7 @@ index 71236b69bdcc46a0ce27aef6b5c6bba3e96f6ea0..3b8a856e231c87ab46586f4559637db7
  type usageLogBestEffortWriter interface {
  	CreateBestEffort(ctx context.Context, log *UsageLog) error
  }
-@@ -140,8 +144,8 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
+@@ -149,8 +153,8 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
  			if err := deps.userRepo.DeductBalance(billingCtx, p.User.ID, cost.ActualCost); err != nil {
  				slog.Error("deduct balance failed", "user_id", p.User.ID, "error", err)
  			} else if deps.billingCacheService != nil {
@@ -3393,7 +3397,7 @@ index 71236b69bdcc46a0ce27aef6b5c6bba3e96f6ea0..3b8a856e231c87ab46586f4559637db7
  				}
  			}
  		}
-@@ -285,7 +289,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
+@@ -294,7 +298,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
  	}
  
  	cmd := buildUsageBillingCommand(requestID, usageLog, p)
@@ -3402,7 +3406,7 @@ index 71236b69bdcc46a0ce27aef6b5c6bba3e96f6ea0..3b8a856e231c87ab46586f4559637db7
  		postUsageBilling(ctx, p, deps)
  		return true, nil
  	}
-@@ -293,6 +297,37 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
+@@ -302,6 +306,37 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
  	billingCtx, cancel := detachedBillingContext(ctx)
  	defer cancel()
  
@@ -3440,7 +3444,7 @@ index 71236b69bdcc46a0ce27aef6b5c6bba3e96f6ea0..3b8a856e231c87ab46586f4559637db7
  	result, err := repo.Apply(billingCtx, cmd)
  	if err != nil {
  		return false, err
-@@ -376,18 +411,22 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
+@@ -385,18 +420,22 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
  	if p == nil || p.Cost == nil || p.User == nil || deps == nil || deps.billingCacheService == nil {
  		return
  	}
@@ -3473,7 +3477,7 @@ index 71236b69bdcc46a0ce27aef6b5c6bba3e96f6ea0..3b8a856e231c87ab46586f4559637db7
  }
  
  // notifyBalanceLow sends balance low notification after deduction.
-@@ -489,26 +528,28 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
+@@ -498,26 +537,28 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
  
  // billingDeps 扣费逻辑依赖的服务（由各 gateway service 提供）
  type billingDeps struct {
@@ -4658,7 +4662,7 @@ index 3ee23d2c93728b829bd56de4f0164146c6261cc7..24649fc7d40aa12e5cacb80325fa1587
  	// 若 Pop 数量不满一批，脏集已空，停止
  	if len(keys) < s.batchSize {
 diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
-index 913cb6ba78fcec9137983cc86fdb427cbb630f3e..79fa3294415aa87be2d7369df08575fb37579018 100644
+index 166c1ff83296139f37d5c2ef5e9804b4bc2231cc..c5fe4d7b8ebf27c3b07da69867bd5f0034bca2cf 100644
 --- a/backend/internal/service/wire.go
 +++ b/backend/internal/service/wire.go
 @@ -302,8 +302,12 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
@@ -4727,7 +4731,7 @@ index 913cb6ba78fcec9137983cc86fdb427cbb630f3e..79fa3294415aa87be2d7369df08575fb
  	svc.SetConcurrencyService(concurrencyService)
  	return svc
  }
-@@ -690,6 +727,7 @@ var ProviderSet = wire.NewSet(
+@@ -691,6 +728,7 @@ var ProviderSet = wire.NewSet(
  	ProvidePricingService,
  	NewBillingService,
  	ProvideBillingCacheService,
@@ -4735,7 +4739,7 @@ index 913cb6ba78fcec9137983cc86fdb427cbb630f3e..79fa3294415aa87be2d7369df08575fb
  	NewAnnouncementService,
  	NewAdminService,
  	NewGatewayService,
-@@ -808,8 +846,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
+@@ -809,8 +847,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
  }
  
  // ProvidePaymentService creates PaymentService and attaches notification email delivery.

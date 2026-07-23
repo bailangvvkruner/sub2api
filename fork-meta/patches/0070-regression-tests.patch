@@ -1,6 +1,6 @@
-From c133b43eceec8c18fe5d81b0834d66144114429c Mon Sep 17 00:00:00 2001
+From af28e28c7364f0240b5fc893d58a1070c23cb90d Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Thu, 23 Jul 2026 10:26:50 +0800
+Date: Thu, 23 Jul 2026 10:39:58 +0800
 Subject: [PATCH 7/7] fork: retain hotpath regression coverage
 
 ---

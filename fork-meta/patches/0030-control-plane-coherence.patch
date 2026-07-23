@@ -1,14 +1,14 @@
-From c133b43eceec8c18fe5d81b0834d66144114429c Mon Sep 17 00:00:00 2001
+From af28e28c7364f0240b5fc893d58a1070c23cb90d Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Thu, 23 Jul 2026 10:26:50 +0800
+Date: Thu, 23 Jul 2026 10:39:58 +0800
 Subject: [PATCH 3/7] fork: keep control-plane cache coherence
 
 ---
 diff --git a/backend/internal/service/admin_group.go b/backend/internal/service/admin_group.go
-index f4e7f39a426f54b851fe0d4ea91fcef51d2671c3..98a5e73641a36488a653af70965e7ffc6d416a5f 100644
+index fdba370ea09533d759104b93fa8613fd2d95969c..cdc9398c4599e175056a2e569a1061fd9d1cbbe3 100644
 --- a/backend/internal/service/admin_group.go
 +++ b/backend/internal/service/admin_group.go
-@@ -741,18 +741,16 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
+@@ -906,18 +906,16 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
  	}
  	// 注意：user_group_rate_multipliers 表通过外键 ON DELETE CASCADE 自动清理
  
