@@ -13,6 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func ptrTime(t time.Time) *time.Time {
+	return &t
+}
+
 // hashedTestValue returns a unique SHA-256 hex string (64 chars) that fits VARCHAR(64) columns.
 func hashedTestValue(t *testing.T, prefix string) string {
 	t.Helper()

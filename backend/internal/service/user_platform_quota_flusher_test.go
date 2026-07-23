@@ -23,8 +23,9 @@ type mockQuotaDirtyCache struct {
 	getErr     error
 
 	// readdCalled: 记录 Readd 收到的 keys（累积所有次调用）
-	readdCalled [][]UserPlatformQuotaKey
-	readdErr    error
+	readdCalled  [][]UserPlatformQuotaKey
+	readdErr     error
+	acknowledged [][]UserPlatformQuotaKey
 }
 
 func (m *mockQuotaDirtyCache) PopDirtyUserPlatformQuotaKeys(_ context.Context, _ int) ([]UserPlatformQuotaKey, error) {
@@ -47,6 +48,10 @@ func (m *mockQuotaDirtyCache) BatchGetUserPlatformQuotaCache(_ context.Context, 
 		return nil, m.getErr
 	}
 	return m.getEntries, nil
+}
+
+func (m *mockQuotaDirtyCache) AcknowledgeUserPlatformQuotaFlush(keys []UserPlatformQuotaKey) {
+	m.acknowledged = append(m.acknowledged, keys)
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +135,9 @@ func TestFlusher_PopSnapshotUpsert(t *testing.T) {
 	if f.metrics.FlushErrorTotal.Load() != 0 {
 		t.Errorf("FlushErrorTotal = %d, want 0", f.metrics.FlushErrorTotal.Load())
 	}
+	if len(cache.acknowledged) != 1 || len(cache.acknowledged[0]) != len(keys) {
+		t.Errorf("successful flush ACK calls = %v, want all keys once", cache.acknowledged)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +216,9 @@ func TestFlusher_UpsertFailReadds(t *testing.T) {
 	if f.metrics.FlushSuccessTotal.Load() != 0 {
 		t.Errorf("FlushSuccessTotal = %d, want 0", f.metrics.FlushSuccessTotal.Load())
 	}
+	if len(cache.acknowledged) != 0 {
+		t.Errorf("failed flush must stay protected until re-add, got ACK %v", cache.acknowledged)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +251,9 @@ func TestFlusher_FKViolationDropsNoReadd(t *testing.T) {
 	}
 	if f.metrics.DirtyReaddTotal.Load() != 0 {
 		t.Errorf("DirtyReaddTotal = %d, want 0 (FK violation drops)", f.metrics.DirtyReaddTotal.Load())
+	}
+	if len(cache.acknowledged) != 1 || len(cache.acknowledged[0]) != len(keys) {
+		t.Errorf("terminal FK drop ACK calls = %v, want all keys once", cache.acknowledged)
 	}
 }
 
@@ -320,7 +334,7 @@ func TestScenario_ZeroPercentCompany(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// P1: IntervalFallback — flush_interval_ms ≤0 时回退 2s；正常值保留
+// P1: IntervalFallback — flush_interval_ms ≤0 时回退 30s；正常值保留
 // ---------------------------------------------------------------------------
 
 func TestNewUserPlatformQuotaUsageFlusher_IntervalFallback(t *testing.T) {
@@ -329,9 +343,9 @@ func TestNewUserPlatformQuotaUsageFlusher_IntervalFallback(t *testing.T) {
 		inMs   int
 		wantDu time.Duration
 	}{
-		{"零值回退 2s", 0, 2 * time.Second},
-		{"负数回退 2s", -100, 2 * time.Second},
-		{"正常 2000ms 保留", 2000, 2 * time.Second},
+		{"零值回退 30s", 0, 30 * time.Second},
+		{"负数回退 30s", -100, 30 * time.Second},
+		{"正常 30000ms 保留", 30000, 30 * time.Second},
 		{"正常 500ms 保留", 500, 500 * time.Millisecond},
 	}
 	for _, tc := range cases {
