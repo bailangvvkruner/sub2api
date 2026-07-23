@@ -18,5 +18,11 @@ backend/migrations/*.sql text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
 
+# Structured fork metadata
+*.json text eol=lf
+
 # Dockerfile
 Dockerfile text eol=lf
+
+fork-meta/patches/* text eol=lf
+fork-meta/patches/*.patch -whitespace
