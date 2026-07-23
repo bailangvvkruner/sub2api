@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
@@ -142,6 +143,14 @@ type billingCache struct {
 
 func NewBillingCache(rdb *redis.Client) service.BillingCache {
 	return &billingCache{rdb: rdb}
+}
+
+func ProvideBillingCache(rdb *redis.Client, cfg *config.Config) service.BillingCache {
+	base := NewBillingCache(rdb)
+	if cfg == nil || !cfg.Gateway.HotPath.LocalBillingCache {
+		return base
+	}
+	return newLocalBillingCacheWithOptions(base, cfg.Gateway.HotPath.LocalBillingCacheMaxEntries, cfg.Gateway.HotPath.LocalBillingCacheWriteThrough)
 }
 
 func (c *billingCache) GetUserBalance(ctx context.Context, userID int64) (float64, error) {

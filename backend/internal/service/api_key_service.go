@@ -235,6 +235,7 @@ type APIKeyService struct {
 	authCacheL1               *ristretto.Cache
 	authNegativeCacheL1       *ristretto.Cache
 	authCfg                   apiKeyAuthCacheConfig
+	usageBillingWriteBehind   *UsageBillingWriteBehind
 	authGroup                 singleflight.Group
 	authLookupSlots           chan struct{}
 	authLookupTotal           atomic.Uint64
@@ -303,6 +304,17 @@ func NewAPIKeyService(
 // Called after construction (e.g. in wire) to avoid circular dependencies.
 func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidator) {
 	s.rateLimitCacheInvalid = inv
+}
+
+func (s *APIKeyService) SetUsageBillingWriteBehind(wb *UsageBillingWriteBehind) {
+	s.usageBillingWriteBehind = wb
+}
+
+func (s *APIKeyService) UsageBillingWriteBehind() *UsageBillingWriteBehind {
+	if s == nil {
+		return nil
+	}
+	return s.usageBillingWriteBehind
 }
 
 func (s *APIKeyService) SetConcurrencyService(concurrencyService *ConcurrencyService) {
@@ -1002,11 +1014,21 @@ func (s *APIKeyService) CheckAPIKeyQuotaAndExpiry(apiKey *APIKey) error {
 	}
 
 	// Check quota
-	if apiKey.IsQuotaExhausted() {
+	if s.IsQuotaExhausted(apiKey) {
 		return ErrAPIKeyQuotaExhausted
 	}
 
 	return nil
+}
+
+func (s *APIKeyService) IsQuotaExhausted(apiKey *APIKey) bool {
+	if apiKey == nil {
+		return false
+	}
+	if apiKey.IsQuotaExhausted() {
+		return true
+	}
+	return s != nil && s.usageBillingWriteBehind != nil && s.usageBillingWriteBehind.APIKeyQuotaExhausted(apiKey)
 }
 
 // UpdateQuotaUsed updates the quota_used field after a request

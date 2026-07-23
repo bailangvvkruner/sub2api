@@ -62,6 +62,21 @@ type UsageService struct {
 	authCacheInvalidator APIKeyAuthCacheInvalidator
 }
 
+type UsageLogPendingStats struct {
+	PendingL1Entries    int    `json:"pending_l1_entries"`
+	PendingL2Entries    int64  `json:"pending_l2_entries"`
+	EnqueuedTotal       uint64 `json:"enqueued_total"`
+	FlushedTotal        uint64 `json:"flushed_total"`
+	FlushErrorTotal     uint64 `json:"flush_error_total"`
+	L2MirrorErrorTotal  uint64 `json:"l2_mirror_error_total"`
+	L2TrimErrorTotal    uint64 `json:"l2_trim_error_total"`
+	DroppedAfterStopped uint64 `json:"dropped_after_stopped"`
+}
+
+type usageLogPendingStatsProvider interface {
+	Stats() UsageLogPendingStats
+}
+
 // NewUsageService 创建使用统计服务实例
 func NewUsageService(usageRepo UsageLogRepository, userRepo UserRepository, entClient *dbent.Client, authCacheInvalidator APIKeyAuthCacheInvalidator) *UsageService {
 	return &UsageService{
@@ -73,6 +88,16 @@ func NewUsageService(usageRepo UsageLogRepository, userRepo UserRepository, entC
 }
 
 // Create 创建使用日志
+func (s *UsageService) PendingStats() UsageLogPendingStats {
+	if s == nil || s.usageRepo == nil {
+		return UsageLogPendingStats{}
+	}
+	if provider, ok := s.usageRepo.(usageLogPendingStatsProvider); ok {
+		return provider.Stats()
+	}
+	return UsageLogPendingStats{}
+}
+
 func (s *UsageService) Create(ctx context.Context, req CreateUsageLogRequest) (*UsageLog, error) {
 	// 使用数据库事务保证「使用日志插入」与「扣费」的原子性，避免重复扣费或漏扣风险。
 	tx, err := s.entClient.Tx(ctx)
