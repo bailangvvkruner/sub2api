@@ -1,27 +1,27 @@
-From 6842963a7d55c2f3608eef93294a5228623e70ec Mon Sep 17 00:00:00 2001
+From c133b43eceec8c18fe5d81b0834d66144114429c Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Wed, 15 Jul 2026 12:26:02 +0800
+Date: Thu, 23 Jul 2026 10:26:50 +0800
 Subject: [PATCH 7/7] fork: retain hotpath regression coverage
 
 ---
 diff --git a/backend/cmd/server/wire_gen_test.go b/backend/cmd/server/wire_gen_test.go
-index 27707bc8c61219f15d6b46d131279e9635a57907..5cc2d5055ccaaab7b8652d7d08e4e057ac402994 100644
+index 3f159af7fe58772fd8ea7edd6e26b5e3aded7f7f..2687aeab5071833a5bda9160f21983cb45ae793b 100644
 --- a/backend/cmd/server/wire_gen_test.go
 +++ b/backend/cmd/server/wire_gen_test.go
-@@ -83,6 +83,8 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
- 		nil, // paymentOrderExpiry
- 		nil, // channelMonitorRunner
- 		nil, // quotaFlusher
+@@ -90,6 +90,8 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
+ 		nil, // upstreamBillingProbe
+ 		nil, // auditLog
+ 		nil, // promptAudit
 +		nil, // usageLogRepo
 +		nil, // usageBillingWriteBehind
  	)
  
  	require.NotPanics(t, func() {
 diff --git a/backend/internal/config/config_test.go b/backend/internal/config/config_test.go
-index 2f9defb80e0ae74a05b404c167471b1c9311aa50..3ed291cdfbde403b902d11a3b00edad38d42fe18 100644
+index 0c55d2776db0f387b45f2f919747e0d81b68e189..9658d20ae977049fed0878ec3d110d3bfb5d465f 100644
 --- a/backend/internal/config/config_test.go
 +++ b/backend/internal/config/config_test.go
-@@ -481,6 +481,15 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
+@@ -747,6 +747,15 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
  	if cfg.Database.SSLMode != "prefer" {
  		t.Fatalf("Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "prefer")
  	}
@@ -37,7 +37,7 @@ index 2f9defb80e0ae74a05b404c167471b1c9311aa50..3ed291cdfbde403b902d11a3b00edad3
  }
  
  func TestValidateLinuxDoFrontendRedirectURL(t *testing.T) {
-@@ -1998,6 +2007,35 @@ func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
+@@ -2394,6 +2403,35 @@ func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
  	}
  }
  
@@ -777,7 +777,7 @@ index 0000000000000000000000000000000000000000..bc4321e57a9651b4eacf15eee847a704
 +	require.Equal(t, 1, counts[404], "API key request slots must remain process-local")
 +}
 diff --git a/backend/internal/repository/migrations_runner_notx_test.go b/backend/internal/repository/migrations_runner_notx_test.go
-index 6bb7914b95a06ba4a53695accd11126df08ba1b5..4e762ca174a9378d0295968b1e95c29394a352e1 100644
+index 4ab6274b92a96410098d9cfdebd7dc10fbd33971..71aa20baedf2165e82463bf706f53d673dd33e23 100644
 --- a/backend/internal/repository/migrations_runner_notx_test.go
 +++ b/backend/internal/repository/migrations_runner_notx_test.go
 @@ -126,9 +126,9 @@ func TestApplyMigrationsFS_NonTransactionalMigration_LatestAPIKeyIPIndexDropsInv
@@ -882,7 +882,7 @@ index 6bb7914b95a06ba4a53695accd11126df08ba1b5..4e762ca174a9378d0295968b1e95c293
  	db, mock, err := sqlmock.New()
  	require.NoError(t, err)
 diff --git a/backend/internal/repository/ops_error_where_test.go b/backend/internal/repository/ops_error_where_test.go
-index c52461e8ff0e6a43363b068d6b95e0dbf1cb1160..acfec41912887ffddd71790896de59f8703642f2 100644
+index af9af28de825ab0809c819f5babb9f487165f3f9..5d6c12d891f9f410f1c148ed7e8b6334cbb96852 100644
 --- a/backend/internal/repository/ops_error_where_test.go
 +++ b/backend/internal/repository/ops_error_where_test.go
 @@ -1,9 +1,12 @@
@@ -992,9 +992,9 @@ index c52461e8ff0e6a43363b068d6b95e0dbf1cb1160..acfec41912887ffddd71790896de59f8
 +	}
 +}
 +
- func TestBuildOpsErrorLogsWhere_MatchDeletedKeyOwner(t *testing.T) {
+ func TestBuildOpsErrorLogsWhere_UserOwnershipIsDirectOnly(t *testing.T) {
  	uid := int64(42)
- 
+ 	filter := &service.OpsErrorLogFilter{UserID: &uid}
 diff --git a/backend/internal/repository/scheduler_cache_integration_test.go b/backend/internal/repository/scheduler_cache_integration_test.go
 index 52673315c895f734c2c98b2d7154abeb6fe1c3f2..031114d29e4ae19e8a78c506b308a1a0b9da0e87 100644
 --- a/backend/internal/repository/scheduler_cache_integration_test.go
@@ -1033,11 +1033,200 @@ index 52673315c895f734c2c98b2d7154abeb6fe1c3f2..031114d29e4ae19e8a78c506b308a1a0
  }
  
  func TestSchedulerCacheRetireAndReopenFencesOldEpochIntegration(t *testing.T) {
+diff --git a/backend/internal/repository/scheduler_cache_last_used_unit_test.go b/backend/internal/repository/scheduler_cache_last_used_unit_test.go
+deleted file mode 100644
+index 06810da9db2dbbde8df227ff5fcbaa14abaac6aa..0000000000000000000000000000000000000000
+--- a/backend/internal/repository/scheduler_cache_last_used_unit_test.go
++++ /dev/null
+@@ -1,183 +0,0 @@
+-//go:build unit
+-
+-package repository
+-
+-import (
+-	"context"
+-	"strconv"
+-	"strings"
+-	"testing"
+-	"time"
+-
+-	"github.com/Wei-Shaw/sub2api/internal/service"
+-	"github.com/redis/go-redis/v9"
+-	"github.com/stretchr/testify/require"
+-)
+-
+-func TestSchedulerCacheUpdateLastUsedUsesSideKeyWithoutRewritingPayloads(t *testing.T) {
+-	ctx := context.Background()
+-	cache := newSchedulerCacheUnit(t)
+-	bucket := service.SchedulerBucket{
+-		GroupID:  9,
+-		Platform: service.PlatformGrok,
+-		Mode:     service.SchedulerModeSingle,
+-	}
+-	initial := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Hour)
+-	account := service.Account{
+-		ID:          9201,
+-		Name:        "grok-large-oauth",
+-		Platform:    service.PlatformGrok,
+-		Type:        service.AccountTypeOAuth,
+-		Status:      service.StatusActive,
+-		Schedulable: true,
+-		LastUsedAt:  &initial,
+-		Credentials: map[string]any{
+-			"access_token":  strings.Repeat("a", 4096),
+-			"refresh_token": strings.Repeat("r", 4096),
+-		},
+-		Extra: map[string]any{"large": strings.Repeat("x", 4096)},
+-	}
+-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+-	require.NoError(t, err)
+-	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+-
+-	id := strconv.FormatInt(account.ID, 10)
+-	fullBefore, err := cache.rdb.Get(ctx, schedulerAccountKey(id)).Bytes()
+-	require.NoError(t, err)
+-	metaBefore, err := cache.rdb.Get(ctx, schedulerAccountMetaKey(id)).Bytes()
+-	require.NoError(t, err)
+-
+-	latest := initial.Add(37 * time.Second)
+-	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: latest}))
+-
+-	fullAfter, err := cache.rdb.Get(ctx, schedulerAccountKey(id)).Bytes()
+-	require.NoError(t, err)
+-	metaAfter, err := cache.rdb.Get(ctx, schedulerAccountMetaKey(id)).Bytes()
+-	require.NoError(t, err)
+-	require.Equal(t, fullBefore, fullAfter)
+-	require.Equal(t, metaBefore, metaAfter)
+-	require.Equal(t, strconv.FormatInt(latest.UnixMilli(), 10), cache.rdb.Get(ctx, schedulerLastUsedKey(id)).Val())
+-
+-	cached, err := cache.GetAccount(ctx, account.ID)
+-	require.NoError(t, err)
+-	require.NotNil(t, cached)
+-	require.NotNil(t, cached.LastUsedAt)
+-	require.Equal(t, latest, *cached.LastUsedAt)
+-
+-	snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+-	require.NoError(t, err)
+-	require.True(t, hit)
+-	require.Len(t, snapshot, 1)
+-	require.NotNil(t, snapshot[0].LastUsedAt)
+-	require.Equal(t, latest, *snapshot[0].LastUsedAt)
+-}
+-
+-func TestSchedulerCacheLastUsedSideKeyIsMonotonicAndRequiresAccount(t *testing.T) {
+-	ctx := context.Background()
+-	cache := newSchedulerCacheUnit(t)
+-	account := service.Account{ID: 9202, Platform: service.PlatformGrok, Type: service.AccountTypeOAuth}
+-	require.NoError(t, cache.SetAccount(ctx, &account))
+-
+-	newer := time.Now().UTC().Truncate(time.Millisecond)
+-	older := newer.Add(-time.Minute)
+-	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: newer}))
+-	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: older}))
+-
+-	id := strconv.FormatInt(account.ID, 10)
+-	require.Equal(t, strconv.FormatInt(newer.UnixMilli(), 10), cache.rdb.Get(ctx, schedulerLastUsedKey(id)).Val())
+-	cached, err := cache.GetAccount(ctx, account.ID)
+-	require.NoError(t, err)
+-	require.NotNil(t, cached)
+-	require.Equal(t, newer, *cached.LastUsedAt)
+-
+-	const missingID int64 = 9299
+-	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{missingID: newer}))
+-	_, err = cache.rdb.Get(ctx, schedulerLastUsedKey(strconv.FormatInt(missingID, 10))).Result()
+-	require.ErrorIs(t, err, redis.Nil)
+-
+-	require.NoError(t, cache.DeleteAccount(ctx, account.ID))
+-	_, err = cache.rdb.Get(ctx, schedulerLastUsedKey(id)).Result()
+-	require.ErrorIs(t, err, redis.Nil)
+-}
+-
+-func TestSchedulerCacheLastUsedSideKeyFallsBackToNewerEmbeddedValue(t *testing.T) {
+-	ctx := context.Background()
+-	cache := newSchedulerCacheUnit(t)
+-	embedded := time.Now().UTC().Truncate(time.Millisecond)
+-	account := service.Account{
+-		ID:         9203,
+-		Platform:   service.PlatformGrok,
+-		Type:       service.AccountTypeOAuth,
+-		LastUsedAt: &embedded,
+-	}
+-	require.NoError(t, cache.SetAccount(ctx, &account))
+-
+-	id := strconv.FormatInt(account.ID, 10)
+-	require.NoError(t, cache.rdb.Set(ctx, schedulerLastUsedKey(id), embedded.Add(-time.Hour).UnixMilli(), 0).Err())
+-	cached, err := cache.GetAccount(ctx, account.ID)
+-	require.NoError(t, err)
+-	require.NotNil(t, cached)
+-	require.Equal(t, embedded, *cached.LastUsedAt)
+-}
+-
+-func TestSchedulerCacheLastUsedSideKeySurvivesStaleAccountAndSnapshotWrites(t *testing.T) {
+-	ctx := context.Background()
+-	cache := newSchedulerCacheUnit(t)
+-	bucket := service.SchedulerBucket{
+-		GroupID:  10,
+-		Platform: service.PlatformGrok,
+-		Mode:     service.SchedulerModeSingle,
+-	}
+-	embedded := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+-	latest := embedded.Add(30 * time.Second)
+-	account := service.Account{
+-		ID:          9204,
+-		Platform:    service.PlatformGrok,
+-		Type:        service.AccountTypeOAuth,
+-		Schedulable: true,
+-		LastUsedAt:  &embedded,
+-	}
+-	require.NoError(t, cache.SetAccount(ctx, &account))
+-	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: latest}))
+-
+-	require.NoError(t, cache.SetAccount(ctx, &account))
+-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+-	require.NoError(t, err)
+-	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+-
+-	id := strconv.FormatInt(account.ID, 10)
+-	require.Equal(t, strconv.FormatInt(latest.UnixMilli(), 10), cache.rdb.Get(ctx, schedulerLastUsedKey(id)).Val())
+-	cached, err := cache.GetAccount(ctx, account.ID)
+-	require.NoError(t, err)
+-	require.NotNil(t, cached)
+-	require.Equal(t, latest, *cached.LastUsedAt)
+-	snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+-	require.NoError(t, err)
+-	require.True(t, hit)
+-	require.Len(t, snapshot, 1)
+-	require.Equal(t, latest, *snapshot[0].LastUsedAt)
+-}
+-
+-func TestSchedulerCacheUpdateLastUsedChunksLargeBatches(t *testing.T) {
+-	ctx := context.Background()
+-	cache := newSchedulerCacheUnit(t)
+-	total := schedulerLastUsedUpdateChunkSize + 1
+-	accounts := make([]service.Account, 0, total)
+-	updates := make(map[int64]time.Time, total)
+-	base := time.Now().UTC().Truncate(time.Millisecond)
+-	for i := 0; i < total; i++ {
+-		id := int64(9300 + i)
+-		accounts = append(accounts, service.Account{ID: id, Platform: service.PlatformGrok})
+-		updates[id] = base.Add(time.Duration(i) * time.Millisecond)
+-	}
+-
+-	written, err := cache.writeAccountIDs(ctx, accounts)
+-	require.NoError(t, err)
+-	require.Len(t, written, total)
+-	require.NoError(t, cache.UpdateLastUsed(ctx, updates))
+-
+-	for id, usedAt := range updates {
+-		key := schedulerLastUsedKey(strconv.FormatInt(id, 10))
+-		require.Equal(t, strconv.FormatInt(usedAt.UnixMilli(), 10), cache.rdb.Get(ctx, key).Val())
+-	}
+-}
 diff --git a/backend/internal/repository/scheduler_cache_unit_test.go b/backend/internal/repository/scheduler_cache_unit_test.go
-index f933603c47b5727f867cbd35d0ae8dd5a87b7034..5e63c4f7add826b383db67aae88c3c4f0222c60a 100644
+index d0373f16c7b21ae990e6e6f82591fe22f0c60fa1..bd15b532f68bfe954198dc1b2e827f33a48eaa1e 100644
 --- a/backend/internal/repository/scheduler_cache_unit_test.go
 +++ b/backend/internal/repository/scheduler_cache_unit_test.go
-@@ -68,7 +68,7 @@ func TestSchedulerCacheSetAccountClearsUnencodablePayload(t *testing.T) {
+@@ -70,7 +70,7 @@ func TestSchedulerCacheSetAccountClearsUnencodablePayload(t *testing.T) {
  	require.Nil(t, cached)
  }
  
@@ -1046,7 +1235,7 @@ index f933603c47b5727f867cbd35d0ae8dd5a87b7034..5e63c4f7add826b383db67aae88c3c4f
  	ctx := context.Background()
  	cache := newSchedulerCacheUnit(t)
  	account := service.Account{ID: 114, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
-@@ -79,7 +79,8 @@ func TestSchedulerCacheUpdateLastUsedClearsUnencodablePayload(t *testing.T) {
+@@ -81,7 +81,8 @@ func TestSchedulerCacheUpdateLastUsedClearsUnencodablePayload(t *testing.T) {
  
  	cached, err := cache.GetAccount(ctx, account.ID)
  	require.NoError(t, err)
@@ -1055,7 +1244,7 @@ index f933603c47b5727f867cbd35d0ae8dd5a87b7034..5e63c4f7add826b383db67aae88c3c4f
 +	require.Nil(t, cached.LastUsedAt)
  }
  
- func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
+ func TestSchedulerCacheSnapshotAccountIDReusePreservesPayloadAndMembers(t *testing.T) {
 diff --git a/backend/internal/repository/scheduler_snapshot_outbox_integration_test.go b/backend/internal/repository/scheduler_snapshot_outbox_integration_test.go
 index a88b74ef86b99e725cf72ab9cda9ca3a3c4eefb9..c3122db1ab3238d0ac482d27deef5d0e9a7a7131 100644
 --- a/backend/internal/repository/scheduler_snapshot_outbox_integration_test.go
@@ -1164,10 +1353,10 @@ index 0000000000000000000000000000000000000000..3d2541eff9e8012e5ce4e4d6f0ef7cc9
 +	require.Equal(t, uint64(1), stats.FlushedTotal)
 +}
 diff --git a/backend/internal/server/middleware/api_key_auth_google_test.go b/backend/internal/server/middleware/api_key_auth_google_test.go
-index 746d238ca51fbf3b4deb5d214114611ace98e0de..c8443980f617e95f7905eb7fde0d858ee7fc8686 100644
+index 1b1e196a2d69695e26d6f8ceaff84322c26aad6e..98f16343536fa10c52fbc30021d01870092cbaf5 100644
 --- a/backend/internal/server/middleware/api_key_auth_google_test.go
 +++ b/backend/internal/server/middleware/api_key_auth_google_test.go
-@@ -512,7 +512,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_DisabledKey(t *testing.T) {
+@@ -580,7 +580,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_DisabledKey(t *testing.T) {
  	require.Equal(t, "UNAUTHENTICATED", resp.Error.Status)
  }
  
@@ -1176,7 +1365,7 @@ index 746d238ca51fbf3b4deb5d214114611ace98e0de..c8443980f617e95f7905eb7fde0d858e
  	gin.SetMode(gin.TestMode)
  
  	r := gin.New()
-@@ -538,12 +538,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_InsufficientBalance(t *testing.T) {
+@@ -606,12 +606,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_InsufficientBalance(t *testing.T) {
  	rec := httptest.NewRecorder()
  	r.ServeHTTP(rec, req)
  
@@ -1190,7 +1379,7 @@ index 746d238ca51fbf3b4deb5d214114611ace98e0de..c8443980f617e95f7905eb7fde0d858e
  }
  
  func TestApiKeyAuthWithSubscriptionGoogle_BalanceBelowMinimumReserve(t *testing.T) {
-@@ -579,7 +574,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_BalanceBelowMinimumReserve(t *testing.
+@@ -647,7 +642,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_BalanceBelowMinimumReserve(t *testing.
  	require.Equal(t, http.StatusOK, rec.Code)
  }
  
@@ -1199,7 +1388,7 @@ index 746d238ca51fbf3b4deb5d214114611ace98e0de..c8443980f617e95f7905eb7fde0d858e
  	gin.SetMode(gin.TestMode)
  
  	r := gin.New()
-@@ -606,12 +601,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_RejectsExhaustedBalance(t *testing.T)
+@@ -674,12 +669,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_RejectsExhaustedBalance(t *testing.T)
  	rec := httptest.NewRecorder()
  	r.ServeHTTP(rec, req)
  
@@ -1434,10 +1623,10 @@ index 0a82fade7a8e605ccd872c2900def80d54b18c5e..46a7edc6be4d4c34442e6426e1141224
 -	}
 -}
 diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
-index 507fb9d5c3bc9b39ba879eab667b7c91ae28e916..6b692cae36fad5519e849610e665e0c4742a6464 100644
+index 2c2725ea7820bd7190311695e56d06c395105c8b..28d9ecb2aa59170d3c222f6cfd635ad145c1be80 100644
 --- a/backend/internal/service/openai_gateway_service_test.go
 +++ b/backend/internal/service/openai_gateway_service_test.go
-@@ -1120,7 +1120,7 @@ func TestOpenAISelectAccountForModelWithExclusions_LeastRecentlyUsed(t *testing.
+@@ -1200,7 +1200,7 @@ func TestOpenAISelectAccountForModelWithExclusions_LeastRecentlyUsed(t *testing.
  	}
  }
  
@@ -1446,7 +1635,7 @@ index 507fb9d5c3bc9b39ba879eab667b7c91ae28e916..6b692cae36fad5519e849610e665e0c4
  	groupID := int64(1)
  	lastUsed := time.Now().Add(-1 * time.Hour)
  	repo := stubOpenAIAccountRepo{
-@@ -1147,8 +1147,11 @@ func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
+@@ -1227,8 +1227,11 @@ func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
  	if err != nil {
  		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
  	}
@@ -1810,26 +1999,18 @@ index 0d82b2f39337c7dc724ed3aafcbf7992900c6c52..8a2428e61a735e3af0b2fb95b0175bd5
  
  func TestSameAccountGroup(t *testing.T) {
 diff --git a/backend/internal/service/scheduler_snapshot_outbox_cleanup_test.go b/backend/internal/service/scheduler_snapshot_outbox_cleanup_test.go
-index 9a7d360e2e4402d213158930f8a62439d26bd669..cccf66d700dfb4df9717be4ac711614031d40649 100644
+index 2a476ff07794d88c48462a55f31794e3bb36776b..e5a09f8018e573ed759e20e326973b633a6d8f73 100644
 --- a/backend/internal/service/scheduler_snapshot_outbox_cleanup_test.go
 +++ b/backend/internal/service/scheduler_snapshot_outbox_cleanup_test.go
-@@ -2,7 +2,6 @@ package service
- 
- import (
- 	"context"
--	"errors"
- 	"reflect"
- 	"testing"
- 	"time"
-@@ -13,7 +12,6 @@ import (
+@@ -14,7 +14,6 @@ import (
  type outboxCleanupCache struct {
  	watermark       int64
  	setWatermarks   []int64
 -	updateErr       error
+ 	listBucketErr   error
+ 	listBuckets     []SchedulerBucket
  	listBucketCalls int
- }
- 
-@@ -58,7 +56,7 @@ func (c *outboxCleanupCache) DeleteAccount(ctx context.Context, accountID int64)
+@@ -61,7 +60,7 @@ func (c *outboxCleanupCache) DeleteAccount(ctx context.Context, accountID int64)
  }
  
  func (c *outboxCleanupCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
@@ -1838,7 +2019,7 @@ index 9a7d360e2e4402d213158930f8a62439d26bd669..cccf66d700dfb4df9717be4ac7116140
  }
  
  func (c *outboxCleanupCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
-@@ -240,10 +238,8 @@ func TestSchedulerSnapshotServicePollOutboxSkipsCleanupWhenLockUnavailable(t *te
+@@ -283,10 +282,8 @@ func TestSchedulerSnapshotServicePollOutboxSkipsCleanupWhenLockUnavailable(t *te
  	}
  }
  
@@ -1851,7 +2032,7 @@ index 9a7d360e2e4402d213158930f8a62439d26bd669..cccf66d700dfb4df9717be4ac7116140
  	repo := &outboxCleanupRepo{
  		events: []SchedulerOutboxEvent{
  			{
-@@ -261,17 +257,17 @@ func TestSchedulerSnapshotServicePollOutboxDoesNotCleanupOnHandleFailure(t *test
+@@ -304,17 +301,17 @@ func TestSchedulerSnapshotServicePollOutboxDoesNotCleanupOnHandleFailure(t *test
  
  	svc.pollOutbox()
  
@@ -2506,11 +2687,40 @@ index 4f7344819ae0ffd0515f40559a2129159c3cc27b..2a24882fae76408ed153844f55a9bf7b
  		{"正常 500ms 保留", 500, 500 * time.Millisecond},
  	}
  	for _, tc := range cases {
+diff --git a/frontend/src/api/__tests__/admin.system.rollback.spec.ts b/frontend/src/api/__tests__/admin.system.rollback.spec.ts
+index 15d0989ffbbe3bb4fbc2a1fc10b9d27ca0f56012..09eab12b653133ef0eb26073ff53a2e77539b91c 100644
+--- a/frontend/src/api/__tests__/admin.system.rollback.spec.ts
++++ b/frontend/src/api/__tests__/admin.system.rollback.spec.ts
+@@ -41,7 +41,11 @@ describe('admin system rollback API', () => {
+ 
+     const result = await rollback('0.1.146')
+ 
+-    expect(post).toHaveBeenCalledWith('/admin/system/rollback', { version: '0.1.146' })
++    expect(post).toHaveBeenCalledWith(
++      '/admin/system/rollback',
++      { version: '0.1.146' },
++      { timeout: 15 * 60 * 1000 }
++    )
+     expect(result.need_restart).toBe(true)
+   })
+ 
+@@ -50,6 +54,10 @@ describe('admin system rollback API', () => {
+ 
+     await rollback()
+ 
+-    expect(post).toHaveBeenCalledWith('/admin/system/rollback', undefined)
++    expect(post).toHaveBeenCalledWith(
++      '/admin/system/rollback',
++      undefined,
++      { timeout: 15 * 60 * 1000 }
++    )
+   })
+ })
 diff --git a/frontend/src/components/account/__tests__/credentialsBuilder.spec.ts b/frontend/src/components/account/__tests__/credentialsBuilder.spec.ts
-index ae4c6739a88ee75c124f5dbbd0f52a453a5d6212..a4b83b122cdaacc8cc148512f1b10d9fb09dc8f5 100644
+index 6d4b59e2a745d72f723160dda85b79833f016c28..4057ab3b4f0950c73bd38970ffe42a3151de535a 100644
 --- a/frontend/src/components/account/__tests__/credentialsBuilder.spec.ts
 +++ b/frontend/src/components/account/__tests__/credentialsBuilder.spec.ts
-@@ -377,4 +377,3 @@ describe('plan_type helpers', () => {
+@@ -468,4 +468,3 @@ describe('plan_type helpers', () => {
      })
    })
  })

@@ -1,6 +1,6 @@
-From 6842963a7d55c2f3608eef93294a5228623e70ec Mon Sep 17 00:00:00 2001
+From c133b43eceec8c18fe5d81b0834d66144114429c Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Wed, 15 Jul 2026 12:26:02 +0800
+Date: Thu, 23 Jul 2026 10:26:50 +0800
 Subject: [PATCH 5/7] fork: restore usage and cache visibility
 
 ---
@@ -79,10 +79,10 @@ index 83be033c115b05710918d90302cc3ad73960e807..016863ebc3da599ae59c05be0d0965cf
    searchApiKeys,
    listCleanupTasks,
 diff --git a/frontend/src/components/admin/usage/UsageTable.vue b/frontend/src/components/admin/usage/UsageTable.vue
-index 623ac705d35e024eb23e3b93ed2f0f9f19bcfc88..96a6105d0d201f59fd67a2ae3527ff3891507759 100644
+index ea69fefb2f770a5db7213f8107646c9875adb421..9a326ba9df6b908cb779baf19fcf3705b240a7e3 100644
 --- a/frontend/src/components/admin/usage/UsageTable.vue
 +++ b/frontend/src/components/admin/usage/UsageTable.vue
-@@ -297,6 +297,10 @@
+@@ -311,6 +311,10 @@
                <span class="text-gray-400">{{ t('admin.usage.cacheReadTokens') }}</span>
                <span class="font-medium text-white">{{ tokenTooltipData.cache_read_tokens.toLocaleString() }}</span>
              </div>
@@ -93,7 +93,7 @@ index 623ac705d35e024eb23e3b93ed2f0f9f19bcfc88..96a6105d0d201f59fd67a2ae3527ff38
            </div>
            <div class="flex items-center justify-between gap-6 border-t border-gray-700 pt-1.5">
              <span class="text-gray-400">{{ t('usage.totalTokens') }}</span>
-@@ -588,6 +592,19 @@ const formatDuration = (ms: number | null | undefined): string => {
+@@ -613,6 +617,19 @@ const formatDuration = (ms: number | null | undefined): string => {
    if (totalSec < 3600) return `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`
    return `${Math.floor(totalSec / 3600)}h ${Math.floor((totalSec % 3600) / 60)}m`
  }
@@ -114,7 +114,7 @@ index 623ac705d35e024eb23e3b93ed2f0f9f19bcfc88..96a6105d0d201f59fd67a2ae3527ff38
  // Cost tooltip functions
  const showTooltip = (event: MouseEvent, row: AdminUsageLog) => {
 diff --git a/frontend/src/i18n/locales/en/admin/resources.ts b/frontend/src/i18n/locales/en/admin/resources.ts
-index 8e9e34c0ec1fc9eb5059221b17ab86b87bc06da0..3ac393a530db834ad6e5b7acb06385477e6eec85 100644
+index f1a88c7bffd0e731a26310e1a97be1f4c977e819..85ef28363c45fa919019ab5091f567423286a60c 100644
 --- a/frontend/src/i18n/locales/en/admin/resources.ts
 +++ b/frontend/src/i18n/locales/en/admin/resources.ts
 @@ -547,6 +547,12 @@ export default {
@@ -131,7 +131,7 @@ index 8e9e34c0ec1fc9eb5059221b17ab86b87bc06da0..3ac393a530db834ad6e5b7acb0638547
          subtitle: 'Per-user token usage for the current filters and time range',
          rowHint: "Click to view this user's usage details",
 diff --git a/frontend/src/i18n/locales/zh/admin/resources.ts b/frontend/src/i18n/locales/zh/admin/resources.ts
-index 2019a0fe0c7c968b3af0eb6eb2681bd090694a7d..e902d3388d9a89271c26403261fedf16ece8c9e5 100644
+index 0016c09765a3e2d9e9438bf33ce7244fce346850..8df8a47ecafa6b5428f283ebd3e14c1feb6d66dd 100644
 --- a/frontend/src/i18n/locales/zh/admin/resources.ts
 +++ b/frontend/src/i18n/locales/zh/admin/resources.ts
 @@ -544,6 +544,12 @@ export default {

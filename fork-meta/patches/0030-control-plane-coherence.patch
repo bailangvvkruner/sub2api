@@ -1,14 +1,14 @@
-From 6842963a7d55c2f3608eef93294a5228623e70ec Mon Sep 17 00:00:00 2001
+From c133b43eceec8c18fe5d81b0834d66144114429c Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Wed, 15 Jul 2026 12:26:02 +0800
+Date: Thu, 23 Jul 2026 10:26:50 +0800
 Subject: [PATCH 3/7] fork: keep control-plane cache coherence
 
 ---
 diff --git a/backend/internal/service/admin_group.go b/backend/internal/service/admin_group.go
-index d622d547b02e618476afddad441059c44054ea1a..8a5b1c41da6b944bce1c1d46a074a68a48340ea3 100644
+index f4e7f39a426f54b851fe0d4ea91fcef51d2671c3..98a5e73641a36488a653af70965e7ffc6d416a5f 100644
 --- a/backend/internal/service/admin_group.go
 +++ b/backend/internal/service/admin_group.go
-@@ -714,18 +714,16 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
+@@ -741,18 +741,16 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
  	}
  	// 注意：user_group_rate_multipliers 表通过外键 ON DELETE CASCADE 自动清理
  
@@ -35,11 +35,11 @@ index d622d547b02e618476afddad441059c44054ea1a..8a5b1c41da6b944bce1c1d46a074a68a
  	if s.authCacheInvalidator != nil {
  		for _, key := range groupKeys {
 diff --git a/backend/internal/service/admin_user.go b/backend/internal/service/admin_user.go
-index 862a5ab5c737d4988cb2fca3afa323018710b0a1..6472e9521e2246c2d689ed5b813cc137c0222475 100644
+index 48ec83f5568f568e2f7d6376426dedab23d514cd..856fbac5cd52404da7f30efc1cf6f9a670195ced 100644
 --- a/backend/internal/service/admin_user.go
 +++ b/backend/internal/service/admin_user.go
-@@ -489,13 +489,15 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64,
- 	}
+@@ -523,13 +523,15 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64,
+ 	s.tryAccrueAffiliateRebateForAdminRecharge(ctx, userID, operation, balance)
  
  	if s.billingCacheService != nil {
 -		go func() {
@@ -270,7 +270,7 @@ index 8794872e3d1db1f1bf571e30f1671a7597c0c80d..0d5e42cc6f13f8a3d2bf2981fee4db91
  	return nil
  }
 diff --git a/backend/internal/service/subscription_service.go b/backend/internal/service/subscription_service.go
-index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b96396e11bc6f 100644
+index fbe99bf90632ac15834bbbd6cba96a63eb635c0a..66ebb37c665c1e2b102b4ae93b9ab05199a426ab 100644
 --- a/backend/internal/service/subscription_service.go
 +++ b/backend/internal/service/subscription_service.go
 @@ -7,6 +7,7 @@ import (
@@ -443,7 +443,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b9639
  }
  
  func (s *SubscriptionService) updateExistingSubscriptionTerm(
-@@ -522,15 +598,7 @@ func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, i
+@@ -541,15 +617,7 @@ func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, i
  	}
  
  	// 失效订阅缓存
@@ -460,7 +460,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b9639
  
  	return sub, false, nil
  }
-@@ -582,6 +650,7 @@ func (s *SubscriptionService) RevokeSubscription(ctx context.Context, subscripti
+@@ -601,6 +669,7 @@ func (s *SubscriptionService) RevokeSubscription(ctx context.Context, subscripti
  		return err
  	}
  
@@ -468,7 +468,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b9639
  	if err := s.invalidateSubscriptionCaches(sub.UserID, sub.GroupID); err != nil {
  		return err
  	}
-@@ -678,15 +747,7 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
+@@ -697,15 +766,7 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
  	}
  
  	// 失效订阅缓存
@@ -485,7 +485,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b9639
  
  	return s.userSubRepo.GetByID(ctx, subscriptionID)
  }
-@@ -846,13 +907,7 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
+@@ -865,13 +926,7 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
  	if err := s.userSubRepo.ResetUsageWindows(ctx, sub.ID, resetDaily, resetWeekly, resetMonthly, windowStart); err != nil {
  		return nil, err
  	}
@@ -500,7 +500,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b9639
  	// Return the refreshed subscription from DB
  	return s.userSubRepo.GetByID(ctx, subscriptionID)
  }
-@@ -898,10 +953,7 @@ func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *Use
+@@ -917,10 +972,7 @@ func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *Use
  
  	// 如果有窗口被重置，失效缓存以保持一致性
  	if needsInvalidateCache {
@@ -512,7 +512,7 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b9639
  	}
  
  	return nil
-@@ -1034,7 +1086,7 @@ func (s *SubscriptionService) doWindowMaintenance(sub *UserSubscription) {
+@@ -1053,7 +1105,7 @@ func (s *SubscriptionService) doWindowMaintenance(sub *UserSubscription) {
  	}
  
  	// 失效 L1 缓存，确保后续请求拿到更新后的数据
@@ -522,10 +522,10 @@ index ea1fd091d925495553321e4d393f4a465aacde2e..31fd0dc9ac2db62056e214148c2b9639
  
  // RecordUsage 记录使用量到订阅
 diff --git a/backend/internal/service/user_service.go b/backend/internal/service/user_service.go
-index 98b0c8f32b2961fabf4d471f5c924df269df3fbb..320147e520b241740f0dda59411cba28df3cc5e9 100644
+index ae630559fbe4ce36f983224eb33855daa4552af7..2e8267fdcfaa5049da2ee8f78e4afadc602288c4 100644
 --- a/backend/internal/service/user_service.go
 +++ b/backend/internal/service/user_service.go
-@@ -1080,18 +1080,26 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
+@@ -1081,18 +1081,26 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
  		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
  	}
  	if s.billingCache != nil {

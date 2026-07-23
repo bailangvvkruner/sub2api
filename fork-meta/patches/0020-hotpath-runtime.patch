@@ -1,14 +1,14 @@
-From 6842963a7d55c2f3608eef93294a5228623e70ec Mon Sep 17 00:00:00 2001
+From c133b43eceec8c18fe5d81b0834d66144114429c Mon Sep 17 00:00:00 2001
 From: sub2api fork automation <41898282+github-actions[bot]@users.noreply.github.com>
-Date: Wed, 15 Jul 2026 12:26:02 +0800
+Date: Thu, 23 Jul 2026 10:26:50 +0800
 Subject: [PATCH 2/7] fork: restore L1 hotpath and write-behind runtime
 
 ---
 diff --git a/backend/cmd/server/main.go b/backend/cmd/server/main.go
-index 784f309fce8ba1c2045b2fb63c4ede1dc8208379..da37a62b7c2cffc1a9565fd7aef7f0d3ebdc870a 100644
+index a6fe5d42c3ca447b8980262278a9d0b8cd5d3109..c216bfa690d04adc9ab4381c38796db0995139db 100644
 --- a/backend/cmd/server/main.go
 +++ b/backend/cmd/server/main.go
-@@ -170,11 +170,11 @@ func runMainServer() {
+@@ -179,7 +179,7 @@ func runMainServer() {
  
  	log.Println("Shutting down server...")
  
@@ -17,19 +17,14 @@ index 784f309fce8ba1c2045b2fb63c4ede1dc8208379..da37a62b7c2cffc1a9565fd7aef7f0d3
  	defer cancel()
  
  	if err := app.Server.Shutdown(ctx); err != nil {
--		log.Fatalf("Server forced to shutdown: %v", err)
-+		log.Printf("Server forced to shutdown: %v", err)
- 	}
- 
- 	log.Println("Server exited")
 diff --git a/backend/cmd/server/wire.go b/backend/cmd/server/wire.go
-index 496473bc88bc2196ac59ea930e4e45b95aa51287..7df9621f8c9e4cca42612545b9e094bcd32988d9 100644
+index 22d7322afad26bfe27fdc3baf25c8bde641d85c1..6ca82c54dcfc3dbf814a5a745b559410ee683ffe 100644
 --- a/backend/cmd/server/wire.go
 +++ b/backend/cmd/server/wire.go
-@@ -103,9 +103,11 @@ func provideCleanup(
- 	paymentOrderExpiry *service.PaymentOrderExpiryService,
- 	channelMonitorRunner *service.ChannelMonitorRunner,
- 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
+@@ -113,9 +113,11 @@ func provideCleanup(
+ 	upstreamBillingProbe *service.UpstreamBillingProbeService,
+ 	auditLog *service.AuditLogService,
+ 	promptAudit *securityaudit.PromptService,
 +	usageLogRepo service.UsageLogRepository,
 +	usageBillingWriteBehind *service.UsageBillingWriteBehind,
  ) func() {
@@ -39,7 +34,7 @@ index 496473bc88bc2196ac59ea930e4e45b95aa51287..7df9621f8c9e4cca42612545b9e094bc
  		defer cancel()
  
  		type cleanupStep struct {
-@@ -279,6 +281,18 @@ func provideCleanup(
+@@ -331,6 +333,18 @@ func provideCleanup(
  				}
  				return nil
  			}},
@@ -58,7 +53,7 @@ index 496473bc88bc2196ac59ea930e4e45b95aa51287..7df9621f8c9e4cca42612545b9e094bc
  		}
  
  		infraSteps := []cleanupStep{
-@@ -330,7 +344,7 @@ func provideCleanup(
+@@ -382,7 +396,7 @@ func provideCleanup(
  		// Check if context timed out
  		select {
  		case <-ctx.Done():
@@ -67,24 +62,11 @@ index 496473bc88bc2196ac59ea930e4e45b95aa51287..7df9621f8c9e4cca42612545b9e094bc
  		default:
  			log.Printf("[Cleanup] All cleanup steps completed")
  		}
-diff --git a/backend/go.sum b/backend/go.sum
-index 3d9989bb43edeb36806cd3efa936069e13cb069f..104dc56a4ea495b2c4b312def67a317e5f858f5f 100644
---- a/backend/go.sum
-+++ b/backend/go.sum
-@@ -166,6 +166,8 @@ github.com/google/go-querystring v1.1.0/go.mod h1:Kcdr2DB4koayq7X8pmAG4sNG59So17
- github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
- github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e h1:ijClszYn+mADRFY17kjQEVQ1XRhq2/JR1M3sGqeJoxs=
- github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e/go.mod h1:boTsfXsheKC2y+lKOCMpSfarhxDeIzfZG1jqGcPl3cA=
-+github.com/google/subcommands v1.2.0 h1:vWQspBTo2nEqTUFita5/KeEWlUL8kQObDFbub/EN9oE=
-+github.com/google/subcommands v1.2.0/go.mod h1:ZjhPrFU+Olkh9WazFPsl27BQ4UPiG37m3yTrtFlrHVk=
- github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
- github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
- github.com/google/wire v0.7.0 h1:JxUKI6+CVBgCO2WToKy/nQk0sS+amI9z9EjVmdaocj4=
 diff --git a/backend/internal/config/config.go b/backend/internal/config/config.go
-index 1262845cea403a78ee7212879676f064c58477a2..894cab8d161d997408bfe47ca3a108b65acc2231 100644
+index e9ddb39b01a053f94d837bc5a80aee62b1a4d2e9..fe7b20371cfaf984609fa1ed28446f398af210e5 100644
 --- a/backend/internal/config/config.go
 +++ b/backend/internal/config/config.go
-@@ -846,6 +846,9 @@ type GatewayConfig struct {
+@@ -981,6 +981,9 @@ type GatewayConfig struct {
  	// Scheduling: 账号调度相关配置
  	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
  
@@ -94,7 +76,7 @@ index 1262845cea403a78ee7212879676f064c58477a2..894cab8d161d997408bfe47ca3a108b6
  	// TLSFingerprint: TLS指纹伪装配置
  	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
  
-@@ -1077,6 +1080,16 @@ type GatewayUsageRecordConfig struct {
+@@ -1242,6 +1245,16 @@ type GatewayUsageRecordConfig struct {
  	AutoScaleCooldownSeconds int `mapstructure:"auto_scale_cooldown_seconds"`
  }
  
@@ -111,7 +93,7 @@ index 1262845cea403a78ee7212879676f064c58477a2..894cab8d161d997408bfe47ca3a108b6
  // TLSFingerprintConfig TLS指纹伪装配置
  // 用于模拟 Claude CLI (Node.js) 的 TLS 握手特征，避免被识别为非官方客户端
  type TLSFingerprintConfig struct {
-@@ -1127,12 +1140,12 @@ type GatewaySchedulingConfig struct {
+@@ -1292,12 +1305,12 @@ type GatewaySchedulingConfig struct {
  	FallbackWaitTimeout time.Duration `mapstructure:"fallback_wait_timeout"`
  	FallbackMaxWaiting  int           `mapstructure:"fallback_max_waiting"`
  
@@ -126,7 +108,7 @@ index 1262845cea403a78ee7212879676f064c58477a2..894cab8d161d997408bfe47ca3a108b6
  	PreferSoonestReset bool `mapstructure:"prefer_soonest_reset"`
  
  	// 负载计算
-@@ -1780,8 +1793,8 @@ func setDefaults() {
+@@ -1975,8 +1988,8 @@ func setDefaults() {
  	viper.SetDefault("database.max_idle_conns", 128)
  	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
  	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
@@ -137,7 +119,7 @@ index 1262845cea403a78ee7212879676f064c58477a2..894cab8d161d997408bfe47ca3a108b6
  	viper.SetDefault("database.user_platform_quota_flush_batch_size", 1000)
  
  	// Redis
-@@ -2045,7 +2058,7 @@ func setDefaults() {
+@@ -2269,7 +2282,7 @@ func setDefaults() {
  	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
  	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 30*time.Second)
  	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 100)
@@ -146,7 +128,7 @@ index 1262845cea403a78ee7212879676f064c58477a2..894cab8d161d997408bfe47ca3a108b6
  	viper.SetDefault("gateway.scheduling.prefer_soonest_reset", false)
  	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
  	viper.SetDefault("gateway.scheduling.load_batch_cache_ttl_ms", 200)
-@@ -2078,6 +2091,13 @@ func setDefaults() {
+@@ -2302,6 +2315,13 @@ func setDefaults() {
  	viper.SetDefault("gateway.usage_record.auto_scale_down_step", 16)
  	viper.SetDefault("gateway.usage_record.auto_scale_check_interval_seconds", 3)
  	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
@@ -160,7 +142,7 @@ index 1262845cea403a78ee7212879676f064c58477a2..894cab8d161d997408bfe47ca3a108b6
  	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
  	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
  	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
-@@ -2890,6 +2910,12 @@ func (c *Config) Validate() error {
+@@ -3266,6 +3286,12 @@ func (c *Config) Validate() error {
  	if c.Gateway.UsageRecord.WorkerCount <= 0 {
  		return fmt.Errorf("gateway.usage_record.worker_count must be positive")
  	}
@@ -174,7 +156,7 @@ index 1262845cea403a78ee7212879676f064c58477a2..894cab8d161d997408bfe47ca3a108b6
  		return fmt.Errorf("gateway.usage_record.queue_size must be positive")
  	}
 diff --git a/backend/internal/handler/admin/usage_handler.go b/backend/internal/handler/admin/usage_handler.go
-index 11a4aeb8f6017e8ccfef9279095d4a1f0266d19f..16cc2593a25213862a88a44e4f5ccda9e1b16dd4 100644
+index a7e0156d18b2272967283f174183c4d76820ecaa..fc006ea91826e4df0d293a3219089fe3289785c9 100644
 --- a/backend/internal/handler/admin/usage_handler.go
 +++ b/backend/internal/handler/admin/usage_handler.go
 @@ -27,6 +27,12 @@ type UsageHandler struct {
@@ -1425,10 +1407,10 @@ index 0000000000000000000000000000000000000000..5539f1b7d55ff76d0970a34c093c9f8c
 +// explicitly invalidate or refresh their corresponding L1 state.
 +package hotpath
 diff --git a/backend/internal/repository/account_repo.go b/backend/internal/repository/account_repo.go
-index e85bf46fc18d5b8b12cd591368f927301dbe9c54..7fdf6106910f53fbda7bd894f173ba141ff16207 100644
+index 87f91777b0135c5b235cf99798b1dc2397861dfd..59b6e13b04d677bd0dcffe38d45b8cd1d2387387 100644
 --- a/backend/internal/repository/account_repo.go
 +++ b/backend/internal/repository/account_repo.go
-@@ -796,14 +796,6 @@ func (r *accountRepository) UpdateLastUsed(ctx context.Context, id int64) error
+@@ -1121,14 +1121,6 @@ func (r *accountRepository) UpdateLastUsed(ctx context.Context, id int64) error
  	if err != nil {
  		return err
  	}
@@ -1443,7 +1425,7 @@ index e85bf46fc18d5b8b12cd591368f927301dbe9c54..7fdf6106910f53fbda7bd894f173ba14
  	return nil
  }
  
-@@ -831,14 +823,6 @@ func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map
+@@ -1156,14 +1148,6 @@ func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map
  	if err != nil {
  		return err
  	}
@@ -1536,10 +1518,136 @@ index 0000000000000000000000000000000000000000..bab691093857bb6cbfc0e3c6bccf6699
 +	}
 +}
 diff --git a/backend/internal/repository/scheduler_cache.go b/backend/internal/repository/scheduler_cache.go
-index b3cccefff94ad3a78f5140238fe2da76c798a0a5..3efdaaef51c661ac785073076c7950dde5caaa1e 100644
+index b03e4e663718c38f0ac468daa77bbdf636d00db3..a9a3ee377936564ebc97a7c5a37adf8dc2cda622 100644
 --- a/backend/internal/repository/scheduler_cache.go
 +++ b/backend/internal/repository/scheduler_cache.go
-@@ -515,46 +515,7 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
+@@ -15,22 +15,20 @@ import (
+ )
+ 
+ const (
+-	schedulerBucketSetKey          = "sched:buckets"
+-	schedulerOutboxWatermarkKey    = "sched:outbox:watermark"
+-	schedulerAccountPrefix         = "sched:acc:"
+-	schedulerAccountMetaPrefix     = "sched:meta:"
+-	schedulerAccountLastUsedPrefix = "sched:acc:last_used:"
+-	schedulerActivePrefix          = "sched:active:"
+-	schedulerReadyPrefix           = "sched:ready:"
+-	schedulerVersionPrefix         = "sched:ver:"
+-	schedulerEpochPrefix           = "sched:epoch:"
+-	schedulerRetiredPrefix         = "sched:retired:"
+-	schedulerSnapshotPrefix        = "sched:"
+-	schedulerLockPrefix            = "sched:lock:"
++	schedulerBucketSetKey       = "sched:buckets"
++	schedulerOutboxWatermarkKey = "sched:outbox:watermark"
++	schedulerAccountPrefix      = "sched:acc:"
++	schedulerAccountMetaPrefix  = "sched:meta:"
++	schedulerActivePrefix       = "sched:active:"
++	schedulerReadyPrefix        = "sched:ready:"
++	schedulerVersionPrefix      = "sched:ver:"
++	schedulerEpochPrefix        = "sched:epoch:"
++	schedulerRetiredPrefix      = "sched:retired:"
++	schedulerSnapshotPrefix     = "sched:"
++	schedulerLockPrefix         = "sched:lock:"
+ 
+ 	defaultSchedulerSnapshotMGetChunkSize  = 128
+ 	defaultSchedulerSnapshotWriteChunkSize = 256
+-	schedulerLastUsedUpdateChunkSize       = 256
+ 
+ 	// snapshotGraceTTLSeconds 旧快照过期的宽限期（秒）。
+ 	// 替代立即 DEL，让正在读取旧版本的 reader 有足够时间完成 ZRANGE。
+@@ -42,25 +40,6 @@ const (
+ 	schedulerGroupLifecycleOwnerTokenBytes = 16
+ )
+ 
+-var updateSchedulerLastUsedScript = redis.NewScript(`
+-local updated = 0
+-for index = 1, #ARGV do
+-    local key_index = (index - 1) * 2 + 1
+-    local candidate = tonumber(ARGV[index])
+-    if candidate == nil then
+-        return redis.error_reply('invalid last_used value')
+-    end
+-    if redis.call('EXISTS', KEYS[key_index]) == 1 then
+-        local current = tonumber(redis.call('GET', KEYS[key_index + 1]))
+-        if current == nil or candidate > current then
+-            redis.call('SET', KEYS[key_index + 1], ARGV[index])
+-            updated = updated + 1
+-        end
+-    end
+-end
+-return updated
+-`)
+-
+ var (
+ 	// epoch 标识 bucket writer 的代际，retired key 是持久退休标记。
+ 	// Capture、allocate、activate 都在 Lua 内同时校验两者：-1 表示已退休，-2 表示 epoch 无效或与 token 代际不匹配；
+@@ -277,22 +256,16 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
+ 	}
+ 
+ 	keys := make([]string, 0, len(ids))
+-	lastUsedKeys := make([]string, 0, len(ids))
+ 	for _, id := range ids {
+ 		keys = append(keys, schedulerAccountMetaKey(id))
+-		lastUsedKeys = append(lastUsedKeys, schedulerLastUsedKey(id))
+ 	}
+ 	values, err := c.mgetChunked(ctx, keys)
+ 	if err != nil {
+ 		return nil, false, err
+ 	}
+-	lastUsedValues, err := c.mgetChunked(ctx, lastUsedKeys)
+-	if err != nil {
+-		return nil, false, err
+-	}
+ 
+ 	accounts := make([]*service.Account, 0, len(values))
+-	for i, val := range values {
++	for _, val := range values {
+ 		if val == nil {
+ 			return nil, false, nil
+ 		}
+@@ -300,9 +273,6 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
+ 		if err != nil {
+ 			return nil, false, err
+ 		}
+-		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
+-			return nil, false, err
+-		}
+ 		accounts = append(accounts, account)
+ 	}
+ 
+@@ -567,22 +537,15 @@ func schedulerBucketWriteResultError(result int64, bucket service.SchedulerBucke
+ }
+ 
+ func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*service.Account, error) {
+-	id := strconv.FormatInt(accountID, 10)
+-	values, err := c.rdb.MGet(ctx, schedulerAccountKey(id), schedulerLastUsedKey(id)).Result()
+-	if err != nil {
+-		return nil, err
+-	}
+-	if len(values) != 2 || values[0] == nil {
++	key := schedulerAccountKey(strconv.FormatInt(accountID, 10))
++	val, err := c.rdb.Get(ctx, key).Result()
++	if err == redis.Nil {
+ 		return nil, nil
+ 	}
+-	account, err := decodeCachedAccount(values[0])
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	if err := applySchedulerLastUsed(account, values[1]); err != nil {
+-		return nil, err
+-	}
+-	return account, nil
++	return decodeCachedAccount(val)
+ }
+ 
+ func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Account) error {
+@@ -604,55 +567,11 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
+ 		return nil
+ 	}
+ 	id := strconv.FormatInt(accountID, 10)
+-	return c.rdb.Del(ctx, schedulerAccountKey(id), schedulerAccountMetaKey(id), schedulerLastUsedKey(id)).Err()
++	return c.rdb.Del(ctx, schedulerAccountKey(id), schedulerAccountMetaKey(id)).Err()
  }
  
  func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
@@ -1547,58 +1655,98 @@ index b3cccefff94ad3a78f5140238fe2da76c798a0a5..3efdaaef51c661ac785073076c7950dd
 -		return nil
 -	}
 -
--	keys := make([]string, 0, len(updates))
--	ids := make([]int64, 0, len(updates))
--	for id := range updates {
--		keys = append(keys, schedulerAccountKey(strconv.FormatInt(id, 10)))
--		ids = append(ids, id)
--	}
--
--	values, err := c.mgetChunked(ctx, keys)
--	if err != nil {
--		return err
--	}
--
 -	pipe := c.rdb.Pipeline()
--	for i, val := range values {
--		if val == nil {
+-	queued := 0
+-	keys := make([]string, 0, schedulerLastUsedUpdateChunkSize*2)
+-	args := make([]any, 0, schedulerLastUsedUpdateChunkSize)
+-	queueBatch := func() {
+-		if len(args) == 0 {
+-			return
+-		}
+-		updateSchedulerLastUsedScript.Eval(ctx, pipe, keys, args...)
+-		queued++
+-		keys = make([]string, 0, schedulerLastUsedUpdateChunkSize*2)
+-		args = make([]any, 0, schedulerLastUsedUpdateChunkSize)
+-	}
+-	for id, usedAt := range updates {
+-		if id <= 0 {
 -			continue
 -		}
--		account, err := decodeCachedAccount(val)
--		if err != nil {
--			return err
--		}
--		account.LastUsedAt = ptrTime(updates[ids[i]])
--		updated, metaPayload, err := marshalSchedulerCacheAccount(*account)
+-		millis, err := schedulerLastUsedMillis(usedAt)
 -		if err != nil {
 -			slog.Warn("scheduler cache removes account with unencodable payload",
--				"account_id", ids[i],
+-				"account_id", id,
 -				"error", err,
 -			)
--			pipe.Del(ctx, keys[i], schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)))
+-			idText := strconv.FormatInt(id, 10)
+-			pipe.Del(ctx, schedulerAccountKey(idText), schedulerAccountMetaKey(idText), schedulerLastUsedKey(idText))
+-			queued++
 -			continue
 -		}
--		pipe.Set(ctx, keys[i], updated, 0)
--		pipe.Set(ctx, schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)), metaPayload, 0)
+-		idText := strconv.FormatInt(id, 10)
+-		keys = append(keys, schedulerAccountKey(idText), schedulerLastUsedKey(idText))
+-		args = append(args, millis)
+-		if len(args) >= schedulerLastUsedUpdateChunkSize {
+-			queueBatch()
+-		}
 -	}
--	_, err = pipe.Exec(ctx)
+-	queueBatch()
+-	if queued == 0 {
+-		return nil
+-	}
+-	_, err := pipe.Exec(ctx)
 -	return err
 +	return nil
  }
  
  func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
-@@ -622,10 +583,6 @@ func schedulerAccountMetaKey(id string) string {
+@@ -720,45 +639,6 @@ func schedulerAccountMetaKey(id string) string {
  	return schedulerAccountMetaPrefix + id
  }
  
+-func schedulerLastUsedKey(id string) string {
+-	return schedulerAccountLastUsedPrefix + id
+-}
+-
 -func ptrTime(t time.Time) *time.Time {
 -	return &t
+-}
+-
+-func schedulerLastUsedMillis(value time.Time) (int64, error) {
+-	if _, err := value.MarshalJSON(); err != nil {
+-		return 0, err
+-	}
+-	return value.UTC().UnixMilli(), nil
+-}
+-
+-func applySchedulerLastUsed(account *service.Account, value any) error {
+-	if account == nil || value == nil {
+-		return nil
+-	}
+-	var raw string
+-	switch typed := value.(type) {
+-	case string:
+-		raw = typed
+-	case []byte:
+-		raw = string(typed)
+-	default:
+-		return fmt.Errorf("unexpected last_used cache type: %T", value)
+-	}
+-	millis, err := strconv.ParseInt(raw, 10, 64)
+-	if err != nil {
+-		return fmt.Errorf("invalid last_used cache value %q: %w", raw, err)
+-	}
+-	lastUsedAt := time.UnixMilli(millis).UTC()
+-	if account.LastUsedAt == nil || lastUsedAt.After(*account.LastUsedAt) {
+-		account.LastUsedAt = ptrTime(lastUsedAt)
+-	}
+-	return nil
 -}
 -
  func decodeCachedAccount(val any) (*service.Account, error) {
  	var payload []byte
  	switch raw := val.(type) {
-@@ -664,6 +621,9 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
+@@ -797,6 +677,9 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
  	}
  
  	for _, account := range accounts {
@@ -1608,6 +1756,15 @@ index b3cccefff94ad3a78f5140238fe2da76c798a0a5..3efdaaef51c661ac785073076c7950dd
  		fullPayload, metaPayload, err := marshalSchedulerCacheAccount(account)
  		if err != nil {
  			slog.Warn("scheduler cache skips account with unencodable payload",
+@@ -809,8 +692,6 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
+ 		id := strconv.FormatInt(account.ID, 10)
+ 		pipe.Set(ctx, schedulerAccountKey(id), fullPayload, 0)
+ 		pipe.Set(ctx, schedulerAccountMetaKey(id), metaPayload, 0)
+-		// Keep the hot LastUsedAt side key untouched: a lagging snapshot rebuild
+-		// must not overwrite a newer scheduler update.
+ 		accountIDs = append(accountIDs, account.ID)
+ 		pending++
+ 		if pending >= c.writeChunkSize {
 diff --git a/backend/internal/repository/usage_log_pending_repo.go b/backend/internal/repository/usage_log_pending_repo.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..a3e3052120e0883c60b66a9b3d9c0c3de22edd2f
@@ -2346,10 +2503,10 @@ index 4359edc2ca1e1c9816c09b316b5ec4ce5082284e..1f2cb1c1c16a142b398c328abd640df5
  	// 使用 scanSingleRow 替代 QueryRowContext，保证 ent.Tx 作为 sqlExecutor 可用。
  	repo := &usageLogRepository{client: client, sql: sqlq}
 diff --git a/backend/internal/repository/wire.go b/backend/internal/repository/wire.go
-index ec5078eac8960ea7c8ad82165884bcc24c7b1f92..963c0f120b6fa3c11e0f1c9f4abcebc9c968f262 100644
+index 1ee3194ad6d07aaf31cff3df57279a64d8fa8c19..94e14b1c210d0feafd6c310ecb91bc64b94fe663 100644
 --- a/backend/internal/repository/wire.go
 +++ b/backend/internal/repository/wire.go
-@@ -22,7 +22,24 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
+@@ -23,7 +23,24 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
  	if waitTTLSeconds <= 0 {
  		waitTTLSeconds = cfg.Gateway.ConcurrencySlotTTLMinutes * 60
  	}
@@ -2375,7 +2532,7 @@ index ec5078eac8960ea7c8ad82165884bcc24c7b1f92..963c0f120b6fa3c11e0f1c9f4abcebc9
  }
  
  // ProvideGitHubReleaseClient 创建 GitHub Release 客户端
-@@ -75,7 +92,7 @@ var ProviderSet = wire.NewSet(
+@@ -78,7 +95,7 @@ var ProviderSet = wire.NewSet(
  	NewPromoCodeRepository,
  	NewAnnouncementRepository,
  	NewAnnouncementReadRepository,
@@ -2384,7 +2541,7 @@ index ec5078eac8960ea7c8ad82165884bcc24c7b1f92..963c0f120b6fa3c11e0f1c9f4abcebc9
  	NewUsageBillingRepository,
  	NewBatchImageRepository,
  	NewIdempotencyRepository,
-@@ -99,7 +116,7 @@ var ProviderSet = wire.NewSet(
+@@ -103,7 +120,7 @@ var ProviderSet = wire.NewSet(
  
  	// Cache implementations
  	NewGatewayCache,
@@ -2394,19 +2551,19 @@ index ec5078eac8960ea7c8ad82165884bcc24c7b1f92..963c0f120b6fa3c11e0f1c9f4abcebc9
  	NewTempUnschedCache,
  	NewTimeoutCounterCache,
 diff --git a/backend/internal/server/middleware/api_key_auth.go b/backend/internal/server/middleware/api_key_auth.go
-index 082766bfd5596a2559ce986b696052457a027e3a..279471527dfe8108c33cb7827b20f4e43923056c 100644
+index a595fbdb3da55b129e1c394787d9ace3cda1f429..7fa24d1306da79b550b9b2fe35d9a1e7bae4716e 100644
 --- a/backend/internal/server/middleware/api_key_auth.go
 +++ b/backend/internal/server/middleware/api_key_auth.go
-@@ -187,7 +187,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
+@@ -229,7 +229,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
  				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
  				return
  			}
 -			if apiKey.IsQuotaExhausted() {
 +			if apiKeyService.IsQuotaExhausted(apiKey) {
- 				AbortWithError(c, 429, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+ 				abortWithAPIKeyQuotaError(c)
  				return
  			}
-@@ -218,6 +218,8 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
+@@ -260,6 +260,8 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
  				}
  			} else {
  				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
@@ -2416,10 +2573,10 @@ index 082766bfd5596a2559ce986b696052457a027e3a..279471527dfe8108c33cb7827b20f4e4
  					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
  					return
 diff --git a/backend/internal/server/middleware/api_key_auth_google.go b/backend/internal/server/middleware/api_key_auth_google.go
-index b910dd9fa4d9a5bba169b982e9116574a08319b6..69c4a61ed9d2d0eb137ba4effb39564c248cae1c 100644
+index 9efbbcb2cc99853c7affa25da81b00ff6290691d..f1b5f48d4190fd49eafa28c2251364bcbc1a4659 100644
 --- a/backend/internal/server/middleware/api_key_auth_google.go
 +++ b/backend/internal/server/middleware/api_key_auth_google.go
-@@ -56,6 +56,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
+@@ -88,6 +88,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
  			abortWithGoogleError(c, 401, "API key is disabled")
  			return
  		}
@@ -2430,7 +2587,7 @@ index b910dd9fa4d9a5bba169b982e9116574a08319b6..69c4a61ed9d2d0eb137ba4effb39564c
  
  		// 检查 IP 限制（白名单/黑名单）。与主中间件保持一致，避免 Gemini 端点绕过 Key 的 IP ACL。
  		if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
-@@ -162,10 +166,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
+@@ -199,10 +203,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
  			}
  
  			c.Set(string(ContextKeySubscription), subscription)
@@ -2446,10 +2603,10 @@ index b910dd9fa4d9a5bba169b982e9116574a08319b6..69c4a61ed9d2d0eb137ba4effb39564c
  		}
  
 diff --git a/backend/internal/server/routes/admin.go b/backend/internal/server/routes/admin.go
-index 5132022d4aeaaf402f3a4bb376352bbc0bd0f217..70116b01178576d505f3ec3763877aebb4f3ce5a 100644
+index 7bc8afd7bbd7ea977581f11def2e4c6eeae62dbd..93d198fcf3ed5f7100e351b12d7ea525715e2260 100644
 --- a/backend/internal/server/routes/admin.go
 +++ b/backend/internal/server/routes/admin.go
-@@ -580,6 +580,7 @@ func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+@@ -641,6 +641,7 @@ func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
  	{
  		usage.GET("", h.Admin.Usage.List)
  		usage.GET("/stats", h.Admin.Usage.Stats)
@@ -2458,46 +2615,18 @@ index 5132022d4aeaaf402f3a4bb376352bbc0bd0f217..70116b01178576d505f3ec3763877aeb
  		usage.GET("/search-api-keys", h.Admin.Usage.SearchAPIKeys)
  		usage.GET("/cleanup-tasks", h.Admin.Usage.ListCleanupTasks)
 diff --git a/backend/internal/service/api_key_service.go b/backend/internal/service/api_key_service.go
-index b13ca6b3d045ba694f474f225dbc5aaebc399a0e..4b82ebea8a03a1ab3a433118ac70760ee416cefd 100644
+index b9a780369f2c1dc1cb1c9da4779f24702be09048..9c1c7ad9f945155e7a204a7f5b86d15bd4e5e718 100644
 --- a/backend/internal/service/api_key_service.go
 +++ b/backend/internal/service/api_key_service.go
-@@ -202,20 +202,21 @@ type RateLimitCacheInvalidator interface {
- }
- 
- type APIKeyService struct {
--	apiKeyRepo            APIKeyRepository
--	userRepo              UserRepository
--	groupRepo             GroupRepository
--	userSubRepo           UserSubscriptionRepository
--	userGroupRateRepo     UserGroupRateRepository
--	cache                 APIKeyCache
--	rateLimitCacheInvalid RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
--	concurrencyService    *ConcurrencyService
--	cfg                   *config.Config
--	authCacheL1           *ristretto.Cache
--	authCfg               apiKeyAuthCacheConfig
--	authGroup             singleflight.Group
--	lastUsedTouchL1       sync.Map // keyID -> nextAllowedAt(time.Time)
--	lastUsedTouchSF       singleflight.Group
-+	apiKeyRepo              APIKeyRepository
-+	userRepo                UserRepository
-+	groupRepo               GroupRepository
-+	userSubRepo             UserSubscriptionRepository
-+	userGroupRateRepo       UserGroupRateRepository
-+	cache                   APIKeyCache
-+	rateLimitCacheInvalid   RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
-+	concurrencyService      *ConcurrencyService
-+	cfg                     *config.Config
-+	authCacheL1             *ristretto.Cache
-+	authCfg                 apiKeyAuthCacheConfig
-+	usageBillingWriteBehind *UsageBillingWriteBehind
-+	authGroup               singleflight.Group
-+	lastUsedTouchL1         sync.Map // keyID -> nextAllowedAt(time.Time)
-+	lastUsedTouchSF         singleflight.Group
- }
- 
- // NewAPIKeyService 创建API Key服务实例
-@@ -247,6 +248,17 @@ func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidat
+@@ -235,6 +235,7 @@ type APIKeyService struct {
+ 	authCacheL1               *ristretto.Cache
+ 	authNegativeCacheL1       *ristretto.Cache
+ 	authCfg                   apiKeyAuthCacheConfig
++	usageBillingWriteBehind   *UsageBillingWriteBehind
+ 	authGroup                 singleflight.Group
+ 	authLookupSlots           chan struct{}
+ 	authLookupTotal           atomic.Uint64
+@@ -305,6 +306,17 @@ func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidat
  	s.rateLimitCacheInvalid = inv
  }
  
@@ -2515,7 +2644,7 @@ index b13ca6b3d045ba694f474f225dbc5aaebc399a0e..4b82ebea8a03a1ab3a433118ac70760e
  func (s *APIKeyService) SetConcurrencyService(concurrencyService *ConcurrencyService) {
  	s.concurrencyService = concurrencyService
  }
-@@ -937,13 +949,23 @@ func (s *APIKeyService) CheckAPIKeyQuotaAndExpiry(apiKey *APIKey) error {
+@@ -1002,13 +1014,23 @@ func (s *APIKeyService) CheckAPIKeyQuotaAndExpiry(apiKey *APIKey) error {
  	}
  
  	// Check quota
@@ -3085,10 +3214,10 @@ index d72303cd92170faf18e41598ea8ab5dace7e9cfc..74b38eeb5bd408f979b7b40d11ffea1e
  		// 默认按最后使用时间排序
  		sortAccountsByPriorityAndLastUsed(accounts, preferOAuth)
 diff --git a/backend/internal/service/gateway_service.go b/backend/internal/service/gateway_service.go
-index 49ef63c0c1f9d13d5d4b29f7cecda6659c84fde7..7a8b33a5985354343dfd6c7e96d43f276729205d 100644
+index 23684af4aaacecce1b0735e15a9d556de5b67ba8..e584267c82f2fc8ab87149c82ff5b0ca7c239eb6 100644
 --- a/backend/internal/service/gateway_service.go
 +++ b/backend/internal/service/gateway_service.go
-@@ -659,42 +659,43 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
+@@ -676,42 +676,43 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
  
  // GatewayService handles API gateway operations
  type GatewayService struct {
@@ -3168,7 +3297,7 @@ index 49ef63c0c1f9d13d5d4b29f7cecda6659c84fde7..7a8b33a5985354343dfd6c7e96d43f27
  }
  
  // NewGatewayService creates a new GatewayService
-@@ -731,37 +732,38 @@ func NewGatewayService(
+@@ -748,37 +749,38 @@ func NewGatewayService(
  	modelsListTTL := resolveModelsListCacheTTL(cfg)
  
  	svc := &GatewayService{
@@ -3239,10 +3368,10 @@ index 49ef63c0c1f9d13d5d4b29f7cecda6659c84fde7..7a8b33a5985354343dfd6c7e96d43f27
  	svc.userGroupRateResolver = newUserGroupRateResolver(
  		userGroupRateRepo,
 diff --git a/backend/internal/service/gateway_usage_billing.go b/backend/internal/service/gateway_usage_billing.go
-index 61ab3abd2ff4258985093b3b9032e23a6af4ac9c..8b00e7f2bd5fedf9578d3417253e2d710af3d1a3 100644
+index 71236b69bdcc46a0ce27aef6b5c6bba3e96f6ea0..3b8a856e231c87ab46586f4559637db7fdae014d 100644
 --- a/backend/internal/service/gateway_usage_billing.go
 +++ b/backend/internal/service/gateway_usage_billing.go
-@@ -59,6 +59,10 @@ type apiKeyAuthCacheInvalidator interface {
+@@ -64,6 +64,10 @@ type apiKeyAuthCacheInvalidator interface {
  	InvalidateAuthCacheByKey(ctx context.Context, key string)
  }
  
@@ -3253,7 +3382,7 @@ index 61ab3abd2ff4258985093b3b9032e23a6af4ac9c..8b00e7f2bd5fedf9578d3417253e2d71
  type usageLogBestEffortWriter interface {
  	CreateBestEffort(ctx context.Context, log *UsageLog) error
  }
-@@ -135,8 +139,8 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
+@@ -140,8 +144,8 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
  			if err := deps.userRepo.DeductBalance(billingCtx, p.User.ID, cost.ActualCost); err != nil {
  				slog.Error("deduct balance failed", "user_id", p.User.ID, "error", err)
  			} else if deps.billingCacheService != nil {
@@ -3264,7 +3393,7 @@ index 61ab3abd2ff4258985093b3b9032e23a6af4ac9c..8b00e7f2bd5fedf9578d3417253e2d71
  				}
  			}
  		}
-@@ -280,7 +284,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
+@@ -285,7 +289,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
  	}
  
  	cmd := buildUsageBillingCommand(requestID, usageLog, p)
@@ -3273,7 +3402,7 @@ index 61ab3abd2ff4258985093b3b9032e23a6af4ac9c..8b00e7f2bd5fedf9578d3417253e2d71
  		postUsageBilling(ctx, p, deps)
  		return true, nil
  	}
-@@ -288,6 +292,37 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
+@@ -293,6 +297,37 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
  	billingCtx, cancel := detachedBillingContext(ctx)
  	defer cancel()
  
@@ -3311,7 +3440,7 @@ index 61ab3abd2ff4258985093b3b9032e23a6af4ac9c..8b00e7f2bd5fedf9578d3417253e2d71
  	result, err := repo.Apply(billingCtx, cmd)
  	if err != nil {
  		return false, err
-@@ -371,18 +406,22 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
+@@ -376,18 +411,22 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
  	if p == nil || p.Cost == nil || p.User == nil || deps == nil || deps.billingCacheService == nil {
  		return
  	}
@@ -3344,7 +3473,7 @@ index 61ab3abd2ff4258985093b3b9032e23a6af4ac9c..8b00e7f2bd5fedf9578d3417253e2d71
  }
  
  // notifyBalanceLow sends balance low notification after deduction.
-@@ -484,26 +523,28 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
+@@ -489,26 +528,28 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
  
  // billingDeps 扣费逻辑依赖的服务（由各 gateway service 提供）
  type billingDeps struct {
@@ -3390,18 +3519,10 @@ index 61ab3abd2ff4258985093b3b9032e23a6af4ac9c..8b00e7f2bd5fedf9578d3417253e2d71
  }
  
 diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
-index f318adc6045d00aba03b904807a7f939fa4b5874..e4d9e916b9f1c4b3cc91651bf4f6a904fd378e6f 100644
+index ba350f5062cf64e55c4a43dadbdaae37e4045976..523f5d158ce96188fc99578c5491672e91f37d3b 100644
 --- a/backend/internal/service/openai_gateway_scheduling.go
 +++ b/backend/internal/service/openai_gateway_scheduling.go
-@@ -9,7 +9,6 @@ import (
- 	"errors"
- 	"fmt"
- 	"log/slog"
--	"sort"
- 	"strconv"
- 	"strings"
- 	"time"
-@@ -968,26 +967,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
+@@ -1029,26 +1029,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
  			return nil, false, nil
  		}
  
@@ -3426,10 +3547,10 @@ index f318adc6045d00aba03b904807a7f939fa4b5874..e4d9e916b9f1c4b3cc91651bf4f6a904
 -		})
 -		shuffleWithinSortGroups(available)
 +		sortAccountsByPriorityAndLoad(available)
- 
- 		selectionOrder := make([]accountWithLoad, 0, len(available))
- 		if requireCompact {
-@@ -1038,7 +1018,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
+ 		if rateOrder.enabled {
+ 			sort.SliceStable(available, func(i, j int) bool {
+ 				return rateOrder.compare(available[i].account, available[j].account) < 0
+@@ -1104,7 +1085,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
  	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
  	if err != nil {
  		ordered := append([]*Account(nil), candidates...)
@@ -3439,10 +3560,10 @@ index f318adc6045d00aba03b904807a7f939fa4b5874..e4d9e916b9f1c4b3cc91651bf4f6a904
 +		} else {
 +			sortAccountsByPriorityOnlyRandom(ordered, false)
 +		}
- 		if requireCompact {
- 			ordered = prioritizeOpenAICompactAccounts(ordered)
- 		}
-@@ -1083,7 +1067,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
+ 		if rateOrder.enabled {
+ 			sort.SliceStable(ordered, func(i, j int) bool {
+ 				return rateOrder.compare(ordered[i], ordered[j]) < 0
+@@ -1154,7 +1139,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
  	}
  
  	// ============ Layer 3: Fallback wait ============
@@ -3452,14 +3573,14 @@ index f318adc6045d00aba03b904807a7f939fa4b5874..e4d9e916b9f1c4b3cc91651bf4f6a904
 +	} else {
 +		sortAccountsByPriorityOnlyRandom(candidates, false)
 +	}
- 	if requireCompact {
- 		candidates = prioritizeOpenAICompactAccounts(candidates)
- 	}
+ 	if rateOrder.enabled {
+ 		sort.SliceStable(candidates, func(i, j int) bool {
+ 			return rateOrder.compare(candidates[i], candidates[j]) < 0
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index 956f167d1bf40cca0d3f2e759ccc12e7fb463066..7645f477d0ac6d2ced07d629ff5f54fcae1b6069 100644
+index b0040800fac28a15f5f5310eef823318a2e5553e..843b08ac8370e2775e869d1db2a5bef82cd84532 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
-@@ -363,31 +363,32 @@ var ErrNoAvailableCompactAccounts = errors.New("no available OpenAI accounts sup
+@@ -385,31 +385,32 @@ var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /r
  
  // OpenAIGatewayService handles OpenAI API gateway operations
  type OpenAIGatewayService struct {
@@ -3517,7 +3638,7 @@ index 956f167d1bf40cca0d3f2e759ccc12e7fb463066..7645f477d0ac6d2ced07d629ff5f54fc
  
  	openaiWSPoolOnce              sync.Once
  	openaiWSStateStoreOnce        sync.Once
-@@ -442,19 +443,20 @@ func NewOpenAIGatewayService(
+@@ -466,19 +467,20 @@ func NewOpenAIGatewayService(
  	userPlatformQuotaRepo UserPlatformQuotaRepository,
  ) *OpenAIGatewayService {
  	svc := &OpenAIGatewayService{
@@ -3551,7 +3672,7 @@ index 956f167d1bf40cca0d3f2e759ccc12e7fb463066..7645f477d0ac6d2ced07d629ff5f54fc
  		userGroupRateResolver: newUserGroupRateResolver(
  			userGroupRateRepo,
  			nil,
-@@ -578,13 +580,15 @@ func (s *OpenAIGatewayService) getCodexSnapshotThrottle() *accountWriteThrottle
+@@ -603,13 +605,15 @@ func (s *OpenAIGatewayService) getCodexSnapshotThrottle() *accountWriteThrottle
  
  func (s *OpenAIGatewayService) billingDeps() *billingDeps {
  	return &billingDeps{
@@ -3575,10 +3696,10 @@ index 956f167d1bf40cca0d3f2e759ccc12e7fb463066..7645f477d0ac6d2ced07d629ff5f54fc
  }
  
 diff --git a/backend/internal/service/scheduler_snapshot_service.go b/backend/internal/service/scheduler_snapshot_service.go
-index cc8befacde34c9f8cb7d66d2b1c6b8b5fb4936d8..9e8646a5477ed3f663b76991de3d6d740a6c5fc3 100644
+index 38451b9b8e8ba7e630ed0bbf660beaafd2d2053c..96697ac346c2f0d33ff8b8a207f721143254b037 100644
 --- a/backend/internal/service/scheduler_snapshot_service.go
 +++ b/backend/internal/service/scheduler_snapshot_service.go
-@@ -430,29 +430,7 @@ func (s *SchedulerSnapshotService) handleOutboxEvent(ctx context.Context, event
+@@ -455,29 +455,7 @@ func (s *SchedulerSnapshotService) handleOutboxEvent(ctx context.Context, event
  }
  
  func (s *SchedulerSnapshotService) handleLastUsedEvent(ctx context.Context, payload map[string]any) error {
@@ -4537,10 +4658,10 @@ index 3ee23d2c93728b829bd56de4f0164146c6261cc7..24649fc7d40aa12e5cacb80325fa1587
  	// 若 Pop 数量不满一批，脏集已空，停止
  	if len(keys) < s.batchSize {
 diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
-index a8674382f2bd2f87621f28e557dd2a34a4b9d4ad..33c76ce534815a23e0ea13d4dd647b30f11bf752 100644
+index 913cb6ba78fcec9137983cc86fdb427cbb630f3e..79fa3294415aa87be2d7369df08575fb37579018 100644
 --- a/backend/internal/service/wire.go
 +++ b/backend/internal/service/wire.go
-@@ -300,8 +300,12 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
+@@ -302,8 +302,12 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
  }
  
  // ProvideDeferredService creates and starts DeferredService
@@ -4555,7 +4676,7 @@ index a8674382f2bd2f87621f28e557dd2a34a4b9d4ad..33c76ce534815a23e0ea13d4dd647b30
  	svc.Start()
  	return svc
  }
-@@ -597,6 +601,37 @@ func ProvideBillingCacheService(
+@@ -654,6 +658,37 @@ func ProvideBillingCacheService(
  	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
  }
  
@@ -4593,7 +4714,7 @@ index a8674382f2bd2f87621f28e557dd2a34a4b9d4ad..33c76ce534815a23e0ea13d4dd647b30
  // ProvideAPIKeyService wires APIKeyService and connects rate-limit cache invalidation.
  func ProvideAPIKeyService(
  	apiKeyRepo APIKeyRepository,
-@@ -607,10 +642,12 @@ func ProvideAPIKeyService(
+@@ -664,10 +699,12 @@ func ProvideAPIKeyService(
  	cache APIKeyCache,
  	cfg *config.Config,
  	billingCacheService *BillingCacheService,
@@ -4606,7 +4727,7 @@ index a8674382f2bd2f87621f28e557dd2a34a4b9d4ad..33c76ce534815a23e0ea13d4dd647b30
  	svc.SetConcurrencyService(concurrencyService)
  	return svc
  }
-@@ -632,6 +669,7 @@ var ProviderSet = wire.NewSet(
+@@ -690,6 +727,7 @@ var ProviderSet = wire.NewSet(
  	ProvidePricingService,
  	NewBillingService,
  	ProvideBillingCacheService,
@@ -4614,7 +4735,7 @@ index a8674382f2bd2f87621f28e557dd2a34a4b9d4ad..33c76ce534815a23e0ea13d4dd647b30
  	NewAnnouncementService,
  	NewAdminService,
  	NewGatewayService,
-@@ -743,8 +781,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
+@@ -808,8 +846,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
  }
  
  // ProvidePaymentService creates PaymentService and attaches notification email delivery.
